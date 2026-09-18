@@ -1,0 +1,19 @@
+{
+  "name": "anyedits",
+  "version": "0.1.0",
+  "description": "A mobile-first client-side file editor",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0",
+    "jsdom": "^23.0.0",
+    "@types/node": "^20.0.0"
+  }
+}

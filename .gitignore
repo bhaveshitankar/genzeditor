@@ -5,3 +5,6 @@ filebase_secrets.txt
 node_modules/
 .wrangler/
 dist/
+coverage/
+.env.local
+.DS_Store
