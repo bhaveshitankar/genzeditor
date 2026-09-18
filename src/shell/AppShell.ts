@@ -7,19 +7,24 @@ import { renderMarkdown } from '../editors/MarkdownPreview';
 import { MermaidPreview } from '../editors/MermaidPreview';
 import { formatJson } from '../editors/JsonTools';
 import { editorKindFor } from '../editors/registry';
+import { CommandPalette } from '../ui/CommandPalette';
 
 export class AppShell {
   private currentEditor?: TextEditor | ImageEditor;
   private currentPreview?: MermaidPreview;
   private currentFileId?: string;
+  private currentFileKind?: string;
   private saveTimer?: number;
   private editorHost!: HTMLElement;
   private drawer!: HTMLElement;
   private uploadInput!: HTMLInputElement;
+  private palette!: CommandPalette;
 
   constructor(private root: HTMLElement, private store: FileStore) {
     this.render();
     this.wireUpload();
+    this.wirePalette();
+    this.wireKeyboard();
   }
 
   private async blobToText(blob: Blob): Promise<string> {
@@ -42,8 +47,8 @@ export class AppShell {
         <aside class="file-drawer">
           <div class="drawer-header">
             <h2>Files</h2>
-            <label class="upload-btn">
-              <input type="file" style="display:none">
+            <label class="upload-btn" aria-label="Upload file">
+              <input type="file">
               <span>Upload</span>
             </label>
           </div>
@@ -80,6 +85,76 @@ export class AppShell {
       }
       this.uploadInput.value = '';
     });
+  }
+
+  private wirePalette() {
+    this.palette = new CommandPalette(this.root, [
+      {
+        id: 'upload',
+        label: 'Upload',
+        run: () => this.uploadInput.click(),
+      },
+      {
+        id: 'find',
+        label: 'Find',
+        run: () => this.findInEditor(),
+      },
+      {
+        id: 'format-json',
+        label: 'Format JSON',
+        run: () => this.formatCurrentJson(),
+      },
+      {
+        id: 'toggle-preview',
+        label: 'Toggle preview',
+        run: () => this.togglePreview(),
+      },
+    ]);
+  }
+
+  private wireKeyboard() {
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        this.palette.open();
+      }
+    });
+  }
+
+  private findInEditor() {
+    if (this.currentEditor instanceof TextEditor) {
+      // Focus the editor and trigger search - CodeMirror search is activated via Ctrl/Cmd+F
+      const cmEditor = this.editorHost.querySelector('.cm-editor') as HTMLElement;
+      if (cmEditor) {
+        cmEditor.focus();
+        // Dispatch Ctrl/Cmd+F to open search
+        const searchEvent = new KeyboardEvent('keydown', {
+          key: 'f',
+          ctrlKey: !navigator.platform.includes('Mac'),
+          metaKey: navigator.platform.includes('Mac'),
+          bubbles: true,
+        });
+        cmEditor.dispatchEvent(searchEvent);
+      }
+    }
+  }
+
+  private formatCurrentJson() {
+    if (this.currentFileKind === 'json' && this.currentEditor instanceof TextEditor) {
+      const result = formatJson(this.currentEditor.getValue());
+      if (result.ok) {
+        this.currentEditor.setValue(result.text);
+      } else {
+        alert(`Format error: ${result.error}`);
+      }
+    }
+  }
+
+  private togglePreview() {
+    const preview = this.editorHost.querySelector('[data-role="preview"]') as HTMLElement;
+    if (preview) {
+      preview.style.display = preview.style.display === 'none' ? '' : 'none';
+    }
   }
 
   async refreshLibrary(): Promise<void> {
@@ -120,6 +195,7 @@ export class AppShell {
 
     this.clearEditor();
     this.currentFileId = id;
+    this.currentFileKind = record.kind;
 
     const blob = await this.store.read(id);
     const editorType = editorKindFor(record.kind);
@@ -255,5 +331,6 @@ export class AppShell {
     }
     this.editorHost.innerHTML = '';
     this.currentFileId = undefined;
+    this.currentFileKind = undefined;
   }
 }

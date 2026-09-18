@@ -119,6 +119,10 @@ button, a, input, textarea {
   background: #004080;
 }
 
+.upload-btn input[type="file"] {
+  display: none;
+}
+
 [data-role="file-drawer"] {
   list-style: none;
   padding: 0;

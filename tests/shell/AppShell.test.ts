@@ -21,4 +21,29 @@ describe('AppShell', () => {
     expect(root.querySelector('[data-role="editor-host"] .cm-editor')).toBeTruthy();
     expect(root.querySelector('[data-role="preview"]')).toBeTruthy();
   });
+
+  it('opens command palette with Ctrl+K and lists commands', () => {
+    const store = new FileStore(new MemoryAdapter());
+    const root = document.createElement('div');
+    new AppShell(root, store);
+
+    // Initially palette should be hidden
+    const overlay = root.querySelector('.command-palette-overlay') as HTMLElement;
+    expect(overlay).toBeTruthy();
+    expect(overlay.style.display).toBe('none');
+
+    // Dispatch Ctrl+K
+    const event = new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true });
+    document.dispatchEvent(event);
+
+    // Palette should be visible
+    expect(overlay.style.display).toBe('flex');
+
+    // Should list all commands
+    const paletteText = overlay.textContent;
+    expect(paletteText).toContain('Upload');
+    expect(paletteText).toContain('Find');
+    expect(paletteText).toContain('Format JSON');
+    expect(paletteText).toContain('Toggle preview');
+  });
 });
