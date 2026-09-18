@@ -1,0 +1,7 @@
+cloudflare_secrets.txt
+filebase_secrets.txt
+.dev.vars
+.dev.vars.*
+node_modules/
+.wrangler/
+dist/
