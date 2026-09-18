@@ -9,7 +9,7 @@ describe('editorKindFor', () => {
   it('routes images to image', () => {
     expect(editorKindFor('image')).toBe('image');
   });
-  it('routes binary to text (read-only hex/plain fallback)', () => {
-    expect(editorKindFor('binary')).toBe('text');
+  it('routes binary to a preview-only (non-editable) view', () => {
+    expect(editorKindFor('binary')).toBe('binary');
   });
 });

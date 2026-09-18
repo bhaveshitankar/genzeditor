@@ -15,6 +15,11 @@ export class AppShell {
   private currentFileId?: string;
   private currentFileKind?: string;
   private saveTimer?: number;
+  // Closure that performs the currently-scheduled save (text or image), so a
+  // pending debounced save can be flushed synchronously before teardown.
+  private pendingSave?: () => Promise<void>;
+  // Aborted on every teardown to remove all editor-scoped event listeners.
+  private editorAbort?: AbortController;
   private editorHost!: HTMLElement;
   private drawer!: HTMLElement;
   private uploadInput!: HTMLInputElement;
@@ -123,19 +128,9 @@ export class AppShell {
 
   private findInEditor() {
     if (this.currentEditor instanceof TextEditor) {
-      // Focus the editor and trigger search - CodeMirror search is activated via Ctrl/Cmd+F
-      const cmEditor = this.editorHost.querySelector('.cm-editor') as HTMLElement;
-      if (cmEditor) {
-        cmEditor.focus();
-        // Dispatch Ctrl/Cmd+F to open search
-        const searchEvent = new KeyboardEvent('keydown', {
-          key: 'f',
-          ctrlKey: !navigator.platform.includes('Mac'),
-          metaKey: navigator.platform.includes('Mac'),
-          bubbles: true,
-        });
-        cmEditor.dispatchEvent(searchEvent);
-      }
+      // Call CodeMirror's search command directly instead of dispatching a
+      // synthetic Ctrl/Cmd+F KeyboardEvent (which is unreliable).
+      this.currentEditor.openSearch();
     }
   }
 
@@ -174,11 +169,11 @@ export class AppShell {
       deleteBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         if (confirm(`Delete ${file.name}?`)) {
+          if (this.currentFileId === file.id) {
+            await this.clearEditor();
+          }
           await this.store.remove(file.id);
           await this.refreshLibrary();
-          if (this.currentFileId === file.id) {
-            this.clearEditor();
-          }
         }
       });
 
@@ -193,12 +188,29 @@ export class AppShell {
     const record = files.find(f => f.id === id);
     if (!record) return;
 
-    this.clearEditor();
+    await this.clearEditor();
     this.currentFileId = id;
     this.currentFileKind = record.kind;
 
     const blob = await this.store.read(id);
     const editorType = editorKindFor(record.kind);
+
+    // Fresh listener scope for this file; abort()ed in clearEditor so stale
+    // handlers from a previous file can never fire against a destroyed editor.
+    const abort = new AbortController();
+    this.editorAbort = abort;
+    const signal = abort.signal;
+
+    if (editorType === 'binary') {
+      // Binary files are preview-only: never decode to text or wire autosave,
+      // which would rewrite the original bytes from a lossy UTF-8 round-trip.
+      const notice = document.createElement('div');
+      notice.className = 'binary-notice';
+      notice.setAttribute('data-role', 'binary-notice');
+      notice.textContent = `${record.name} — ${record.size} bytes — binary file, preview only (not editable)`;
+      this.editorHost.appendChild(notice);
+      return;
+    }
 
     if (editorType === 'text') {
       const text = await this.blobToText(blob);
@@ -206,8 +218,8 @@ export class AppShell {
       this.currentEditor = editor;
 
       // Set up autosave
-      this.editorHost.addEventListener('input', () => this.scheduleAutosave());
-      this.editorHost.addEventListener('keydown', () => this.scheduleAutosave());
+      this.editorHost.addEventListener('input', () => this.scheduleAutosave(), { signal });
+      this.editorHost.addEventListener('keydown', () => this.scheduleAutosave(), { signal });
 
       // Add preview for markdown
       if (record.kind === 'markdown') {
@@ -216,7 +228,7 @@ export class AppShell {
         previewPane.className = 'preview-pane';
         this.editorHost.appendChild(previewPane);
         this.updateMarkdownPreview(editor, previewPane);
-        this.editorHost.addEventListener('input', () => this.updateMarkdownPreview(editor, previewPane));
+        this.editorHost.addEventListener('input', () => this.updateMarkdownPreview(editor, previewPane), { signal });
       }
 
       // Add preview for mermaid
@@ -231,7 +243,7 @@ export class AppShell {
         this.editorHost.addEventListener('input', () => {
           const src = editor.getValue();
           mermaid.render(src);
-        });
+        }, { signal });
       }
 
       // Add format button for JSON
@@ -292,7 +304,21 @@ export class AppShell {
 
   private scheduleAutosave() {
     if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = window.setTimeout(() => this.autosave(), 250);
+    this.pendingSave = () => this.autosave();
+    this.saveTimer = window.setTimeout(() => { void this.flushPendingSave(); }, 250);
+  }
+
+  // Run any scheduled save immediately (synchronously awaited) and clear the
+  // timer. Called on debounce fire AND before teardown so fast switch/delete
+  // within the 250ms window never loses edits.
+  private async flushPendingSave(): Promise<void> {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = undefined;
+    }
+    const save = this.pendingSave;
+    this.pendingSave = undefined;
+    if (save) await save();
   }
 
   private async autosave() {
@@ -305,19 +331,25 @@ export class AppShell {
 
   private scheduleSaveImage(canvas: HTMLCanvasElement) {
     if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = window.setTimeout(async () => {
+    this.pendingSave = async () => {
       if (!this.currentFileId) return;
       const blob = await new Promise<Blob>((resolve, reject) => {
         canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/png');
       });
       await this.store.update(this.currentFileId, blob);
-    }, 250);
+    };
+    this.saveTimer = window.setTimeout(() => { void this.flushPendingSave(); }, 250);
   }
 
-  private clearEditor() {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-      this.saveTimer = undefined;
+  private async clearEditor(): Promise<void> {
+    // Flush any pending debounced save BEFORE destroying the editor, otherwise
+    // edits made within the 250ms window are silently lost on switch/delete.
+    await this.flushPendingSave();
+    // Remove all editor-scoped listeners so stale handlers can't fire against a
+    // destroyed CodeMirror view after another file is opened.
+    if (this.editorAbort) {
+      this.editorAbort.abort();
+      this.editorAbort = undefined;
     }
     if (this.currentEditor) {
       if ('destroy' in this.currentEditor) {

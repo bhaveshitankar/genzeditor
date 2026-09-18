@@ -1,7 +1,7 @@
 // src/editors/TextEditor.ts
 import { EditorView, basicSetup } from 'codemirror';
 import { EditorState, type Extension } from '@codemirror/state';
-import { search, searchKeymap } from '@codemirror/search';
+import { search, searchKeymap, openSearchPanel } from '@codemirror/search';
 import { keymap } from '@codemirror/view';
 import { foldGutter, foldKeymap } from '@codemirror/language';
 import { json } from '@codemirror/lang-json';
@@ -29,5 +29,6 @@ export class TextEditor {
   }
   getValue() { return this.view.state.doc.toString(); }
   setValue(v: string) { this.view.dispatch({ changes: { from: 0, to: this.view.state.doc.length, insert: v } }); }
+  openSearch() { this.view.focus(); openSearchPanel(this.view); }
   destroy() { this.view.destroy(); }
 }

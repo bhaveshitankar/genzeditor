@@ -1,17 +1,29 @@
 // tests/editors/MermaidPreview.test.ts
 import { describe, it, expect } from 'vitest';
-import { buildMermaidFrame, MermaidPreview } from '../../src/editors/MermaidPreview';
+import { escapeHtml, MermaidPreview, MERMAID_FRAME_URL } from '../../src/editors/MermaidPreview';
 
 describe('MermaidPreview', () => {
-  it('embeds the source in the frame document', () => {
-    const html = buildMermaidFrame('graph TD; A-->B');
-    expect(html).toContain('graph TD; A--&gt;B'); // html-escaped into the container
-    expect(html).toContain('mermaid');
+  it('escapes HTML in diagram source', () => {
+    expect(escapeHtml('graph TD; A-->B')).toBe('graph TD; A--&gt;B');
+    expect(escapeHtml('<script>')).toBe('&lt;script&gt;');
   });
-  it('creates a sandboxed iframe without same-origin', () => {
+
+  it('loads mermaid from a same-origin src= frame, never a CDN or srcdoc', () => {
     const host = document.createElement('div');
     const p = new MermaidPreview(host);
-    p.render('graph TD; A-->B');
+    const frame = host.querySelector('iframe')!;
+    // Real same-origin src, not srcdoc (srcdoc inherits embedder CSP -> blocked).
+    expect(frame.getAttribute('srcdoc')).toBeNull();
+    expect(frame.getAttribute('src')).toBe(MERMAID_FRAME_URL);
+    // No external hosts referenced anywhere: works under `script-src 'self'`.
+    expect(MERMAID_FRAME_URL).not.toMatch(/https?:\/\//);
+    expect(MERMAID_FRAME_URL).not.toContain('cdn');
+    p.destroy();
+  });
+
+  it('creates a sandboxed iframe with allow-scripts but NOT allow-same-origin', () => {
+    const host = document.createElement('div');
+    const p = new MermaidPreview(host);
     const frame = host.querySelector('iframe')!;
     expect(frame.getAttribute('sandbox')).toBe('allow-scripts');
     expect(frame.getAttribute('sandbox') || '').not.toContain('allow-same-origin');
