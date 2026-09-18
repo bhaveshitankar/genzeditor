@@ -20,4 +20,11 @@ describe('FileStore', () => {
     await store.remove(rec.id);
     expect(await store.list()).toHaveLength(0);
   });
+
+  it('updates content in place', async () => {
+    const store = new FileStore(new MemoryAdapter());
+    const rec = await store.save('a.txt', new Blob(['x']), 'text');
+    await store.update(rec.id, new Blob(['xyz']));
+    expect((await store.read(rec.id)).size).toBe(3);
+  });
 });

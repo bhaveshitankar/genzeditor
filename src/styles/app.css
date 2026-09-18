@@ -1,0 +1,342 @@
+/* Reset and base */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  line-height: 1.6;
+  color: #333;
+  background: #f5f5f5;
+}
+
+/* Focus rings - high contrast for accessibility */
+*:focus-visible {
+  outline: 3px solid #0066cc;
+  outline-offset: 2px;
+}
+
+button, a, input, textarea {
+  font: inherit;
+}
+
+/* App Shell Layout */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* Header */
+.app-header {
+  background: #0066cc;
+  color: white;
+  padding: 0 1rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-height: 60px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.app-header h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.hamburger {
+  background: transparent;
+  border: none;
+  color: white;
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0.5rem;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hamburger:hover {
+  background: rgba(255,255,255,0.1);
+  border-radius: 4px;
+}
+
+/* File Drawer - Mobile First (collapsed by default) */
+.file-drawer {
+  position: fixed;
+  top: 60px;
+  left: 0;
+  bottom: 0;
+  width: 280px;
+  background: white;
+  border-right: 1px solid #ddd;
+  transform: translateX(-100%);
+  transition: transform 0.3s ease;
+  z-index: 100;
+  overflow-y: auto;
+  box-shadow: 2px 0 4px rgba(0,0,0,0.1);
+}
+
+.file-drawer.open {
+  transform: translateX(0);
+}
+
+.drawer-header {
+  padding: 1rem;
+  border-bottom: 1px solid #eee;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.drawer-header h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.upload-btn {
+  background: #0066cc;
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 80px;
+}
+
+.upload-btn:hover {
+  background: #0052a3;
+}
+
+.upload-btn:active {
+  background: #004080;
+}
+
+[data-role="file-drawer"] {
+  list-style: none;
+  padding: 0;
+}
+
+[data-role="file-drawer"] li {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.file-item {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 0.75rem 1rem;
+  text-align: left;
+  cursor: pointer;
+  min-height: 44px;
+  transition: background 0.15s;
+}
+
+.file-item:hover {
+  background: #f5f5f5;
+}
+
+.file-item:active {
+  background: #e0e0e0;
+}
+
+.delete-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0.5rem;
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 1.2rem;
+  color: #999;
+  transition: color 0.15s;
+}
+
+.delete-btn:hover {
+  color: #d32f2f;
+}
+
+/* Editor Area */
+.editor-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+[data-role="editor-host"] {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: white;
+}
+
+/* Toolbar */
+.toolbar {
+  padding: 0.5rem;
+  border-bottom: 1px solid #ddd;
+  display: flex;
+  gap: 0.5rem;
+  background: #fafafa;
+}
+
+.toolbar button {
+  background: #0066cc;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  min-height: 44px;
+  min-width: 80px;
+  transition: background 0.15s;
+}
+
+.toolbar button:hover {
+  background: #0052a3;
+}
+
+.toolbar button:active {
+  background: #004080;
+}
+
+/* CodeMirror container */
+.cm-editor {
+  flex: 1;
+  overflow: auto;
+  font-size: 14px;
+}
+
+/* Preview Pane */
+.preview-pane {
+  flex: 1;
+  overflow: auto;
+  padding: 1rem;
+  border-left: 1px solid #ddd;
+}
+
+.preview-pane iframe {
+  min-height: 400px;
+}
+
+/* Image Canvas */
+.image-canvas {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1rem auto;
+}
+
+/* Command Palette */
+.command-palette-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+}
+
+.command-palette {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  width: 90%;
+  max-width: 600px;
+  overflow: hidden;
+}
+
+.command-palette input {
+  width: 100%;
+  padding: 1rem;
+  border: none;
+  border-bottom: 1px solid #ddd;
+  font-size: 1rem;
+  min-height: 52px;
+}
+
+.command-palette ul {
+  list-style: none;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.command-palette li {
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  transition: background 0.15s;
+}
+
+.command-palette li:hover {
+  background: #f5f5f5;
+}
+
+.command-palette li.selected {
+  background: #e3f2fd;
+}
+
+/* Desktop: Drawer always visible at >= 720px */
+@media (min-width: 720px) {
+  .hamburger {
+    display: none;
+  }
+
+  .file-drawer {
+    position: static;
+    transform: translateX(0);
+    box-shadow: none;
+  }
+
+  .app-shell {
+    flex-direction: row;
+  }
+
+  .app-header {
+    flex-direction: column;
+    width: 280px;
+    min-height: 0;
+    padding: 1rem;
+  }
+
+  .editor-area {
+    flex: 1;
+  }
+
+  [data-role="editor-host"] {
+    flex-direction: row;
+  }
+
+  .preview-pane {
+    width: 50%;
+  }
+
+  .cm-editor {
+    width: 50%;
+  }
+}
+
+/* Touch target enforcement for mobile */
+@media (hover: none) and (pointer: coarse) {
+  button, a, input[type="file"] + span {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

@@ -30,6 +30,11 @@ export class FileStore {
     await this.adapter.put(id, await this.adapter.get(id), meta);
   }
   async remove(id: string): Promise<void> { await this.adapter.del(id); }
+  async update(id: string, data: Blob): Promise<void> {
+    const found = (await this.adapter.entries()).find(([k]) => k === id);
+    if (!found) throw new Error('not found');
+    await this.adapter.put(id, data, { ...found[1], size: data.size, updatedAt: Date.now() });
+  }
 }
 
 // OpfsAdapter used in production (not exercised in jsdom tests).
