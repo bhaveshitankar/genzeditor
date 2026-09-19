@@ -10,7 +10,7 @@ ALLOWED_ORIGIN = "https://anyedits-aay.pages.dev"
 # src/api/client.ts. RECONCILE to the real deployed Worker URL
 # (anyedits-api.<subdomain>.workers.dev) after `wrangler deploy`; must match the
 # OAuth app redirect URIs registered in Google/GitHub.
-API_BASE_URL = "https://anyedits-api.workers.dev"
+API_BASE_URL = "https://anyedits-api.skillmesh.workers.dev"
 
 [[d1_databases]]
 binding = "DB"

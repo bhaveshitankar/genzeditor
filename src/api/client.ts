@@ -2,7 +2,7 @@
 // matching API_BASE_URL in worker/wrangler.toml. RECONCILE to the real deployed
 // Worker URL (anyedits-api.<subdomain>.workers.dev) after `wrangler deploy`;
 // must match the OAuth app redirect URIs registered in Google/GitHub.
-export const API_BASE = (import.meta.env?.VITE_API_BASE) ?? 'https://anyedits-api.workers.dev';
+export const API_BASE = (import.meta.env?.VITE_API_BASE) ?? 'https://anyedits-api.skillmesh.workers.dev';
 
 export interface MeState { authenticated: boolean; email?: string | null; csrfToken?: string }
 
