@@ -1,16 +1,28 @@
 import type { Env } from './env';
+import { handle } from './router';
+import { sweepExpired } from './retention';
+import { presignS3 } from './sigv4';
+
+async function deleteObject(env: Env, key: string): Promise<void> {
+  const url = await presignS3({
+    method: 'DELETE',
+    endpoint: env.FILEBASE_ENDPOINT,
+    region: env.FILEBASE_REGION,
+    bucket: env.FILEBASE_BUCKET,
+    key,
+    accessKey: env.FILEBASE_KEY,
+    secretKey: env.FILEBASE_SECRET,
+    expiresSeconds: 60,
+    now: new Date(),
+  });
+  await fetch(url, { method: 'DELETE' }).catch(() => {});
+}
 
 export default {
-  async fetch(req: Request, _env: Env, _ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(req.url);
-    if (req.method === 'GET' && url.pathname === '/api/health') {
-      return new Response(JSON.stringify({ ok: true }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-    return new Response(JSON.stringify({ error: 'not_found' }), {
-      status: 404,
-      headers: { 'content-type': 'application/json' },
-    });
+  async fetch(req: Request, env: Env): Promise<Response> {
+    return handle(req, env);
+  },
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(sweepExpired(env, (key) => deleteObject(env, key)));
   },
 } satisfies ExportedHandler<Env>;

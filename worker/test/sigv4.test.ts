@@ -38,4 +38,10 @@ describe('presignS3', () => {
     const url = await presignS3({ method: 'GET', ...base });
     expect(new URL(url).searchParams.get('X-Amz-SignedHeaders')).toBe('host');
   });
+
+  it('signs DELETE with only host', async () => {
+    const url = await presignS3({ method: 'DELETE', ...base });
+    expect(new URL(url).searchParams.get('X-Amz-SignedHeaders')).toBe('host');
+    expect(new URL(url).searchParams.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/);
+  });
 });
