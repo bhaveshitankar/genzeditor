@@ -41,6 +41,22 @@ export async function resolveShare(token: string): Promise<{
   return res.json();
 }
 
+// Ask the Worker to presign a PUT bound to the ACTUAL new blob size (with the
+// owner's quota delta re-checked) before writing an rw snapshot back in place.
+export async function initSaveBack(
+  token: string,
+  size: number,
+  csrfToken?: string,
+): Promise<{ uploadUrl: string }> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+  const res = await fetch(`${API_BASE}/api/share/${token}/save`, {
+    method: 'POST', credentials: 'include', headers, body: JSON.stringify({ size }),
+  });
+  if (!res.ok) throw new Error((await res.json() as { error: string }).error);
+  return res.json();
+}
+
 export function loginUrl(provider: 'google' | 'github'): string {
   return `${API_BASE}/api/auth/${provider}/start`;
 }

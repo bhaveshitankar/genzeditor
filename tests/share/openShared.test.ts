@@ -26,27 +26,40 @@ describe('openFromHash', () => {
     expect(r?.blob?.size).toBe(3);
   });
 
-  it('surfaces an uploadUrl for rw shares and can save back', async () => {
+  it('surfaces the token for rw shares and saves back via initSaveBack then PUT', async () => {
     const api = {
-      resolveShare: vi.fn(async () => ({ access: 'rw' as const, storageKind: 'filebase' as const, contentType: 'text/plain', title: 'doc.txt', downloadUrl: 'https://get', uploadUrl: 'https://put' })),
+      resolveShare: vi.fn(async () => ({ access: 'rw' as const, storageKind: 'filebase' as const, contentType: 'text/plain', title: 'doc.txt', downloadUrl: 'https://get' })),
     } as unknown as typeof import('../../src/api/client');
     const fetchBlob = vi.fn(async () => new Blob(['hi'], { type: 'text/plain' }));
     const r = await openFromHash('#t=rwtok', { api, fetchBlob });
     expect(r?.access).toBe('rw');
-    expect(r?.uploadUrl).toBe('https://put');
+    expect(r?.token).toBe('rwtok');
 
+    const initSaveBack = vi.fn(async () => ({ uploadUrl: 'https://put' }));
     const uploadPut = vi.fn(async () => {});
-    await saveBackShared(r!.uploadUrl!, new Blob(['edited']), { uploadPut });
-    expect(uploadPut).toHaveBeenCalledWith('https://put', expect.any(Blob));
+    const edited = new Blob(['edited-longer'], { type: 'text/plain' });
+    await saveBackShared(r!.token!, edited, { api: { initSaveBack }, uploadPut, csrfToken: 'csrf1' });
+    // Save-init is called with the ACTUAL edited size (not the stale share size).
+    expect(initSaveBack).toHaveBeenCalledWith('rwtok', edited.size, 'csrf1');
+    expect(uploadPut).toHaveBeenCalledWith('https://put', edited, 'text/plain');
   });
 
-  it('does not surface an uploadUrl for ro shares', async () => {
+  it('propagates the server error code from save-init (e.g. quota_exceeded)', async () => {
+    const initSaveBack = vi.fn(async () => { throw new Error('quota_exceeded'); });
+    const uploadPut = vi.fn(async () => {});
+    await expect(
+      saveBackShared('rwtok', new Blob(['x']), { api: { initSaveBack }, uploadPut }),
+    ).rejects.toThrow('quota_exceeded');
+    expect(uploadPut).not.toHaveBeenCalled();
+  });
+
+  it('does not surface a token for ro shares', async () => {
     const api = {
       resolveShare: vi.fn(async () => ({ access: 'ro' as const, storageKind: 'filebase' as const, contentType: 'text/plain', title: 'doc.txt', downloadUrl: 'https://get' })),
     } as unknown as typeof import('../../src/api/client');
     const fetchBlob = vi.fn(async () => new Blob(['hi'], { type: 'text/plain' }));
     const r = await openFromHash('#t=rotok', { api, fetchBlob });
     expect(r?.access).toBe('ro');
-    expect(r?.uploadUrl).toBeUndefined();
+    expect(r?.token).toBeUndefined();
   });
 });
