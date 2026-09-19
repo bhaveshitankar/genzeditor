@@ -1,0 +1,18 @@
+name = "anyedits-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-19"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ALLOWED_ORIGIN = "https://anyedits-aay.pages.dev"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "anyedits-db"
+database_id = "01003425-0306-45de-a0fb-4f70642af589"
+
+[triggers]
+crons = ["0 3 * * *"]
+
+[[migrations]]
+tag = "v1"

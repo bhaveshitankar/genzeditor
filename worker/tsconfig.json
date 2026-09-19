@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers"],
+    "lib": ["es2022"],
+    "skipLibCheck": true
+  },
+  "include": ["src", "test"]
+}
