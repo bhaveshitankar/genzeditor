@@ -8,6 +8,7 @@ export default defineWorkersConfig({
         miniflare: {
           d1Databases: ['DB'],
           bindings: {
+            ALLOWED_ORIGIN: 'https://anyedits-aay.pages.dev',
             IP_HASH_SECRET: 'test-ip-secret',
             FILEBASE_KEY: 'AKIATEST',
             FILEBASE_SECRET: 'testsecret',
