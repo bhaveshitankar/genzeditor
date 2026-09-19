@@ -3,7 +3,7 @@ import type { Env } from './env';
 import { json, error, preflight, requireCsrf, originAllowed, timingSafeEqual } from './http';
 import { ownerRef } from './identity';
 import { rateLimit } from './ratelimit';
-import { createShare, confirmShare, resolveShare } from './shares';
+import { createShare, confirmShare, resolveShare, initSaveBack } from './shares';
 import { getSession, createSession, deleteSession, parseCookies, sessionCookie, csrfCookie, clearCookie } from './sessions';
 import { pkcePair, buildAuthUrl, exchangeCode } from './oauth';
 
@@ -105,6 +105,17 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     const r = await confirmShare(env, b.shareId, owner);
     if (!r.ok) return error(r.error, env, 400);
     return json({ ok: true }, env);
+  }
+
+  m = path.match(/^\/api\/share\/([A-Za-z0-9_-]{22})\/save$/);
+  if (req.method === 'POST' && m) {
+    if (session && !(await requireCsrf(req, session.csrfToken))) return error('csrf', env, 403);
+    if (!session && !originAllowed(req, env)) return error('bad_origin', env, 403);
+    if (!(await rateLimit(env.DB, owner, 'presign', 30, WINDOW)).ok) return error('rate_limited', env, 429);
+    const b = await req.json<{ size: number }>();
+    const r = await initSaveBack(env, m[1]!, b.size);
+    if (!r.ok) return error(r.error, env, r.status);
+    return json({ uploadUrl: r.uploadUrl }, env);
   }
 
   m = path.match(/^\/api\/share\/([A-Za-z0-9_-]{22})$/);

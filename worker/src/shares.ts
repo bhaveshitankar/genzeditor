@@ -1,7 +1,7 @@
 // worker/src/shares.ts
 import type { Env } from './env';
 import { generateToken, hashToken } from './tokens';
-import { checkQuota, reserveLedger, recordLedger } from './quota';
+import { checkQuota, reserveLedger, recordLedger, currentUsage, capFor, MAX_FILE } from './quota';
 import { presignPut, presignGet } from './filebase';
 
 const RETAIN_ANON_MS = 7 * 24 * 60 * 60 * 1000;
@@ -108,11 +108,53 @@ export async function resolveShare(
     return { ok: true, access: row.access, storageKind: 'embedded', contentType: row.content_type, title: row.title };
   }
   const downloadUrl = await presignGet(env, row.object_key!, now);
-  // rw shares (raw-token gated) also get a content-length-bound presigned PUT so
-  // the holder can replace the snapshot in place (spec §3). ro stays GET-only.
-  if (row.access === 'rw') {
-    const uploadUrl = await presignPut(env, row.object_key!, row.size_bytes, now);
-    return { ok: true, access: row.access, storageKind: 'filebase', contentType: row.content_type, title: row.title, downloadUrl, uploadUrl, sizeBytes: row.size_bytes };
-  }
+  // ro and rw both get a GET. rw save-back is NOT done via a resolve-time PUT
+  // (that would be bound to the STALE size and break any length-changing edit).
+  // The holder instead calls POST /api/share/:token/save (initSaveBack) to get a
+  // PUT presigned against the ACTUAL new size, with the owner's quota delta
+  // re-checked. The client already holds the raw token, so nothing extra is
+  // returned here beyond `access:'rw'` marking the share writable.
   return { ok: true, access: row.access, storageKind: 'filebase', contentType: row.content_type, title: row.title, downloadUrl };
+}
+
+// Presign a PUT bound to the ACTUAL new size for an rw share's snapshot, so a
+// length-changing edit can be written back in place. Re-checks the owner's
+// quota for the DELTA (currentUsage - oldSize + newSize <= cap) and updates the
+// share row + the object's ledger entry to reflect the new size.
+export async function initSaveBack(
+  env: Env,
+  rawToken: string,
+  newSize: number,
+  now = new Date(),
+): Promise<{ ok: true; uploadUrl: string } | { ok: false; error: string; status: number }> {
+  const tokenHash = await hashToken(rawToken);
+  const nowMs = now.getTime();
+  const row = await env.DB.prepare(
+    'SELECT access, storage_kind, object_key, owner_ref, size_bytes, expires_at, revoked FROM shares WHERE token_hash = ?',
+  ).bind(tokenHash).first<{
+    access: 'ro' | 'rw'; storage_kind: 'embedded' | 'filebase'; object_key: string | null;
+    owner_ref: string; size_bytes: number; expires_at: number; revoked: number;
+  }>();
+  if (!row || row.revoked === 1 || row.expires_at < nowMs || row.storage_kind !== 'filebase' || !row.object_key) {
+    return { ok: false, error: 'not_found', status: 404 };
+  }
+  if (row.access !== 'rw') return { ok: false, error: 'forbidden', status: 403 };
+  if (!Number.isFinite(newSize) || newSize <= 0) return { ok: false, error: 'invalid_size', status: 400 };
+  if (newSize > MAX_FILE) return { ok: false, error: 'file_too_large', status: 400 };
+
+  // Quota re-check against the OWNER for the delta. rw shares are login-gated at
+  // creation, so the owner is always a logged-in user (CAP_USER).
+  const usage = await currentUsage(env.DB, row.owner_ref, nowMs);
+  if (usage - row.size_bytes + newSize > capFor(true)) {
+    return { ok: false, error: 'quota_exceeded', status: 400 };
+  }
+
+  const uploadUrl = await presignPut(env, row.object_key, newSize, now);
+
+  // The object is replaced in place at the same key: reflect the new size in the
+  // share row and the ledger so accounting stays correct.
+  await env.DB.prepare('UPDATE shares SET size_bytes = ? WHERE token_hash = ?').bind(newSize, tokenHash).run();
+  await env.DB.prepare('UPDATE quota_ledger SET size_bytes = ? WHERE object_key = ?').bind(newSize, row.object_key).run();
+
+  return { ok: true, uploadUrl };
 }

@@ -1,8 +1,8 @@
 // worker/test/shares.test.ts
 import { env } from 'cloudflare:test';
 import { describe, it, expect, beforeAll } from 'vitest';
-import { createShare, confirmShare, resolveShare } from '../src/shares';
-import { currentUsage } from '../src/quota';
+import { createShare, confirmShare, resolveShare, initSaveBack } from '../src/shares';
+import { currentUsage, MAX_FILE } from '../src/quota';
 
 const now = new Date('2026-09-19T00:00:00Z');
 
@@ -127,7 +127,7 @@ CREATE TABLE rate_limits (
     if (!second.ok) expect(second.error).toBe('quota_exceeded');
   });
 
-  it('rw resolve returns a presigned PUT, ro resolve does not', async () => {
+  it('rw resolve is GET-only (no stale size-bound PUT); save-back goes through initSaveBack', async () => {
     await env.DB.prepare(
       'INSERT INTO users (id, oauth_provider, oauth_subject, email, created_at) VALUES (?,?,?,?,?)',
     ).bind('uRW', 'google', 'subRW', 'rw@b.co', Date.now()).run();
@@ -142,7 +142,8 @@ CREATE TABLE rate_limits (
       if (res.ok) {
         expect(res.access).toBe('rw');
         expect(res.downloadUrl).toContain('X-Amz-Signature');
-        expect(res.uploadUrl).toContain('X-Amz-Signature');
+        // No stale size-bound PUT is returned at resolve time anymore.
+        expect(res.uploadUrl).toBeUndefined();
       }
     }
     const ro = await createShare(env, {
@@ -158,6 +159,89 @@ CREATE TABLE rate_limits (
         expect(res.uploadUrl).toBeUndefined();
       }
     }
+  });
+
+  it('initSaveBack presigns a PUT for the NEW size and updates size_bytes + ledger', async () => {
+    await env.DB.prepare(
+      'INSERT INTO users (id, oauth_provider, oauth_subject, email, created_at) VALUES (?,?,?,?,?)',
+    ).bind('uSave', 'google', 'subSave', 's@b.co', Date.now()).run();
+    const rw = await createShare(env, {
+      ownerRef: 'uSave', isLoggedIn: true, access: 'rw', storageKind: 'filebase',
+      contentType: 'text/plain', title: 'doc', sizeBytes: 100,
+    }, now);
+    expect(rw.ok).toBe(true);
+    if (!rw.ok) return;
+    await confirmShare(env, rw.shareId, 'uSave', now);
+    expect(await currentUsage(env.DB, 'uSave', now.getTime())).toBe(100);
+
+    const r = await initSaveBack(env, rw.token, 250, now);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.uploadUrl).toContain('X-Amz-Signature');
+
+    // share row + ledger reflect the new size.
+    const share = await env.DB.prepare('SELECT size_bytes FROM shares WHERE id = ?')
+      .bind(rw.shareId).first<{ size_bytes: number }>();
+    expect(share?.size_bytes).toBe(250);
+    expect(await currentUsage(env.DB, 'uSave', now.getTime())).toBe(250);
+  });
+
+  it('initSaveBack rejects ro shares with 403', async () => {
+    await env.DB.prepare(
+      'INSERT INTO users (id, oauth_provider, oauth_subject, email, created_at) VALUES (?,?,?,?,?)',
+    ).bind('uRoSave', 'google', 'subRoSave', 'ro@b.co', Date.now()).run();
+    const ro = await createShare(env, {
+      ownerRef: 'uRoSave', isLoggedIn: true, access: 'ro', storageKind: 'filebase',
+      contentType: 'text/plain', title: 'v', sizeBytes: 10,
+    }, now);
+    expect(ro.ok).toBe(true);
+    if (!ro.ok) return;
+    const r = await initSaveBack(env, ro.token, 20, now);
+    expect(r.ok).toBe(false);
+    if (!r.ok) { expect(r.status).toBe(403); expect(r.error).toBe('forbidden'); }
+  });
+
+  it('initSaveBack rejects oversize (> MAX_FILE) with 400', async () => {
+    await env.DB.prepare(
+      'INSERT INTO users (id, oauth_provider, oauth_subject, email, created_at) VALUES (?,?,?,?,?)',
+    ).bind('uBig', 'google', 'subBig', 'big@b.co', Date.now()).run();
+    const rw = await createShare(env, {
+      ownerRef: 'uBig', isLoggedIn: true, access: 'rw', storageKind: 'filebase',
+      contentType: 'text/plain', title: 'd', sizeBytes: 10,
+    }, now);
+    expect(rw.ok).toBe(true);
+    if (!rw.ok) return;
+    const r = await initSaveBack(env, rw.token, MAX_FILE + 1, now);
+    expect(r.ok).toBe(false);
+    if (!r.ok) { expect(r.status).toBe(400); expect(r.error).toBe('file_too_large'); }
+  });
+
+  it('initSaveBack rejects a new size that would exceed the owner cap (delta)', async () => {
+    await env.DB.prepare(
+      'INSERT INTO users (id, oauth_provider, oauth_subject, email, created_at) VALUES (?,?,?,?,?)',
+    ).bind('uCap2', 'google', 'subCap2', 'cap@b.co', Date.now()).run();
+    // Owner already holds a 450MB ro share (within MAX_FILE).
+    const other = await createShare(env, {
+      ownerRef: 'uCap2', isLoggedIn: true, access: 'ro', storageKind: 'filebase',
+      contentType: 'image/png', title: 'a', sizeBytes: 450 * 1024 * 1024,
+    }, now);
+    expect(other.ok).toBe(true);
+    if (other.ok) await confirmShare(env, other.shareId, 'uCap2', now);
+    // Plus a small rw share.
+    const rw = await createShare(env, {
+      ownerRef: 'uCap2', isLoggedIn: true, access: 'rw', storageKind: 'filebase',
+      contentType: 'text/plain', title: 'd', sizeBytes: 1000,
+    }, now);
+    expect(rw.ok).toBe(true);
+    if (!rw.ok) return;
+    await confirmShare(env, rw.shareId, 'uCap2', now);
+    // Growing rw to 300MB (within MAX_FILE) -> 450MB + 300MB = 750MB > CAP_USER (700MB).
+    const r = await initSaveBack(env, rw.token, 300 * 1024 * 1024, now);
+    expect(r.ok).toBe(false);
+    if (!r.ok) { expect(r.status).toBe(400); expect(r.error).toBe('quota_exceeded'); }
+    // The rejected save must NOT have mutated the share row / ledger.
+    const share = await env.DB.prepare('SELECT size_bytes FROM shares WHERE id = ?')
+      .bind(rw.shareId).first<{ size_bytes: number }>();
+    expect(share?.size_bytes).toBe(1000);
   });
 
   it('rejects rw shares for anonymous owners', async () => {

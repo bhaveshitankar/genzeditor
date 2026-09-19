@@ -121,6 +121,25 @@ CREATE TABLE rate_limits (
     expect(res.status).toBe(200);
   });
 
+  it('rejects save-init for an unknown share token with 404', async () => {
+    const res = await SELF.fetch(`${ORIGIN}/api/share/AAAAAAAAAAAAAAAAAAAAAA/save`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '5.5.5.11', 'Origin': ORIGIN },
+      body: JSON.stringify({ size: 100 }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects a cross-site save-init', async () => {
+    const res = await SELF.fetch(`${ORIGIN}/api/share/AAAAAAAAAAAAAAAAAAAAAA/save`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '5.5.5.12', 'Origin': 'https://evil.example.com' },
+      body: JSON.stringify({ size: 100 }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json<{ error: string }>()).error).toBe('bad_origin');
+  });
+
   it('me returns unauthenticated when no cookie', async () => {
     const res = await SELF.fetch(`${ORIGIN}/api/me`, { headers: { 'CF-Connecting-IP': '5.5.5.6' } });
     expect(res.status).toBe(200);
