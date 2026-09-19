@@ -28,9 +28,14 @@ describe('http helpers', () => {
     expect(preflight(env).status).toBe(204);
   });
 
-  it('requireCsrf compares header to session token', () => {
+  it('requireCsrf compares header to session token (constant-time)', async () => {
     const req = new Request('https://x/', { headers: { 'X-CSRF-Token': 'tok' } });
-    expect(requireCsrf(req, 'tok')).toBe(true);
-    expect(requireCsrf(req, 'other')).toBe(false);
+    expect(await requireCsrf(req, 'tok')).toBe(true);
+    expect(await requireCsrf(req, 'other')).toBe(false);
+    // empty session token is always rejected (M1)
+    expect(await requireCsrf(req, '')).toBe(false);
+    // missing header is rejected
+    const noHeader = new Request('https://x/');
+    expect(await requireCsrf(noHeader, 'tok')).toBe(false);
   });
 });
