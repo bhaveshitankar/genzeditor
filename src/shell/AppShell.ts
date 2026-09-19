@@ -173,6 +173,24 @@ export class AppShell {
     toolbar.appendChild(shareBtn);
   }
 
+  // Serialize the currently-open editor's content as a Blob, for save-back to an
+  // rw share. Returns null when nothing is open.
+  async getCurrentBlob(): Promise<{ blob: Blob; contentType: string } | null> {
+    if (!this.currentEditor) return null;
+    const contentType = this.currentFileKind === 'image' ? 'image/png' : 'text/plain';
+    if (this.currentEditor instanceof TextEditor) {
+      return { blob: new Blob([this.currentEditor.getValue()], { type: contentType }), contentType };
+    }
+    if (this.currentEditor instanceof ImageEditor) {
+      const canvas = this.editorHost.querySelector('canvas') as HTMLCanvasElement;
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/png');
+      });
+      return { blob, contentType: 'image/png' };
+    }
+    return null;
+  }
+
   private async handleShare() {
     if (!this.currentFileId || !this.currentEditor || !this.currentFileKind) return;
 

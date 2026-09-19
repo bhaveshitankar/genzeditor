@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { openFromHash } from '../../src/share/openShared';
+import { openFromHash, saveBackShared } from '../../src/share/openShared';
 import { encodeEmbedded } from '../../src/share/embedded';
 
 describe('openFromHash', () => {
@@ -24,5 +24,29 @@ describe('openFromHash', () => {
     expect(fetchBlob).toHaveBeenCalledWith('https://get');
     expect(r?.kind).toBe('image');
     expect(r?.blob?.size).toBe(3);
+  });
+
+  it('surfaces an uploadUrl for rw shares and can save back', async () => {
+    const api = {
+      resolveShare: vi.fn(async () => ({ access: 'rw' as const, storageKind: 'filebase' as const, contentType: 'text/plain', title: 'doc.txt', downloadUrl: 'https://get', uploadUrl: 'https://put' })),
+    } as unknown as typeof import('../../src/api/client');
+    const fetchBlob = vi.fn(async () => new Blob(['hi'], { type: 'text/plain' }));
+    const r = await openFromHash('#t=rwtok', { api, fetchBlob });
+    expect(r?.access).toBe('rw');
+    expect(r?.uploadUrl).toBe('https://put');
+
+    const uploadPut = vi.fn(async () => {});
+    await saveBackShared(r!.uploadUrl!, new Blob(['edited']), { uploadPut });
+    expect(uploadPut).toHaveBeenCalledWith('https://put', expect.any(Blob));
+  });
+
+  it('does not surface an uploadUrl for ro shares', async () => {
+    const api = {
+      resolveShare: vi.fn(async () => ({ access: 'ro' as const, storageKind: 'filebase' as const, contentType: 'text/plain', title: 'doc.txt', downloadUrl: 'https://get' })),
+    } as unknown as typeof import('../../src/api/client');
+    const fetchBlob = vi.fn(async () => new Blob(['hi'], { type: 'text/plain' }));
+    const r = await openFromHash('#t=rotok', { api, fetchBlob });
+    expect(r?.access).toBe('ro');
+    expect(r?.uploadUrl).toBeUndefined();
   });
 });
