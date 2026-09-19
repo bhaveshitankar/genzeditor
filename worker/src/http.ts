@@ -48,7 +48,7 @@ export function preflight(env: Env): Response {
 // with an ephemeral random key producing fixed-length (32-byte) digests, so the
 // final byte-wise compare runs in time independent of the inputs — closing the
 // timing side channel a naive `===` on the raw tokens would open.
-async function timingSafeEqual(a: string, b: string): Promise<boolean> {
+export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder();
   const keyBytes = crypto.getRandomValues(new Uint8Array(32));
   const key = await crypto.subtle.importKey(
@@ -63,6 +63,24 @@ async function timingSafeEqual(a: string, b: string): Promise<boolean> {
   let diff = 0;
   for (let i = 0; i < da.length; i++) diff |= da[i] ^ db[i];
   return diff === 0;
+}
+
+// Reject cross-site browser-driven mutations: if the request carries an Origin
+// (always sent by browsers on cross-origin POST) or Referer, it must match
+// ALLOWED_ORIGIN. Absent both (non-browser / same-origin clients), allow — this
+// is the anon counterpart to CSRF double-submit for logged-in users.
+export function originAllowed(req: Request, env: Env): boolean {
+  const origin = req.headers.get('Origin');
+  if (origin) return origin === env.ALLOWED_ORIGIN;
+  const referer = req.headers.get('Referer');
+  if (referer) {
+    try {
+      return new URL(referer).origin === env.ALLOWED_ORIGIN;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 export async function requireCsrf(req: Request, sessionCsrf: string): Promise<boolean> {

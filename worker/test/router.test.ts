@@ -47,7 +47,8 @@ CREATE TABLE quota_ledger (
   object_key TEXT NOT NULL,
   size_bytes INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  pending_expires_at INTEGER
 );
 CREATE INDEX idx_ledger_owner ON quota_ledger(owner_ref);
 CREATE INDEX idx_ledger_expires ON quota_ledger(expires_at);
@@ -91,6 +92,33 @@ CREATE TABLE rate_limits (
     });
     expect(resolve.status).toBe(200);
     expect((await resolve.json<{ storageKind: string }>()).storageKind).toBe('embedded');
+  });
+
+  it('rejects an anon share mutation driven from a cross-site Origin', async () => {
+    const res = await SELF.fetch(`${ORIGIN}/api/share`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'CF-Connecting-IP': '5.5.5.9',
+        'Origin': 'https://evil.example.com',
+      },
+      body: JSON.stringify({ access: 'ro', storageKind: 'embedded', contentType: 'text/plain', title: 'x', sizeBytes: 0 }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json<{ error: string }>()).error).toBe('bad_origin');
+  });
+
+  it('allows an anon share mutation from the allowed Origin', async () => {
+    const res = await SELF.fetch(`${ORIGIN}/api/share`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'CF-Connecting-IP': '5.5.5.10',
+        'Origin': ORIGIN,
+      },
+      body: JSON.stringify({ access: 'ro', storageKind: 'embedded', contentType: 'text/plain', title: 'x', sizeBytes: 0 }),
+    });
+    expect(res.status).toBe(200);
   });
 
   it('me returns unauthenticated when no cookie', async () => {

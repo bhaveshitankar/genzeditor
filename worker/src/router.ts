@@ -1,6 +1,6 @@
 // worker/src/router.ts
 import type { Env } from './env';
-import { json, error, preflight, requireCsrf } from './http';
+import { json, error, preflight, requireCsrf, originAllowed, timingSafeEqual } from './http';
 import { ownerRef } from './identity';
 import { rateLimit } from './ratelimit';
 import { createShare, confirmShare, resolveShare } from './shares';
@@ -58,7 +58,10 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     const provider = m[1] as 'google' | 'github';
     const code = url.searchParams.get('code');
     const state = url.searchParams.get('state');
-    if (!code || !state || state !== cookies['oauth_state'] || !cookies['oauth_verifier']) {
+    if (
+      !code || !state || !cookies['oauth_state'] || !cookies['oauth_verifier'] ||
+      !(await timingSafeEqual(state, cookies['oauth_state']))
+    ) {
       return error('bad_oauth_state', env, 400);
     }
     const ex = await exchangeCode(provider, env, code, cookies['oauth_verifier'], redirectUri(env, provider), fetch);
@@ -83,6 +86,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
 
   if (req.method === 'POST' && path === '/api/share') {
     if (session && !(await requireCsrf(req, session.csrfToken))) return error('csrf', env, 403);
+    if (!session && !originAllowed(req, env)) return error('bad_origin', env, 403);
     if (!(await rateLimit(env.DB, owner, 'share', 30, WINDOW)).ok) return error('rate_limited', env, 429);
     const b = await req.json<{ access: 'ro'|'rw'; storageKind: 'embedded'|'filebase'; contentType: string; title: string; sizeBytes: number }>();
     const r = await createShare(env, {
@@ -95,6 +99,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
 
   if (req.method === 'POST' && path === '/api/share/confirm') {
     if (session && !(await requireCsrf(req, session.csrfToken))) return error('csrf', env, 403);
+    if (!session && !originAllowed(req, env)) return error('bad_origin', env, 403);
     if (!(await rateLimit(env.DB, owner, 'presign', 30, WINDOW)).ok) return error('rate_limited', env, 429);
     const b = await req.json<{ shareId: string }>();
     const r = await confirmShare(env, b.shareId, owner);
