@@ -47,12 +47,16 @@ export function parseCookies(header: string | null): Record<string, string> {
   return out;
 }
 
+// SPA (pages.dev) and API (workers.dev) are cross-site (distinct PSL entries),
+// so SameSite=Lax cookies would not be sent on credentialed cross-site fetch.
+// SameSite=None; Secure is required for cross-site auth to work.
 export function sessionCookie(sid: string, maxAgeSeconds: number): string {
-  return `sid=${sid}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}`;
+  return `sid=${sid}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=${maxAgeSeconds}`;
 }
 export function csrfCookie(token: string, maxAgeSeconds: number): string {
-  return `csrf=${token}; Secure; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}`;
+  // No HttpOnly: readable by JS for the double-submit CSRF pattern.
+  return `csrf=${token}; Secure; SameSite=None; Path=/; Max-Age=${maxAgeSeconds}`;
 }
 export function clearCookie(name: string): string {
-  return `${name}=; Secure; SameSite=Lax; Path=/; Max-Age=0`;
+  return `${name}=; Secure; SameSite=None; Path=/; Max-Age=0`;
 }
