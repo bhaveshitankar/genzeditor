@@ -10,9 +10,7 @@ ALLOWED_ORIGIN = "https://anyedits-aay.pages.dev"
 binding = "DB"
 database_name = "anyedits-db"
 database_id = "01003425-0306-45de-a0fb-4f70642af589"
+migrations_dir = "migrations"
 
 [triggers]
 crons = ["0 3 * * *"]
-
-[[migrations]]
-tag = "v1"

@@ -6,6 +6,7 @@ export default defineWorkersConfig({
       workers: {
         wrangler: { configPath: './wrangler.toml' },
         miniflare: {
+          d1Databases: ['DB'],
           bindings: {
             IP_HASH_SECRET: 'test-ip-secret',
             FILEBASE_KEY: 'AKIATEST',

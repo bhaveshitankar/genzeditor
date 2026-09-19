@@ -1,0 +1,93 @@
+// worker/test/schema.test.ts
+import { env } from 'cloudflare:test';
+import { describe, it, expect, beforeAll } from 'vitest';
+
+describe('D1 schema', () => {
+  beforeAll(async () => {
+    const migration = `
+CREATE TABLE users (
+  id TEXT PRIMARY KEY,
+  oauth_provider TEXT NOT NULL,
+  oauth_subject TEXT NOT NULL,
+  email TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE (oauth_provider, oauth_subject)
+);
+
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  csrf_token TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE shares (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  owner_ref TEXT NOT NULL,
+  access TEXT NOT NULL CHECK (access IN ('ro','rw')),
+  storage_kind TEXT NOT NULL CHECK (storage_kind IN ('embedded','filebase')),
+  object_key TEXT,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  content_type TEXT,
+  title TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  revoked INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_shares_owner ON shares(owner_ref);
+CREATE INDEX idx_shares_expires ON shares(expires_at);
+
+CREATE TABLE quota_ledger (
+  id TEXT PRIMARY KEY,
+  owner_ref TEXT NOT NULL,
+  object_key TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX idx_ledger_owner ON quota_ledger(owner_ref);
+CREATE INDEX idx_ledger_expires ON quota_ledger(expires_at);
+
+CREATE TABLE rate_limits (
+  ip_hash TEXT NOT NULL,
+  bucket TEXT NOT NULL,
+  window_start INTEGER NOT NULL,
+  count INTEGER NOT NULL,
+  PRIMARY KEY (ip_hash, bucket)
+);
+    `;
+    const statements = migration
+      .split(';')
+      .map(s => s.trim())
+      .filter(s => s.length > 0 && !s.startsWith('--'));
+
+    for (const stmt of statements) {
+      await env.DB.prepare(stmt).run();
+    }
+  });
+
+  it('has all tables with expected columns', async () => {
+    const cols = async (t: string) => {
+      const r = await env.DB.prepare(`PRAGMA table_info(${t})`).all();
+      return (r.results as Array<{ name: string }>).map((c) => c.name).sort();
+    };
+    expect(await cols('users')).toEqual(
+      ['created_at', 'email', 'id', 'oauth_provider', 'oauth_subject'].sort(),
+    );
+    expect(await cols('sessions')).toEqual(
+      ['csrf_token', 'expires_at', 'id', 'user_id'].sort(),
+    );
+    expect(await cols('shares')).toEqual(
+      ['access', 'content_type', 'created_at', 'expires_at', 'id', 'object_key',
+       'owner_ref', 'revoked', 'size_bytes', 'storage_kind', 'title', 'token_hash'].sort(),
+    );
+    expect(await cols('quota_ledger')).toEqual(
+      ['created_at', 'expires_at', 'id', 'object_key', 'owner_ref', 'size_bytes'].sort(),
+    );
+    expect(await cols('rate_limits')).toEqual(
+      ['bucket', 'count', 'ip_hash', 'window_start'].sort(),
+    );
+  });
+});
