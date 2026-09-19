@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { getMe, createShare, resolveShare, loginUrl } from '../../src/api/client';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('api client', () => {
   it('getMe parses authenticated state', async () => {
@@ -15,7 +17,9 @@ describe('api client', () => {
     vi.stubGlobal('fetch', spy);
     const r = await createShare({ access: 'ro', storageKind: 'embedded', contentType: 'text/plain', title: 'x', sizeBytes: 0 }, 'csrf1');
     expect(r.token).toBe('t');
-    const init = spy.mock.calls[0][1] as RequestInit;
+    expect(spy).toHaveBeenCalled();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const init = (spy.mock.calls as any)[0][1] as RequestInit;
     expect(init.credentials).toBe('include');
     expect((init.headers as Record<string,string>)['X-CSRF-Token']).toBe('csrf1');
   });

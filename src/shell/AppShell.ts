@@ -8,6 +8,9 @@ import { MermaidPreview } from '../editors/MermaidPreview';
 import { formatJson } from '../editors/JsonTools';
 import { editorKindFor } from '../editors/registry';
 import { CommandPalette } from '../ui/CommandPalette';
+import { getMe, API_BASE, type MeState } from '../api/client';
+import { renderAuthBar } from '../auth/authUi';
+import { shareFile } from '../share/shareFlow';
 
 export class AppShell {
   private currentEditor?: TextEditor | ImageEditor;
@@ -24,12 +27,15 @@ export class AppShell {
   private drawer!: HTMLElement;
   private uploadInput!: HTMLInputElement;
   private palette!: CommandPalette;
+  private authBar!: HTMLElement;
+  private meState: MeState = { authenticated: false };
 
   constructor(private root: HTMLElement, private store: FileStore) {
     this.render();
     this.wireUpload();
     this.wirePalette();
     this.wireKeyboard();
+    void this.initAuth();
   }
 
   private async blobToText(blob: Blob): Promise<string> {
@@ -48,6 +54,7 @@ export class AppShell {
         <header class="app-header">
           <button class="hamburger" aria-label="Toggle menu">☰</button>
           <h1>AnyEdits</h1>
+          <div data-role="auth-bar" class="auth-bar"></div>
         </header>
         <aside class="file-drawer">
           <div class="drawer-header">
@@ -68,6 +75,7 @@ export class AppShell {
     this.editorHost = this.root.querySelector('[data-role="editor-host"]')!;
     this.drawer = this.root.querySelector('[data-role="file-drawer"]')!;
     this.uploadInput = this.root.querySelector('input[type="file"]')!;
+    this.authBar = this.root.querySelector('[data-role="auth-bar"]')!;
 
     // Wire hamburger toggle
     const hamburger = this.root.querySelector('.hamburger') as HTMLButtonElement;
@@ -124,6 +132,91 @@ export class AppShell {
         this.palette.open();
       }
     });
+  }
+
+  private async initAuth() {
+    try {
+      this.meState = await getMe();
+    } catch {
+      this.meState = { authenticated: false };
+    }
+    renderAuthBar(this.authBar, this.meState, { onLogout: () => void this.handleLogout() });
+  }
+
+  private async handleLogout() {
+    try {
+      await fetch(`${API_BASE}/api/logout`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: this.meState.csrfToken ? { 'X-CSRF-Token': this.meState.csrfToken } : {},
+      });
+      this.meState = { authenticated: false };
+      renderAuthBar(this.authBar, this.meState, { onLogout: () => void this.handleLogout() });
+    } catch (err) {
+      alert(`Logout failed: ${err}`);
+    }
+  }
+
+  private addShareButton() {
+    const toolbar = this.editorHost.querySelector('.toolbar') || (() => {
+      const t = document.createElement('div');
+      t.className = 'toolbar';
+      this.editorHost.insertBefore(t, this.editorHost.firstChild);
+      return t;
+    })();
+
+    const shareBtn = document.createElement('button');
+    shareBtn.textContent = 'Share';
+    shareBtn.className = 'share-btn';
+    shareBtn.setAttribute('data-role', 'share-btn');
+    shareBtn.addEventListener('click', () => void this.handleShare());
+    toolbar.appendChild(shareBtn);
+  }
+
+  private async handleShare() {
+    if (!this.currentFileId || !this.currentEditor || !this.currentFileKind) return;
+
+    const files = await this.store.list();
+    const record = files.find(f => f.id === this.currentFileId);
+    if (!record) return;
+
+    let text: string | undefined;
+    let blob: Blob | undefined;
+    const contentType = record.kind === 'image' ? 'image/png' : 'text/plain';
+
+    if (this.currentEditor instanceof TextEditor) {
+      text = this.currentEditor.getValue();
+    } else if (this.currentEditor instanceof ImageEditor) {
+      const canvas = this.editorHost.querySelector('canvas') as HTMLCanvasElement;
+      blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/png');
+      });
+    }
+
+    try {
+      const result = await shareFile(
+        {
+          kind: record.kind,
+          text,
+          blob,
+          contentType,
+          title: record.name,
+          isLoggedIn: this.meState.authenticated,
+          wantRw: false,
+          csrfToken: this.meState.csrfToken,
+        }
+      );
+
+      if ('needLogin' in result) {
+        alert(result.needLogin);
+        return;
+      }
+
+      await navigator.clipboard.writeText(result.url);
+      alert(`Share link copied to clipboard!`);
+    } catch (err) {
+      alert(`Share failed: ${err}`);
+    }
   }
 
   private findInEditor() {
@@ -217,6 +310,9 @@ export class AppShell {
       const editor = new TextEditor(this.editorHost, { doc: text, language: record.kind });
       this.currentEditor = editor;
 
+      // Add share button
+      this.addShareButton();
+
       // Set up autosave
       this.editorHost.addEventListener('input', () => this.scheduleAutosave(), { signal });
       this.editorHost.addEventListener('keydown', () => this.scheduleAutosave(), { signal });
@@ -272,6 +368,9 @@ export class AppShell {
       const editor = new ImageEditor(canvas);
       editor.load(img);
       this.currentEditor = editor;
+
+      // Add share button
+      this.addShareButton();
 
       // Add image controls
       const toolbar = document.createElement('div');

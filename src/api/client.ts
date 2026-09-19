@@ -1,4 +1,4 @@
-export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? 'https://anyedits-api.workers.dev';
+export const API_BASE = (import.meta.env?.VITE_API_BASE) ?? 'https://anyedits-api.workers.dev';
 
 export interface MeState { authenticated: boolean; email?: string | null; csrfToken?: string }
 
@@ -16,7 +16,7 @@ export async function createShare(
   const res = await fetch(`${API_BASE}/api/share`, {
     method: 'POST', credentials: 'include', headers, body: JSON.stringify(input),
   });
-  if (!res.ok) throw new Error((await res.json<{ error: string }>()).error);
+  if (!res.ok) throw new Error((await res.json() as { error: string }).error);
   return res.json();
 }
 
@@ -26,14 +26,14 @@ export async function confirmShare(shareId: string, csrfToken?: string): Promise
   const res = await fetch(`${API_BASE}/api/share/confirm`, {
     method: 'POST', credentials: 'include', headers, body: JSON.stringify({ shareId }),
   });
-  if (!res.ok) throw new Error((await res.json<{ error: string }>()).error);
+  if (!res.ok) throw new Error((await res.json() as { error: string }).error);
 }
 
 export async function resolveShare(token: string): Promise<{
   access: 'ro' | 'rw'; storageKind: 'embedded' | 'filebase'; contentType: string | null; title: string | null; downloadUrl?: string;
 }> {
   const res = await fetch(`${API_BASE}/api/share/${token}`, { credentials: 'include' });
-  if (!res.ok) throw new Error((await res.json<{ error: string }>()).error);
+  if (!res.ok) throw new Error((await res.json() as { error: string }).error);
   return res.json();
 }
 
