@@ -1,3 +1,7 @@
+// Default points at the Worker host (which serves the API and OAuth callback),
+// matching API_BASE_URL in worker/wrangler.toml. RECONCILE to the real deployed
+// Worker URL (anyedits-api.<subdomain>.workers.dev) after `wrangler deploy`;
+// must match the OAuth app redirect URIs registered in Google/GitHub.
 export const API_BASE = (import.meta.env?.VITE_API_BASE) ?? 'https://anyedits-api.workers.dev';
 
 export interface MeState { authenticated: boolean; email?: string | null; csrfToken?: string }
@@ -30,7 +34,7 @@ export async function confirmShare(shareId: string, csrfToken?: string): Promise
 }
 
 export async function resolveShare(token: string): Promise<{
-  access: 'ro' | 'rw'; storageKind: 'embedded' | 'filebase'; contentType: string | null; title: string | null; downloadUrl?: string;
+  access: 'ro' | 'rw'; storageKind: 'embedded' | 'filebase'; contentType: string | null; title: string | null; downloadUrl?: string; uploadUrl?: string; sizeBytes?: number;
 }> {
   const res = await fetch(`${API_BASE}/api/share/${token}`, { credentials: 'include' });
   if (!res.ok) throw new Error((await res.json() as { error: string }).error);

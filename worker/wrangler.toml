@@ -5,7 +5,12 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ALLOWED_ORIGIN = "https://anyedits-aay.pages.dev"
-API_BASE_URL = "https://anyedits-aay.pages.dev"
+# API_BASE_URL is the Worker's own public base URL (the OAuth callback is served
+# by the Worker, not Pages), and must match the client's API base in
+# src/api/client.ts. RECONCILE to the real deployed Worker URL
+# (anyedits-api.<subdomain>.workers.dev) after `wrangler deploy`; must match the
+# OAuth app redirect URIs registered in Google/GitHub.
+API_BASE_URL = "https://anyedits-api.workers.dev"
 
 [[d1_databases]]
 binding = "DB"
