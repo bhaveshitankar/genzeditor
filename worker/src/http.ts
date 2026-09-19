@@ -61,7 +61,7 @@ export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
   const da = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(a)));
   const db = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(b)));
   let diff = 0;
-  for (let i = 0; i < da.length; i++) diff |= da[i] ^ db[i];
+  for (let i = 0; i < da.length; i++) diff |= da[i]! ^ db[i]!;
   return diff === 0;
 }
 

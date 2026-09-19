@@ -109,7 +109,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
 
   m = path.match(/^\/api\/share\/([A-Za-z0-9_-]{22})$/);
   if (req.method === 'GET' && m) {
-    const r = await resolveShare(env, m[1]);
+    const r = await resolveShare(env, m[1]!);
     if (!r.ok) return error(r.error, env, 404);
     return json(r, env);
   }
