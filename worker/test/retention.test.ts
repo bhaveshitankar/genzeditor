@@ -47,7 +47,8 @@ CREATE TABLE quota_ledger (
   object_key TEXT NOT NULL,
   size_bytes INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  pending_expires_at INTEGER
 );
 CREATE INDEX idx_ledger_owner ON quota_ledger(owner_ref);
 CREATE INDEX idx_ledger_expires ON quota_ledger(expires_at);
@@ -87,12 +88,47 @@ CREATE TABLE rate_limits (
     ).bind('l2', 'ownerR', 'snapshots/ownerR/sh2', 300, 0, future).run();
 
     const deleted: string[] = [];
-    const res = await sweepExpired(env, async (k) => { deleted.push(k); }, 5000);
+    const res = await sweepExpired(env, async (k) => { deleted.push(k); return true; }, 5000);
 
     expect(res.deletedShares).toBe(1);
     expect(res.deletedLedger).toBe(1);
     expect(res.deletedObjects).toBe(1);
     expect(deleted).toEqual(['snapshots/ownerR/sh1']);
-    expect(await currentUsage(env.DB, 'ownerR')).toBe(300); // freed the expired 500
+    expect(await currentUsage(env.DB, 'ownerR', 5000)).toBe(300); // freed the expired 500
+  });
+
+  it('leaves rows intact and does not free quota when the object delete fails', async () => {
+    const past = 1000;
+    await env.DB.prepare(
+      'INSERT INTO shares (id, token_hash, owner_ref, access, storage_kind, object_key, size_bytes, content_type, title, created_at, expires_at, revoked) VALUES (?,?,?,?,?,?,?,?,?,?,?,0)',
+    ).bind('shFail', 'hFail', 'ownerFail', 'ro', 'filebase', 'snapshots/ownerFail/shFail', 700, 'image/png', 't', 0, past).run();
+    await env.DB.prepare(
+      'INSERT INTO quota_ledger (id, owner_ref, object_key, size_bytes, created_at, expires_at, pending_expires_at) VALUES (?,?,?,?,?,?,NULL)',
+    ).bind('lFail', 'ownerFail', 'snapshots/ownerFail/shFail', 700, 0, past).run();
+
+    const res = await sweepExpired(env, async () => false, 5000); // object delete fails
+    expect(res.deletedObjects).toBe(0);
+    expect(res.deletedLedger).toBe(0);
+    expect(res.deletedShares).toBe(0);
+    // Row untouched: quota still charged, share row still present.
+    expect(await currentUsage(env.DB, 'ownerFail', 5000)).toBe(700);
+    const still = await env.DB.prepare('SELECT id FROM shares WHERE id = ?').bind('shFail').first();
+    expect(still).toBeTruthy();
+  });
+
+  it('reclaims abandoned pending reservations past their pending_expires_at', async () => {
+    // Pending reservation created long ago, never confirmed; pending window lapsed.
+    await env.DB.prepare(
+      'INSERT INTO shares (id, token_hash, owner_ref, access, storage_kind, object_key, size_bytes, content_type, title, created_at, expires_at, revoked) VALUES (?,?,?,?,?,?,?,?,?,?,?,0)',
+    ).bind('shPend', 'hPend', 'ownerPend', 'ro', 'filebase', 'snapshots/ownerPend/shPend', 250, 'image/png', 't', 0, 10_000_000_000_000).run();
+    await env.DB.prepare(
+      'INSERT INTO quota_ledger (id, owner_ref, object_key, size_bytes, created_at, expires_at, pending_expires_at) VALUES (?,?,?,?,?,?,?)',
+    ).bind('lPend', 'ownerPend', 'snapshots/ownerPend/shPend', 250, 0, 10_000_000_000_000, 2000).run();
+
+    const deleted: string[] = [];
+    const res = await sweepExpired(env, async (k) => { deleted.push(k); return true; }, 5000);
+    expect(deleted).toContain('snapshots/ownerPend/shPend');
+    expect(res.deletedObjects).toBeGreaterThanOrEqual(1);
+    expect(await currentUsage(env.DB, 'ownerPend', 5000)).toBe(0);
   });
 });

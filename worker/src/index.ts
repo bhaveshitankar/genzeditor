@@ -3,7 +3,10 @@ import { handle } from './router';
 import { sweepExpired } from './retention';
 import { presignS3 } from './sigv4';
 
-async function deleteObject(env: Env, key: string): Promise<void> {
+// Returns true only when the object is confirmed gone (2xx, or 404 = already
+// absent). Any network error or non-success status returns false so retention
+// leaves the row for the next run instead of orphaning the object.
+async function deleteObject(env: Env, key: string): Promise<boolean> {
   const url = await presignS3({
     method: 'DELETE',
     endpoint: env.FILEBASE_ENDPOINT,
@@ -15,7 +18,12 @@ async function deleteObject(env: Env, key: string): Promise<void> {
     expiresSeconds: 60,
     now: new Date(),
   });
-  await fetch(url, { method: 'DELETE' }).catch(() => {});
+  try {
+    const res = await fetch(url, { method: 'DELETE' });
+    return res.ok || res.status === 404;
+  } catch {
+    return false;
+  }
 }
 
 export default {
