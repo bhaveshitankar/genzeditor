@@ -49,7 +49,8 @@ CREATE TABLE quota_ledger (
   object_key TEXT NOT NULL,
   size_bytes INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  pending_expires_at INTEGER
 );
 CREATE INDEX idx_ledger_owner ON quota_ledger(owner_ref);
 CREATE INDEX idx_ledger_expires ON quota_ledger(expires_at);
@@ -87,7 +88,8 @@ CREATE TABLE rate_limits (
     expect(await currentUsage(env.DB, 'ownerE')).toBe(0);
   });
 
-  it('creates a filebase share returning a presigned PUT, then confirm charges quota', async () => {
+  it('reserves quota at create (cannot be bypassed), and confirm does not double-charge', async () => {
+    const nowMs = now.getTime();
     const r = await createShare(env, {
       ownerRef: 'ownerF', isLoggedIn: false, access: 'ro', storageKind: 'filebase',
       contentType: 'image/png', title: 'pic', sizeBytes: 1000,
@@ -96,13 +98,65 @@ CREATE TABLE rate_limits (
     if (r.ok) {
       expect(r.uploadUrl).toContain('X-Amz-Signature');
       expect(r.objectKey).toBeTruthy();
-      expect(await currentUsage(env.DB, 'ownerF')).toBe(0); // not charged until confirm
+      // C1: create alone consumes quota so the cap cannot be bypassed.
+      expect(await currentUsage(env.DB, 'ownerF', nowMs)).toBe(1000);
       const c = await confirmShare(env, r.shareId, 'ownerF', now);
       expect(c.ok).toBe(true);
-      expect(await currentUsage(env.DB, 'ownerF')).toBe(1000);
+      // confirm clears the pending flag but does not double-charge.
+      expect(await currentUsage(env.DB, 'ownerF', nowMs)).toBe(1000);
       const res = await resolveShare(env, r.token, now);
       expect(res.ok).toBe(true);
       if (res.ok) expect(res.downloadUrl).toContain('X-Amz-Signature');
+    }
+  });
+
+  it('rejects a second create that would exceed the cap (create-time reservation)', async () => {
+    const nowMs = now.getTime();
+    const first = await createShare(env, {
+      ownerRef: 'ownerCap', isLoggedIn: false, access: 'ro', storageKind: 'filebase',
+      contentType: 'image/png', title: 'a', sizeBytes: 400 * 1024 * 1024,
+    }, now);
+    expect(first.ok).toBe(true);
+    expect(await currentUsage(env.DB, 'ownerCap', nowMs)).toBe(400 * 1024 * 1024);
+    // Second create pushes over CAP_ANON (500MB) even without confirming the first.
+    const second = await createShare(env, {
+      ownerRef: 'ownerCap', isLoggedIn: false, access: 'ro', storageKind: 'filebase',
+      contentType: 'image/png', title: 'b', sizeBytes: 200 * 1024 * 1024,
+    }, now);
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error).toBe('quota_exceeded');
+  });
+
+  it('rw resolve returns a presigned PUT, ro resolve does not', async () => {
+    await env.DB.prepare(
+      'INSERT INTO users (id, oauth_provider, oauth_subject, email, created_at) VALUES (?,?,?,?,?)',
+    ).bind('uRW', 'google', 'subRW', 'rw@b.co', Date.now()).run();
+    const rw = await createShare(env, {
+      ownerRef: 'uRW', isLoggedIn: true, access: 'rw', storageKind: 'filebase',
+      contentType: 'image/png', title: 'edit', sizeBytes: 10,
+    }, now);
+    expect(rw.ok).toBe(true);
+    if (rw.ok) {
+      const res = await resolveShare(env, rw.token, now);
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.access).toBe('rw');
+        expect(res.downloadUrl).toContain('X-Amz-Signature');
+        expect(res.uploadUrl).toContain('X-Amz-Signature');
+      }
+    }
+    const ro = await createShare(env, {
+      ownerRef: 'uRW', isLoggedIn: true, access: 'ro', storageKind: 'filebase',
+      contentType: 'image/png', title: 'view', sizeBytes: 10,
+    }, now);
+    expect(ro.ok).toBe(true);
+    if (ro.ok) {
+      const res = await resolveShare(env, ro.token, now);
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.downloadUrl).toContain('X-Amz-Signature');
+        expect(res.uploadUrl).toBeUndefined();
+      }
     }
   });
 

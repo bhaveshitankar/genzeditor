@@ -48,7 +48,8 @@ CREATE TABLE quota_ledger (
   object_key TEXT NOT NULL,
   size_bytes INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  pending_expires_at INTEGER
 );
 CREATE INDEX idx_ledger_owner ON quota_ledger(owner_ref);
 CREATE INDEX idx_ledger_expires ON quota_ledger(expires_at);
@@ -97,8 +98,10 @@ CREATE TABLE rate_limits (
   it('parses cookies and builds secure cookies', () => {
     expect(parseCookies('sid=abc; csrf=xyz')).toEqual({ sid: 'abc', csrf: 'xyz' });
     expect(sessionCookie('abc', 60)).toContain('HttpOnly');
-    expect(sessionCookie('abc', 60)).toContain('SameSite=Lax');
+    expect(sessionCookie('abc', 60)).toContain('SameSite=None');
     expect(sessionCookie('abc', 60)).toContain('Secure');
+    expect(csrfCookie('xyz', 60)).toContain('SameSite=None');
+    expect(csrfCookie('xyz', 60)).toContain('Secure');
     expect(csrfCookie('xyz', 60)).not.toContain('HttpOnly');
     expect(clearCookie('sid')).toContain('Max-Age=0');
   });

@@ -45,7 +45,8 @@ CREATE TABLE quota_ledger (
   object_key TEXT NOT NULL,
   size_bytes INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  pending_expires_at INTEGER
 );
 CREATE INDEX idx_ledger_owner ON quota_ledger(owner_ref);
 CREATE INDEX idx_ledger_expires ON quota_ledger(expires_at);
@@ -84,7 +85,7 @@ CREATE TABLE rate_limits (
        'owner_ref', 'revoked', 'size_bytes', 'storage_kind', 'title', 'token_hash'].sort(),
     );
     expect(await cols('quota_ledger')).toEqual(
-      ['created_at', 'expires_at', 'id', 'object_key', 'owner_ref', 'size_bytes'].sort(),
+      ['created_at', 'expires_at', 'id', 'object_key', 'owner_ref', 'pending_expires_at', 'size_bytes'].sort(),
     );
     expect(await cols('rate_limits')).toEqual(
       ['bucket', 'count', 'ip_hash', 'window_start'].sort(),

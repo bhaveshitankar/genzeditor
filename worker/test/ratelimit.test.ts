@@ -46,7 +46,8 @@ CREATE TABLE quota_ledger (
   object_key TEXT NOT NULL,
   size_bytes INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  pending_expires_at INTEGER
 );
 CREATE INDEX idx_ledger_owner ON quota_ledger(owner_ref);
 CREATE INDEX idx_ledger_expires ON quota_ledger(expires_at);
