@@ -9,6 +9,7 @@ export default defineWorkersConfig({
           d1Databases: ['DB'],
           bindings: {
             ALLOWED_ORIGIN: 'https://anyedits-aay.pages.dev',
+            API_BASE_URL: 'https://anyedits-aay.pages.dev',
             IP_HASH_SECRET: 'test-ip-secret',
             FILEBASE_KEY: 'AKIATEST',
             FILEBASE_SECRET: 'testsecret',

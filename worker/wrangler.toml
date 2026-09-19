@@ -5,6 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ALLOWED_ORIGIN = "https://anyedits-aay.pages.dev"
+API_BASE_URL = "https://anyedits-aay.pages.dev"
 
 [[d1_databases]]
 binding = "DB"
