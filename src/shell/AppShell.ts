@@ -28,6 +28,10 @@ import { THEMES, applyTheme, getSavedTheme } from '../theme/themes';
 import { validatorFor } from '../editors/validate';
 
 export class AppShell {
+  // localStorage key holding the id of the last-opened file, so a refresh can
+  // reopen it rather than landing on the empty state.
+  private static readonly LAST_FILE_KEY = 'anyedits:lastFileId';
+
   private currentEditor?: TextEditor;
   private currentDoc?: DocEditor;
   private currentPreview?: MermaidPreview;
@@ -1391,6 +1395,21 @@ export class AppShell {
     handle.addEventListener('pointercancel', end);
   }
 
+  // Reopen the file that was open before the last refresh, if it still exists.
+  // Returns true when a file was reopened. Safe to call on startup.
+  async restoreLastFile(): Promise<boolean> {
+    let id: string | null = null;
+    try { id = localStorage.getItem(AppShell.LAST_FILE_KEY); } catch { /* storage unavailable */ }
+    if (!id) return false;
+    const files = await this.store.list();
+    if (!files.some(f => f.id === id)) {
+      try { localStorage.removeItem(AppShell.LAST_FILE_KEY); } catch { /* ignore */ }
+      return false;
+    }
+    await this.openFile(id);
+    return true;
+  }
+
   async openFile(id: string): Promise<void> {
     const files = await this.store.list();
     const record = files.find(f => f.id === id);
@@ -1401,6 +1420,9 @@ export class AppShell {
     this.currentFileId = id;
     this.currentFileKind = record.kind;
     this.markActiveFile(id);
+    // Remember the open file so a page refresh can reopen it instead of
+    // dropping back to the empty state.
+    try { localStorage.setItem(AppShell.LAST_FILE_KEY, id); } catch { /* storage unavailable */ }
     this.closeDrawer();
 
     const blob = await this.store.read(id);
@@ -1749,6 +1771,7 @@ export class AppShell {
     }
     this.currentFileId = undefined;
     this.currentFileKind = undefined;
+    try { localStorage.removeItem(AppShell.LAST_FILE_KEY); } catch { /* storage unavailable */ }
     const panel = this.root.querySelector('[data-role="file-actions"]') as HTMLElement | null;
     if (panel) { panel.innerHTML = ''; panel.hidden = true; }
     const empty = this.root.querySelector('[data-role="inspector-empty"]') as HTMLElement | null;

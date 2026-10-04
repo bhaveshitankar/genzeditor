@@ -80,7 +80,12 @@ export async function mount(root: HTMLElement): Promise<void> {
   };
 
   const opened = await openShared();
-  if (!opened) await shell.refreshLibrary();
+  if (!opened) {
+    await shell.refreshLibrary();
+    // No share link: reopen the file that was open before the refresh so work
+    // resumes in place instead of dropping to the empty state.
+    await shell.restoreLastFile();
+  }
 
   // Clearing the hash after opening avoids re-triggering on refresh; but we
   // still listen so a link pasted into this tab opens live.
