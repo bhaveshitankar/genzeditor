@@ -2,17 +2,21 @@ import { describe, it, expect, vi } from 'vitest';
 import { renderAuthBar, loginIncentive } from '../../src/auth/authUi';
 
 describe('authUi', () => {
-  it('shows provider links when signed out', () => {
+  it('shows a single Sign in button that opens the sign-in flow when signed out', () => {
     const host = document.createElement('div');
-    renderAuthBar(host, { authenticated: false }, { onLogout: () => {} });
-    expect(host.querySelector('a[data-provider="google"]')).toBeTruthy();
-    expect(host.querySelector('a[data-provider="github"]')).toBeTruthy();
+    const onSignIn = vi.fn();
+    renderAuthBar(host, { authenticated: false }, { onLogout: () => {}, onSignIn });
+    const btn = host.querySelector('button[data-role="signin"]') as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    expect(btn.textContent).toBe('Sign in');
+    btn.click();
+    expect(onSignIn).toHaveBeenCalled();
   });
 
   it('shows email and logout when signed in', () => {
     const host = document.createElement('div');
     const onLogout = vi.fn();
-    renderAuthBar(host, { authenticated: true, email: 'a@b.co', csrfToken: 'c' }, { onLogout });
+    renderAuthBar(host, { authenticated: true, email: 'a@b.co', csrfToken: 'c' }, { onLogout, onSignIn: () => {} });
     expect(host.textContent).toContain('a@b.co');
     (host.querySelector('button[data-role="logout"]') as HTMLButtonElement).click();
     expect(onLogout).toHaveBeenCalled();

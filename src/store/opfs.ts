@@ -13,11 +13,17 @@ export class MemoryAdapter implements StorageAdapter {
 export class FileStore {
   constructor(private adapter: StorageAdapter) {}
   async list(): Promise<FileRecord[]> {
-    return (await this.adapter.entries()).map(([, m]) => m).sort((a, b) => b.updatedAt - a.updatedAt);
+    // Stable oldest-first order (upload/creation order) so the file list never
+    // reshuffles when a file is edited. Legacy records without createdAt fall
+    // back to updatedAt.
+    return (await this.adapter.entries())
+      .map(([, m]) => m)
+      .sort((a, b) => (a.createdAt ?? a.updatedAt) - (b.createdAt ?? b.updatedAt));
   }
   async save(name: string, data: Blob, kind: FileKind): Promise<FileRecord> {
     const id = crypto.randomUUID();
-    const rec: FileRecord = { id, name, kind, size: data.size, updatedAt: Date.now() };
+    const now = Date.now();
+    const rec: FileRecord = { id, name, kind, size: data.size, updatedAt: now, createdAt: now };
     await this.adapter.put(id, data, rec);
     return rec;
   }
@@ -34,6 +40,14 @@ export class FileStore {
     const found = (await this.adapter.entries()).find(([k]) => k === id);
     if (!found) throw new Error('not found');
     await this.adapter.put(id, data, { ...found[1], size: data.size, updatedAt: Date.now() });
+  }
+  // Update metadata (e.g. tracked share links) without touching the stored blob.
+  async updateMeta(id: string, patch: Partial<FileRecord>): Promise<FileRecord> {
+    const found = (await this.adapter.entries()).find(([k]) => k === id);
+    if (!found) throw new Error('not found');
+    const meta = { ...found[1], ...patch };
+    await this.adapter.put(id, await this.adapter.get(id), meta);
+    return meta;
   }
 }
 

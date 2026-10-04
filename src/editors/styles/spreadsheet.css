@@ -1,0 +1,20 @@
+/* Spreadsheet editor — NEW styles only.
+   (Base grid/cellbar/ops styles live in app.css, owned by another agent.) */
+
+/* Bold cell formatting (Cmd/Ctrl+B). */
+.sheet-table td.bold { font-weight: 700; }
+
+/* Header highlight for the column/row headers spanning the selection. */
+.sheet-table thead th.hsel,
+.sheet-table th.sheet-rownum.hsel {
+  background: var(--sheet-hsel-bg, rgba(59, 130, 246, 0.22));
+  color: var(--sheet-hsel-fg, inherit);
+}
+
+/* Headers are clickable (whole-column / whole-row selection). */
+.sheet-table thead th,
+.sheet-table th.sheet-rownum { cursor: pointer; user-select: none; }
+.sheet-table thead th.sheet-corner { cursor: default; }
+
+/* Formula cells with an error show a subtle hint colour. */
+.sheet-table td[data-err="1"] { color: var(--sheet-err-fg, #dc2626); }

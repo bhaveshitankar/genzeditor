@@ -18,5 +18,13 @@ database_name = "anyedits-db"
 database_id = "01003425-0306-45de-a0fb-4f70642af589"
 migrations_dir = "migrations"
 
+[[durable_objects.bindings]]
+name = "GAME_ROOM"
+class_name = "GameRoom"
+
+[[migrations]]
+tag = "v1-gameroom"
+new_sqlite_classes = ["GameRoom"]
+
 [triggers]
 crons = ["0 3 * * *"]

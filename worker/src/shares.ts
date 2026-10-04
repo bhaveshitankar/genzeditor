@@ -117,14 +117,23 @@ export async function resolveShare(
   return { ok: true, access: row.access, storageKind: 'filebase', contentType: row.content_type, title: row.title, downloadUrl };
 }
 
-// Presign a PUT bound to the ACTUAL new size for an rw share's snapshot, so a
+// Presign a PUT bound to the ACTUAL new size for a share's snapshot, so a
 // length-changing edit can be written back in place. Re-checks the owner's
 // quota for the DELTA (currentUsage - oldSize + newSize <= cap) and updates the
 // share row + the object's ledger entry to reflect the new size.
+//
+// Authorization: an `rw` share is writable by any holder of the token (that is
+// the whole point of an editable link, and rw is login-gated at creation). An
+// `ro` share is writable ONLY by its owner — this is how the file's owner
+// pushes an update out to everyone holding a read-only link. `requesterOwnerRef`
+// is the caller's ownerRef (userId when logged in, else HMAC ipHash); a match
+// against `row.owner_ref` proves ownership.
 export async function initSaveBack(
   env: Env,
   rawToken: string,
   newSize: number,
+  requesterOwnerRef: string,
+  requesterLoggedIn: boolean,
   now = new Date(),
 ): Promise<{ ok: true; uploadUrl: string } | { ok: false; error: string; status: number }> {
   const tokenHash = await hashToken(rawToken);
@@ -138,14 +147,18 @@ export async function initSaveBack(
   if (!row || row.revoked === 1 || row.expires_at < nowMs || row.storage_kind !== 'filebase' || !row.object_key) {
     return { ok: false, error: 'not_found', status: 404 };
   }
-  if (row.access !== 'rw') return { ok: false, error: 'forbidden', status: 403 };
+  const isOwner = row.owner_ref === requesterOwnerRef;
+  // rw: any token holder may save. ro: only the owner may save.
+  if (row.access !== 'rw' && !isOwner) return { ok: false, error: 'forbidden', status: 403 };
   if (!Number.isFinite(newSize) || newSize <= 0) return { ok: false, error: 'invalid_size', status: 400 };
   if (newSize > MAX_FILE) return { ok: false, error: 'file_too_large', status: 400 };
 
   // Quota re-check against the OWNER for the delta. rw shares are login-gated at
-  // creation, so the owner is always a logged-in user (CAP_USER).
+  // creation, so an rw owner is always a logged-in user (CAP_USER); an ro owner
+  // saving their own share is capped by whether THEY are logged in now.
+  const ownerLoggedIn = row.access === 'rw' ? true : requesterLoggedIn;
   const usage = await currentUsage(env.DB, row.owner_ref, nowMs);
-  if (usage - row.size_bytes + newSize > capFor(true)) {
+  if (usage - row.size_bytes + newSize > capFor(ownerLoggedIn)) {
     return { ok: false, error: 'quota_exceeded', status: 400 };
   }
 

@@ -1,8 +1,5 @@
 import type { FileKind } from '../store/types';
-import { encodeEmbedded, fitsEmbedded } from './embedded';
 import * as defaultApi from '../api/client';
-
-const TEXT_FAMILY: FileKind[] = ['text', 'code', 'json', 'markdown', 'mermaid'];
 
 export interface ShareContext {
   kind: FileKind;
@@ -20,34 +17,29 @@ async function defaultUploadPut(url: string, blob: Blob): Promise<void> {
   if (!res.ok) throw new Error('upload_failed');
 }
 
+// Create a tracked, updatable share link. Always uses filebase storage (never
+// an embedded #s= fragment) so the same link can later be updated in place by
+// "Save" — a point-in-time embedded snapshot cannot. Returns the token, shareId
+// and access so the caller can persist the link on the file record and reuse it
+// on repeat Share clicks instead of minting a new document each time.
 export async function shareFile(
   ctx: ShareContext,
   deps?: { api?: typeof import('../api/client'); uploadPut?: (url: string, blob: Blob) => Promise<void> },
-): Promise<{ url: string } | { needLogin: string }> {
+): Promise<{ url: string; token: string; shareId: string; access: 'ro' | 'rw' } | { needLogin: string }> {
   const api = deps?.api ?? defaultApi;
   const uploadPut = deps?.uploadPut ?? defaultUploadPut;
   const origin = typeof location !== 'undefined' ? location.origin : 'https://anyedits-aay.pages.dev';
 
   if (ctx.wantRw && !ctx.isLoggedIn) return { needLogin: 'Sign in to create editable (read-write) links.' };
 
-  const canEmbed = !ctx.wantRw && TEXT_FAMILY.includes(ctx.kind) && ctx.text !== undefined && fitsEmbedded(ctx.text);
-
-  if (canEmbed) {
-    await api.createShare(
-      { access: 'ro', storageKind: 'embedded', contentType: ctx.contentType, title: ctx.title, sizeBytes: 0 },
-      ctx.csrfToken,
-    );
-    const frag = encodeEmbedded(ctx.text!);
-    return { url: `${origin}/#s=${frag}&ct=${encodeURIComponent(ctx.contentType)}` };
-  }
-
+  const access: 'ro' | 'rw' = ctx.wantRw ? 'rw' : 'ro';
   const blob = ctx.blob ?? new Blob([ctx.text ?? ''], { type: ctx.contentType });
   const created = await api.createShare(
-    { access: ctx.wantRw ? 'rw' : 'ro', storageKind: 'filebase', contentType: ctx.contentType, title: ctx.title, sizeBytes: blob.size },
+    { access, storageKind: 'filebase', contentType: ctx.contentType, title: ctx.title, sizeBytes: blob.size },
     ctx.csrfToken,
   );
   if (!created.uploadUrl) throw new Error('no_upload_url');
   await uploadPut(created.uploadUrl, blob);
   await api.confirmShare(created.shareId, ctx.csrfToken);
-  return { url: `${origin}/#t=${created.token}` };
+  return { url: `${origin}/#t=${created.token}`, token: created.token, shareId: created.shareId, access };
 }

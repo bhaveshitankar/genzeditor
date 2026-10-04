@@ -2,19 +2,26 @@ import { describe, it, expect, vi } from 'vitest';
 import { shareFile } from '../../src/share/shareFlow';
 
 describe('shareFile', () => {
-  it('creates an embedded link for a small markdown doc', async () => {
+  it('creates an updatable filebase link (never embedded) for a small text doc', async () => {
+    const uploadPut = vi.fn(async () => {});
     const api = {
-      createShare: vi.fn(async () => ({ token: 'tok', shareId: 's' })),
-      confirmShare: vi.fn(),
+      createShare: vi.fn(async () => ({ token: 'tok', shareId: 's', uploadUrl: 'https://put', objectKey: 'k' })),
+      confirmShare: vi.fn(async () => {}),
     } as unknown as typeof import('../../src/api/client');
     const r = await shareFile(
       { kind: 'markdown', text: '# hi', contentType: 'text/markdown', title: 'n', isLoggedIn: false, wantRw: false },
-      { api },
+      { api, uploadPut },
     );
     expect('url' in r).toBe(true);
-    if ('url' in r) expect(r.url).toContain('#s=');
+    if ('url' in r) {
+      expect(r.url).toContain('#t=tok');
+      expect(r.token).toBe('tok');
+      expect(r.shareId).toBe('s');
+      expect(r.access).toBe('ro');
+    }
     expect(api.createShare).toHaveBeenCalledWith(
-      expect.objectContaining({ storageKind: 'embedded', access: 'ro' }), undefined);
+      expect.objectContaining({ storageKind: 'filebase', access: 'ro' }), undefined);
+    expect(uploadPut).toHaveBeenCalled();
   });
 
   it('uploads to Filebase for an image and returns a token link', async () => {

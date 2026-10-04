@@ -1,0 +1,96 @@
+/* Audiomass-inspired audio editor — themed with the app's design tokens. */
+.aud-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  color: var(--text);
+}
+
+/* Toolbar groups — scroll horizontally on narrow screens. */
+.aud-toolbar {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+}
+.aud-toolbar::-webkit-scrollbar { display: none; }
+.aud-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.aud-group-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint, var(--text-muted));
+  padding: 0 4px;
+}
+
+.aud-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease), transform 0.1s var(--ease);
+}
+.aud-btn:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+.aud-btn:active { transform: translateY(1px); }
+.aud-btn.active {
+  background: color-mix(in srgb, var(--brand-500) 14%, var(--surface));
+  border-color: var(--brand-500);
+  color: var(--text);
+}
+.aud-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.aud-btn.aud-primary {
+  background: var(--brand-gradient, var(--brand-500));
+  border-color: transparent;
+  color: #fff;
+}
+.aud-btn.aud-rec.active { background: #e5484d; border-color: #e5484d; color: #fff; }
+
+/* Waveform surface. */
+.aud-scroll {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm) inset;
+}
+.aud-track { position: relative; height: 176px; }
+.aud-ruler, .aud-wave {
+  display: block;
+  position: absolute;
+  left: 0;
+  cursor: text;
+}
+.aud-ruler { top: 0; height: 24px; cursor: default; }
+.aud-wave { top: 24px; height: 152px; touch-action: none; }
+
+.aud-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-height: 16px;
+  padding: 0 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

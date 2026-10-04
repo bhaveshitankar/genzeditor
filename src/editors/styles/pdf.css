@@ -1,0 +1,148 @@
+/* PdfEditor — layout, thumbnail sidebar, draw controls and vector/shape
+   annotations. Base toolbar / annotation / signature styles live in app.css;
+   this file only adds the pdfhouse-inspired extras. All colours use the app's
+   design tokens so light/dark theming works. */
+
+/* ---- Toolbar groups (mode / style / actions / zoom) --------------------- */
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  /* Hide scrollbar for aesthetics while keeping scrollability. */
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+.pdf-toolbar::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Opera */
+}
+
+.pdf-tool-group {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding-right: 0.5rem;
+  margin-right: 0.25rem;
+  border-right: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.pdf-tool-group:last-of-type { border-right: none; }
+.pdf-style-group .pdf-color {
+  width: 30px; height: 30px; padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.pdf-width {
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.78rem;
+  padding: 0 0.3rem;
+  cursor: pointer;
+}
+
+/* ---- Layout: sidebar + scrollable page column --------------------------- */
+.pdf-layout {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+.pdf-sidebar {
+  flex: 0 0 128px;
+  max-height: 78vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.pdf-main {
+  flex: 1 1 auto;
+  max-height: 82vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+/* ---- Thumbnails --------------------------------------------------------- */
+.pdf-thumb {
+  position: relative;
+  border: 2px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  box-shadow: var(--shadow-sm);
+}
+.pdf-thumb:hover { border-color: var(--border-strong); }
+.pdf-thumb.active { border-color: var(--brand-500); box-shadow: var(--shadow-md); }
+.pdf-thumb.dragging { opacity: 0.4; }
+.pdf-thumb.drop-target { border-color: var(--brand-500); border-style: dashed; }
+.pdf-thumb img {
+  display: block;
+  width: 100%;
+  border-radius: calc(var(--r-sm) - 2px);
+  background: #fff;
+}
+.pdf-thumb-num {
+  position: absolute;
+  bottom: 3px; right: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: var(--r-sm);
+  padding: 0 0.35rem;
+  pointer-events: none;
+}
+.pdf-thumb-check {
+  position: absolute;
+  top: 4px; left: 4px;
+  width: 16px; height: 16px;
+  cursor: pointer;
+  z-index: 2;
+}
+
+/* ---- Shape annotations (rect / circle / image) -------------------------- */
+.pdf-annot-rect,
+.pdf-annot-circle { background: transparent; }
+.pdf-annot-image img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ---- Vector layer (ink / line) ------------------------------------------ */
+.pdf-vector-layer { z-index: 3; }
+.pdf-vector-layer .selected {
+  outline: none;
+  filter: drop-shadow(0 0 2px var(--brand-500));
+}
+
+/* ---- Mobile: horizontal-scroll toolbar, stacked layout ------------------ */
+@media (max-width: 640px) {
+  .pdf-tool-group { padding-right: 0.35rem; }
+  .pdf-layout { flex-direction: column; }
+  .pdf-sidebar {
+    flex-direction: row;
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .pdf-sidebar .pdf-thumb { flex: 0 0 84px; }
+  .pdf-main { max-height: none; width: 100%; }
+}

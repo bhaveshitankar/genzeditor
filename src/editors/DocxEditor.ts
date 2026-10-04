@@ -1,0 +1,511 @@
+import type { DocEditor } from './registry';
+
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+// Normalise a CSS colour (rgb(), #rgb, #rrggbb) to a 6-digit hex without '#',
+// as the docx library expects. Returns undefined for anything unrecognised.
+function toHex(c: string): string | undefined {
+  if (!c) return undefined;
+  const s = c.trim();
+  const rgb = /^rgba?\(([^)]+)\)$/i.exec(s);
+  if (rgb) {
+    const parts = rgb[1]!.split(',').map((p) => parseFloat(p));
+    if (parts.length >= 3) return parts.slice(0, 3).map((n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0')).join('');
+  }
+  const hex = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s);
+  if (hex) {
+    let h = hex[1]!;
+    if (h.length === 3) h = h.split('').map((x) => x + x).join('');
+    return h.toLowerCase();
+  }
+  return undefined;
+}
+
+// DOCX rich-text editor. Imports .docx via mammoth (→ HTML), edits in a
+// contenteditable surface with a formatting toolbar, and exports back to .docx
+// via the `docx` library. Common formatting (headings, bold/italic/underline,
+// lists) survives the round-trip; complex layouts are simplified.
+export class DocxEditor implements DocEditor {
+  private host: HTMLElement;
+  private onChange: () => void;
+  private editable!: HTMLElement;
+  private name: string;
+
+  private constructor(host: HTMLElement, onChange: () => void, name: string) {
+    this.host = host;
+    this.onChange = onChange;
+    this.name = name;
+  }
+
+  static async open(host: HTMLElement, blob: Blob, onChange: () => void, name = 'document.docx'): Promise<DocxEditor> {
+    const ed = new DocxEditor(host, onChange, name);
+    ed.renderShell();
+    if (blob.size > 0) {
+      try {
+        const mammoth = await import('mammoth/mammoth.browser.js');
+        const conv = (mammoth.default ?? mammoth) as { convertToHtml: (i: { arrayBuffer: ArrayBuffer }) => Promise<{ value: string }> };
+        const result = await conv.convertToHtml({ arrayBuffer: await blob.arrayBuffer() });
+        ed.editable.innerHTML = result.value || '<p><br></p>';
+      } catch (err) {
+        ed.editable.innerHTML = `<p>Could not import this document: ${err instanceof Error ? err.message : String(err)}</p>`;
+      }
+    } else {
+      ed.editable.innerHTML = '<p><br></p>';
+    }
+    return ed;
+  }
+
+  destroy(): void { /* host clears its own DOM */ }
+
+  // Build a docx ImageRun from an inline data-URL <img>. Returns null for
+  // external images (the docx lib can't fetch them here). `ImageRun` is passed
+  // in to avoid importing docx at module scope.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private imageRun(img: HTMLImageElement, ImageRun: any): any {
+    const src = img.getAttribute('src') || '';
+    const m = /^data:image\/(png|jpe?g|gif|bmp);base64,(.+)$/i.exec(src);
+    if (!m) return null;
+    const type = m[1]!.toLowerCase() === 'jpeg' ? 'jpg' : m[1]!.toLowerCase();
+    const bin = atob(m[2]!);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    let w = img.naturalWidth || img.width || 240;
+    let h = img.naturalHeight || img.height || 120;
+    const maxW = 450;
+    if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+    return new ImageRun({ type, data: bytes, transformation: { width: w, height: h } });
+  }
+
+  async export(): Promise<{ blob: Blob; contentType: string } | null> {
+    const docx = await import('docx');
+    const { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType, ExternalHyperlink, ShadingType } = docx;
+    type Block = InstanceType<typeof Paragraph> | InstanceType<typeof Table>;
+    const blocks: Block[] = [];
+
+    interface Fmt { bold?: boolean; italics?: boolean; underline?: boolean; strike?: boolean; color?: string; highlight?: string; size?: number; link?: string }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    type Run = any;
+
+    const sizeFromFontTag = (v: string | null): number | undefined => {
+      const map: Record<string, number> = { '1': 8, '2': 10, '3': 12, '4': 14, '5': 18, '6': 24, '7': 36 };
+      return v && map[v] ? map[v] * 2 : undefined; // docx size is half-points
+    };
+
+    const runsFrom = (node: Node): Run[] => {
+      const runs: Run[] = [];
+      const walk = (n: Node, fmt: Fmt) => {
+        if (n.nodeType === Node.TEXT_NODE) {
+          const text = n.textContent ?? '';
+          if (text) {
+            const run = new TextRun({
+              text, bold: fmt.bold, italics: fmt.italics,
+              underline: fmt.underline ? {} : undefined, strike: fmt.strike,
+              color: fmt.color, size: fmt.size,
+              shading: fmt.highlight ? { type: ShadingType.CLEAR, color: 'auto', fill: fmt.highlight } : undefined,
+            });
+            runs.push(fmt.link ? new ExternalHyperlink({ children: [run], link: fmt.link }) : run);
+          }
+          return;
+        }
+        if (n.nodeType !== Node.ELEMENT_NODE) return;
+        const el = n as HTMLElement;
+        const tag = el.tagName.toLowerCase();
+        if (tag === 'br') { runs.push(new TextRun({ text: '', break: 1 })); return; }
+        if (tag === 'img') {
+          const img = this.imageRun(el as HTMLImageElement, ImageRun);
+          if (img) runs.push(img);
+          return;
+        }
+        const next: Fmt = { ...fmt };
+        const style = el.style;
+        if (tag === 'b' || tag === 'strong') next.bold = true;
+        if (tag === 'i' || tag === 'em') next.italics = true;
+        if (tag === 'u') next.underline = true;
+        if (tag === 's' || tag === 'strike' || tag === 'del') next.strike = true;
+        if (style.fontWeight === 'bold' || Number(style.fontWeight) >= 600) next.bold = true;
+        if (style.fontStyle === 'italic') next.italics = true;
+        if ((style.textDecorationLine || style.textDecoration).includes('line-through')) next.strike = true;
+        if ((style.textDecorationLine || style.textDecoration).includes('underline')) next.underline = true;
+        const color = el.getAttribute('color') || style.color;
+        if (color) next.color = toHex(color);
+        if (style.backgroundColor) next.highlight = toHex(style.backgroundColor);
+        const sz = sizeFromFontTag(el.getAttribute('size'));
+        if (sz) next.size = sz;
+        if (tag === 'a') next.link = (el as HTMLAnchorElement).getAttribute('href') || next.link;
+        el.childNodes.forEach((c) => walk(c, next));
+      };
+      walk(node, {});
+      return runs.length ? runs : [new TextRun('')];
+    };
+
+    const alignOf = (el: HTMLElement) => {
+      const a = el.style.textAlign;
+      return a === 'center' ? AlignmentType.CENTER : a === 'right' ? AlignmentType.RIGHT
+        : a === 'justify' ? AlignmentType.JUSTIFIED : undefined;
+    };
+
+    const tableFrom = (el: HTMLTableElement): InstanceType<typeof Table> => {
+      const rows: InstanceType<typeof TableRow>[] = [];
+      el.querySelectorAll('tr').forEach((tr) => {
+        const cells: InstanceType<typeof TableCell>[] = [];
+        tr.querySelectorAll('td,th').forEach((td) => {
+          cells.push(new TableCell({ children: [new Paragraph({ children: runsFrom(td) })] }));
+        });
+        if (cells.length) rows.push(new TableRow({ children: cells }));
+      });
+      return new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } });
+    };
+
+    const pushBlock = (el: HTMLElement) => {
+      const tag = el.tagName.toLowerCase();
+      const headingMap: Record<string, (typeof HeadingLevel)[keyof typeof HeadingLevel]> = {
+        h1: HeadingLevel.HEADING_1, h2: HeadingLevel.HEADING_2, h3: HeadingLevel.HEADING_3,
+        h4: HeadingLevel.HEADING_4, h5: HeadingLevel.HEADING_5, h6: HeadingLevel.HEADING_6,
+      };
+      if (tag === 'table') { blocks.push(tableFrom(el as HTMLTableElement)); return; }
+      if (tag === 'hr') { blocks.push(new Paragraph({ thematicBreak: true })); return; }
+      if (tag === 'img') { const r = this.imageRun(el as HTMLImageElement, ImageRun); blocks.push(new Paragraph({ children: r ? [r] : [new TextRun('')] })); return; }
+      if (tag in headingMap) {
+        blocks.push(new Paragraph({ heading: headingMap[tag], alignment: alignOf(el), children: runsFrom(el) }));
+      } else if (tag === 'ul' || tag === 'ol') {
+        el.querySelectorAll(':scope > li').forEach((li) => {
+          blocks.push(new Paragraph({
+            children: runsFrom(li), alignment: alignOf(li as HTMLElement),
+            ...(tag === 'ul' ? { bullet: { level: 0 } } : { numbering: { reference: 'num', level: 0 } }),
+          }));
+        });
+      } else {
+        blocks.push(new Paragraph({ alignment: alignOf(el), children: runsFrom(el) }));
+      }
+    };
+
+    const children = Array.from(this.editable.childNodes);
+    if (children.length === 0) blocks.push(new Paragraph({ children: [new TextRun('')] }));
+    for (const node of children) {
+      if (node.nodeType === Node.ELEMENT_NODE) pushBlock(node as HTMLElement);
+      else if (node.nodeType === Node.TEXT_NODE && (node.textContent ?? '').trim()) {
+        blocks.push(new Paragraph({ children: [new TextRun(node.textContent ?? '')] }));
+      }
+    }
+
+    const doc = new Document({
+      numbering: { config: [{ reference: 'num', levels: [{ level: 0, format: 'decimal', text: '%1.', alignment: 'left' }] }] },
+      sections: [{ children: blocks }],
+    });
+    const blob = await Packer.toBlob(doc);
+    return { blob, contentType: DOCX_MIME };
+  }
+
+  // Convert the current document to a PDF (laid out with pdf-lib) and download it.
+  // Headings get larger/bold type; inline bold/italic is preserved by swapping
+  // between the four Helvetica variants during word-wrapping.
+  private async exportPdf(btn?: HTMLButtonElement): Promise<void> {
+    const label = btn?.textContent ?? '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+      const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
+      const pdf = await PDFDocument.create();
+      const F = {
+        normal: await pdf.embedFont(StandardFonts.Helvetica),
+        bold: await pdf.embedFont(StandardFonts.HelveticaBold),
+        italic: await pdf.embedFont(StandardFonts.HelveticaOblique),
+        boldItalic: await pdf.embedFont(StandardFonts.HelveticaBoldOblique),
+      };
+      const fontFor = (b: boolean, i: boolean) => b && i ? F.boldItalic : b ? F.bold : i ? F.italic : F.normal;
+
+      const PAGE_W = 612, PAGE_H = 792, MARGIN = 56;
+      let page = pdf.addPage([PAGE_W, PAGE_H]);
+      let y = PAGE_H - MARGIN;
+
+      interface Word { t: string; b: boolean; i: boolean }
+      // Flatten a block element into whitespace-split styled words.
+      const wordsOf = (el: HTMLElement, forceBold: boolean): Word[] => {
+        const out: Word[] = [];
+        const walk = (n: Node, b: boolean, i: boolean) => {
+          if (n.nodeType === Node.TEXT_NODE) {
+            for (const part of (n.textContent ?? '').split(/(\s+)/)) {
+              if (part === '') continue;
+              out.push({ t: part.replace(/\s+/g, ' '), b, i });
+            }
+            return;
+          }
+          if (n.nodeType !== Node.ELEMENT_NODE) return;
+          const tag = (n as HTMLElement).tagName.toLowerCase();
+          const nb = b || tag === 'b' || tag === 'strong';
+          const ni = i || tag === 'i' || tag === 'em';
+          n.childNodes.forEach((c) => walk(c, nb, ni));
+        };
+        walk(el, forceBold, false);
+        return out;
+      };
+
+      // Lay a run of words out with wrapping + pagination at the given size/indent.
+      const drawWords = (words: Word[], size: number, indent: number) => {
+        const lineH = size * 1.35;
+        const maxX = PAGE_W - MARGIN;
+        let x = MARGIN + indent;
+        const newline = () => {
+          y -= lineH;
+          if (y < MARGIN) { page = pdf.addPage([PAGE_W, PAGE_H]); y = PAGE_H - MARGIN; }
+          x = MARGIN + indent;
+        };
+        if (words.length === 0) { newline(); return; }
+        for (const w of words) {
+          const f = fontFor(w.b, w.i);
+          const ww = f.widthOfTextAtSize(w.t, size);
+          if (x + ww > maxX && x > MARGIN + indent) newline();
+          // A leading space at the start of a line is dropped.
+          if (!(w.t === ' ' && x === MARGIN + indent)) {
+            page.drawText(w.t, { x, y: y - size, size, font: f, color: rgb(0, 0, 0) });
+            x += ww;
+          }
+        }
+        newline();
+      };
+
+      const SIZES: Record<string, number> = { h1: 22, h2: 18, h3: 15, h4: 13, h5: 12, h6: 11 };
+      let listIndex = 0;
+      for (const node of Array.from(this.editable.childNodes)) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const t = (node.textContent ?? '').trim();
+          if (t) drawWords([{ t, b: false, i: false }], 11, 0);
+          continue;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        const el = node as HTMLElement;
+        const tag = el.tagName.toLowerCase();
+        if (tag in SIZES) {
+          y -= 6; // a little space above headings
+          drawWords(wordsOf(el, true), SIZES[tag]!, 0);
+        } else if (tag === 'ul' || tag === 'ol') {
+          listIndex = 0;
+          el.querySelectorAll(':scope > li').forEach((li) => {
+            listIndex += 1;
+            const marker: Word = { t: tag === 'ul' ? '•' : `${listIndex}.`, b: false, i: false };
+            drawWords([marker, { t: ' ', b: false, i: false }, ...wordsOf(li as HTMLElement, false)], 11, 18);
+          });
+        } else {
+          drawWords(wordsOf(el, false), 11, 0);
+        }
+      }
+
+      const bytes = await pdf.save();
+      const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const outName = this.name.replace(/\.[^.]+$/, '') + '.pdf';
+      this.download(new Blob([ab], { type: 'application/pdf' }), outName);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
+  }
+
+  private download(blob: Blob, filename: string): void {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  private renderShell() {
+    this.host.innerHTML = `
+      <div class="docx-editor">
+        <div class="docx-toolbar" data-role="fmt">
+          <button type="button" data-cmd="bold" title="Bold"><b>B</b></button>
+          <button type="button" data-cmd="italic" title="Italic"><i>I</i></button>
+          <button type="button" data-cmd="underline" title="Underline"><u>U</u></button>
+          <button type="button" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+          <label class="docx-color" title="Text color">A<input type="color" data-color="foreColor" value="#111111"></label>
+          <label class="docx-color docx-hilite" title="Highlight color">▌<input type="color" data-color="hiliteColor" value="#ffe600"></label>
+          <select data-role="fontsize" title="Font size">
+            <option value="">Size</option>
+            <option value="1">Small</option>
+            <option value="3" selected>Normal</option>
+            <option value="5">Large</option>
+            <option value="7">Huge</option>
+          </select>
+          <span class="docx-sep"></span>
+          <button type="button" data-block="h1">H1</button>
+          <button type="button" data-block="h2">H2</button>
+          <button type="button" data-block="h3">H3</button>
+          <button type="button" data-block="p">¶</button>
+          <span class="docx-sep"></span>
+          <button type="button" data-cmd="justifyLeft" title="Align left">⯇</button>
+          <button type="button" data-cmd="justifyCenter" title="Align center">≡</button>
+          <button type="button" data-cmd="justifyRight" title="Align right">⯈</button>
+          <button type="button" data-cmd="insertUnorderedList" title="Bulleted list">• List</button>
+          <button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button>
+          <span class="docx-sep"></span>
+          <button type="button" data-ins="link" title="Insert link">🔗 Link</button>
+          <button type="button" data-ins="image" title="Insert image">🖼 Image</button>
+          <button type="button" data-ins="table" title="Insert table">▦ Table</button>
+          <button type="button" data-ins="hr" title="Insert divider">— HR</button>
+          <button type="button" data-ins="sign" title="Insert signature">✍ Sign</button>
+          <button type="button" data-cmd="removeFormat" title="Clear formatting">⌫ Clear</button>
+          <span class="docx-sep"></span>
+          <button type="button" data-role="save-pdf" title="Save a copy as PDF">⤓ PDF</button>
+        </div>
+        <div class="docx-page" contenteditable="true" data-role="editable" spellcheck="true"></div>
+        <input type="file" accept="image/*" data-role="img-input" hidden>
+      </div>`;
+    this.editable = this.host.querySelector('[data-role="editable"]') as HTMLElement;
+    const bar = this.host.querySelector('[data-role="fmt"]') as HTMLElement;
+    bar.addEventListener('mousedown', (e) => e.preventDefault()); // keep selection
+    bar.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest('button');
+      if (!btn) return;
+      if (btn.getAttribute('data-role') === 'save-pdf') { void this.exportPdf(btn as HTMLButtonElement); return; }
+      const ins = btn.getAttribute('data-ins');
+      if (ins) { void this.insertAction(ins); return; }
+      const cmd = btn.getAttribute('data-cmd');
+      const block = btn.getAttribute('data-block');
+      this.editable.focus();
+      if (cmd) document.execCommand(cmd, false);
+      else if (block) document.execCommand('formatBlock', false, block === 'p' ? 'p' : block);
+      this.onChange();
+    });
+
+    // Color pickers (text + highlight): apply on input, keep selection.
+    bar.querySelectorAll<HTMLInputElement>('input[data-color]').forEach((inp) => {
+      inp.addEventListener('mousedown', () => this.saveSelection());
+      inp.addEventListener('input', () => {
+        const cmd = inp.getAttribute('data-color')!;
+        this.restoreSelection();
+        this.editable.focus();
+        this.restoreSelection();
+        document.execCommand(cmd, false, inp.value);
+        this.onChange();
+      });
+    });
+
+    // Font size select.
+    const sizeSel = bar.querySelector('[data-role="fontsize"]') as HTMLSelectElement;
+    sizeSel.addEventListener('mousedown', () => this.saveSelection());
+    sizeSel.addEventListener('change', () => {
+      if (!sizeSel.value) return;
+      this.editable.focus();
+      this.restoreSelection();
+      document.execCommand('fontSize', false, sizeSel.value);
+      this.onChange();
+    });
+
+    this.editable.addEventListener('input', () => this.onChange());
+    // Track the last selection so toolbar controls that steal focus can restore it.
+    document.addEventListener('selectionchange', () => {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount && this.editable.contains(sel.anchorNode)) {
+        this.savedRange = sel.getRangeAt(0).cloneRange();
+      }
+    });
+  }
+
+  private savedRange: Range | null = null;
+  private saveSelection(): void {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount && this.editable.contains(sel.anchorNode)) {
+      this.savedRange = sel.getRangeAt(0).cloneRange();
+    }
+  }
+  private restoreSelection(): void {
+    if (!this.savedRange) return;
+    const sel = window.getSelection();
+    if (!sel) return;
+    sel.removeAllRanges();
+    sel.addRange(this.savedRange);
+  }
+
+  // Insert actions: link, image, table, horizontal rule, signature.
+  private async insertAction(kind: string): Promise<void> {
+    this.editable.focus();
+    this.restoreSelection();
+    if (kind === 'hr') {
+      document.execCommand('insertHorizontalRule', false);
+    } else if (kind === 'link') {
+      const url = prompt('Link URL (https://…)');
+      if (url) document.execCommand('createLink', false, url);
+    } else if (kind === 'image') {
+      this.pickImage();
+      return; // onChange fires after the file loads
+    } else if (kind === 'table') {
+      const spec = prompt('Table size as rows x columns (e.g. 3x3)', '3x3');
+      if (!spec) return;
+      const m = /(\d+)\s*[x×]\s*(\d+)/i.exec(spec);
+      const rows = Math.min(50, Math.max(1, Number(m?.[1]) || 2));
+      const cols = Math.min(20, Math.max(1, Number(m?.[2]) || 2));
+      let html = '<table class="docx-table"><tbody>';
+      for (let r = 0; r < rows; r++) {
+        html += '<tr>';
+        for (let c = 0; c < cols; c++) html += '<td><br></td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table><p><br></p>';
+      document.execCommand('insertHTML', false, html);
+    } else if (kind === 'sign') {
+      await this.openSignaturePad();
+      return;
+    }
+    this.onChange();
+  }
+
+  private pickImage(): void {
+    const input = this.host.querySelector('[data-role="img-input"]') as HTMLInputElement;
+    input.value = '';
+    const onPick = () => {
+      const file = input.files?.[0];
+      input.removeEventListener('change', onPick);
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        this.editable.focus();
+        this.restoreSelection();
+        document.execCommand('insertHTML', false, `<img src="${reader.result as string}" style="max-width:100%">`);
+        this.onChange();
+      };
+      reader.readAsDataURL(file);
+    };
+    input.addEventListener('change', onPick);
+    input.click();
+  }
+
+  // A small canvas signature pad in a modal; inserts the drawing as an inline image.
+  private openSignaturePad(): Promise<void> {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal docx-sign-modal" role="dialog" aria-modal="true">
+          <h3>Draw your signature</h3>
+          <canvas class="docx-sign-canvas" width="440" height="180"></canvas>
+          <div class="modal-actions">
+            <button type="button" class="btn-cancel" data-act="cancel">Cancel</button>
+            <button type="button" class="btn-cancel" data-act="clear">Clear</button>
+            <button type="button" class="btn-confirm" data-act="insert">Insert</button>
+          </div>
+        </div>`;
+      const canvas = overlay.querySelector('canvas') as HTMLCanvasElement;
+      const ctx = canvas.getContext('2d')!;
+      ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.strokeStyle = '#111';
+      let drawing = false, dirty = false;
+      const pos = (e: PointerEvent) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+      canvas.addEventListener('pointerdown', (e) => { drawing = true; dirty = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); canvas.setPointerCapture(e.pointerId); });
+      canvas.addEventListener('pointermove', (e) => { if (!drawing) return; const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); });
+      canvas.addEventListener('pointerup', () => { drawing = false; });
+      const close = () => { overlay.remove(); resolve(); };
+      overlay.addEventListener('click', (e) => {
+        const act = (e.target as HTMLElement).closest('button')?.getAttribute('data-act');
+        if (e.target === overlay || act === 'cancel') return close();
+        if (act === 'clear') { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; return; }
+        if (act === 'insert') {
+          if (dirty) {
+            const dataUrl = canvas.toDataURL('image/png');
+            this.editable.focus();
+            this.restoreSelection();
+            document.execCommand('insertHTML', false, `<img src="${dataUrl}" alt="signature" style="max-width:260px">`);
+            this.onChange();
+          }
+          close();
+        }
+      });
+      this.host.ownerDocument.body.appendChild(overlay);
+    });
+  }
+}

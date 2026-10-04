@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 // suite) exercises the same policy the sandboxed mermaid frame runs under.
 const DEPLOYED_CSP =
   "default-src 'self'; img-src 'self' data: blob:; script-src 'self'; " +
-  "style-src 'self' 'unsafe-inline'; frame-src 'self'; " +
+  "style-src 'self' 'unsafe-inline'; media-src 'self' blob:; font-src 'self' data:; frame-src 'self' blob:; worker-src 'self' blob:; " +
   "connect-src 'self' https://anyedits-api.skillmesh.workers.dev https://s3.filebase.io; " +
   "object-src 'none'; base-uri 'none'";
 

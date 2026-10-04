@@ -1,5 +1,6 @@
 export interface Env {
   DB: D1Database;
+  GAME_ROOM: DurableObjectNamespace;
   ALLOWED_ORIGIN: string;
   API_BASE_URL: string;
   IP_HASH_SECRET: string;

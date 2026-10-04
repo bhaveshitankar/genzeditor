@@ -22,6 +22,20 @@ export async function handle(req: Request, env: Env): Promise<Response> {
 
   if (req.method === 'GET' && path === '/api/health') return json({ ok: true }, env);
 
+  // Live game rooms: WebSocket upgrade → GameRoom Durable Object. WS upgrades
+  // can't use normal CORS, so validate the Origin header against ALLOWED_ORIGIN
+  // (reject a mismatched browser origin; absent Origin = non-browser client).
+  const room = path.match(/^\/rooms\/([A-Za-z0-9_-]{1,64})\/ws$/);
+  if (room) {
+    if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+      return new Response('expected websocket', { status: 426 });
+    }
+    const origin = req.headers.get('Origin');
+    if (origin && origin !== env.ALLOWED_ORIGIN) return error('bad_origin', env, 403);
+    const id = env.GAME_ROOM.idFromName(room[1]!);
+    return env.GAME_ROOM.get(id).fetch(req);
+  }
+
   const session = await getSession(env.DB, cookies['sid'] ?? null);
   const userId = session?.userId ?? null;
   const owner = await ownerRef(req, env, userId);
@@ -113,7 +127,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     if (!session && !originAllowed(req, env)) return error('bad_origin', env, 403);
     if (!(await rateLimit(env.DB, owner, 'presign', 30, WINDOW)).ok) return error('rate_limited', env, 429);
     const b = await req.json<{ size: number }>();
-    const r = await initSaveBack(env, m[1]!, b.size);
+    const r = await initSaveBack(env, m[1]!, b.size, owner, !!userId);
     if (!r.ok) return error(r.error, env, r.status);
     return json({ uploadUrl: r.uploadUrl }, env);
   }

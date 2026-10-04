@@ -3,6 +3,10 @@ import { handle } from './router';
 import { sweepExpired } from './retention';
 import { presignS3 } from './sigv4';
 
+// Durable Object class must be exported from the Worker entry so the runtime
+// can instantiate it for the GAME_ROOM binding.
+export { GameRoom } from './gameRoom';
+
 // Returns true only when the object is confirmed gone (2xx, or 404 = already
 // absent). Any network error or non-success status returns false so retention
 // leaves the row for the next run instead of orphaning the object.
