@@ -422,8 +422,72 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   height: 22px;
   font-weight: 800;
 }
-.signin-provider[data-provider="google"] .signin-provider-icon { color: #ea4335; }
+.signin-provider[data-provider="google"] .signin-provider-icon,
+.signin-provider[data-role="oauth-google"] .signin-provider-icon { color: #ea4335; }
 .signin-fine { color: var(--text-faint); font-size: 0.78rem; margin-top: 1.2rem; }
+
+/* Email-OTP sign-in controls */
+.signin-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 0.7rem;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.95rem;
+  text-align: center;
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+.signin-input::placeholder { color: var(--text-faint); }
+.signin-input:focus {
+  outline: none;
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-500) 25%, transparent);
+}
+[data-role="otp-code"] { letter-spacing: 0.4em; font-weight: 700; font-size: 1.15rem; }
+
+.signin-primary {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.8rem 1rem;
+  border: none;
+  border-radius: var(--r-md);
+  background: var(--brand-500);
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), transform 0.15s var(--ease), opacity 0.15s var(--ease);
+}
+.signin-primary:hover { background: var(--brand-600, var(--brand-500)); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.signin-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.signin-error {
+  color: var(--danger, #e5484d);
+  font-size: 0.85rem;
+  margin: 0.6rem 0 0;
+  line-height: 1.4;
+}
+
+.signin-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin: 1.1rem 0;
+  color: var(--text-faint);
+  font-size: 0.8rem;
+}
+.signin-divider::before,
+.signin-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-strong);
+}
+
+.cf-turnstile { display: flex; justify-content: center; margin-bottom: 0.7rem; min-height: 65px; }
 
 /* ---------- Dockable panels (files + inspector) ---------- */
 .panel {
