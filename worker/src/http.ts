@@ -1,9 +1,28 @@
 // worker/src/http.ts
 import type { Env } from './env';
 
-export function corsHeaders(env: Env): Record<string, string> {
+// ALLOWED_ORIGIN is a comma-separated allowlist (e.g. the custom domain, the
+// Pages URL, localhost). Parsed into exact-match origins.
+export function allowedOrigins(env: Env): string[] {
+  return env.ALLOWED_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean);
+}
+
+export function isAllowedOrigin(origin: string | null, env: Env): boolean {
+  return !!origin && allowedOrigins(env).includes(origin);
+}
+
+// Pick the Access-Control-Allow-Origin value: echo the request's Origin when it
+// is in the allowlist (required because credentialed requests can't use "*"),
+// otherwise fall back to the first configured origin.
+export function pickOrigin(req: Request | undefined, env: Env): string {
+  const origin = req?.headers.get('Origin') ?? null;
+  if (origin && isAllowedOrigin(origin, env)) return origin;
+  return allowedOrigins(env)[0] ?? env.ALLOWED_ORIGIN;
+}
+
+export function corsHeaders(env: Env, req?: Request): Record<string, string> {
   return {
-    'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': pickOrigin(req, env),
     'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type,X-CSRF-Token',
@@ -71,11 +90,11 @@ export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
 // is the anon counterpart to CSRF double-submit for logged-in users.
 export function originAllowed(req: Request, env: Env): boolean {
   const origin = req.headers.get('Origin');
-  if (origin) return origin === env.ALLOWED_ORIGIN;
+  if (origin) return isAllowedOrigin(origin, env);
   const referer = req.headers.get('Referer');
   if (referer) {
     try {
-      return new URL(referer).origin === env.ALLOWED_ORIGIN;
+      return isAllowedOrigin(new URL(referer).origin, env);
     } catch {
       return false;
     }

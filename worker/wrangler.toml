@@ -4,7 +4,8 @@ compatibility_date = "2026-09-19"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-ALLOWED_ORIGIN = "https://anyedits-aay.pages.dev"
+# Comma-separated allowlist of browser origins permitted to call the API.
+ALLOWED_ORIGIN = "https://genzeditor.com,https://www.genzeditor.com,https://anyedits-aay.pages.dev,http://localhost:4173"
 # API_BASE_URL is the Worker's own public base URL (the OAuth callback is served
 # by the Worker, not Pages), and must match the client's API base in
 # src/api/client.ts. RECONCILE to the real deployed Worker URL

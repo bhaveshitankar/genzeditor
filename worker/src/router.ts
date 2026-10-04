@@ -1,6 +1,6 @@
 // worker/src/router.ts
 import type { Env } from './env';
-import { json, error, preflight, requireCsrf, originAllowed, timingSafeEqual } from './http';
+import { json, error, preflight, requireCsrf, originAllowed, timingSafeEqual, isAllowedOrigin } from './http';
 import { ownerRef } from './identity';
 import { rateLimit } from './ratelimit';
 import { createShare, confirmShare, resolveShare, initSaveBack } from './shares';
@@ -31,7 +31,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
       return new Response('expected websocket', { status: 426 });
     }
     const origin = req.headers.get('Origin');
-    if (origin && origin !== env.ALLOWED_ORIGIN) return error('bad_origin', env, 403);
+    if (origin && !isAllowedOrigin(origin, env)) return error('bad_origin', env, 403);
     const id = env.GAME_ROOM.idFromName(room[1]!);
     return env.GAME_ROOM.get(id).fetch(req);
   }
