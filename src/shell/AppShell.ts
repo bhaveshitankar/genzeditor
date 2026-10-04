@@ -18,7 +18,7 @@ import { GameEditor } from '../editors/GameEditor';
 import { FloorPlanEditor } from '../editors/FloorPlanEditor';
 import { CommandPalette } from '../ui/CommandPalette';
 import { lineDiff } from '../diff/lineDiff';
-import { getMe, API_BASE, type MeState } from '../api/client';
+import { getMe, signOut, type MeState } from '../api/client';
 import { renderAuthBar, openSignInModal } from '../auth/authUi';
 import { shareFile } from '../share/shareFlow';
 import { saveBackShared } from '../share/openShared';
@@ -792,11 +792,7 @@ export class AppShell {
 
   private async handleLogout() {
     try {
-      await fetch(`${API_BASE}/api/logout`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: this.meState.csrfToken ? { 'X-CSRF-Token': this.meState.csrfToken } : {},
-      });
+      await signOut();
       this.meState = { authenticated: false };
       this.paintAuthBar();
       this.toast('Signed out', 'info');

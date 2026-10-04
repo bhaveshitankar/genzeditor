@@ -5,21 +5,15 @@ import { describe, it, expect, beforeAll } from 'vitest';
 describe('D1 schema', () => {
   beforeAll(async () => {
     const migration = `
-CREATE TABLE users (
-  id TEXT PRIMARY KEY,
-  oauth_provider TEXT NOT NULL,
-  oauth_subject TEXT NOT NULL,
-  email TEXT,
-  created_at INTEGER NOT NULL,
-  UNIQUE (oauth_provider, oauth_subject)
+CREATE TABLE user (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
+  emailVerified INTEGER NOT NULL DEFAULT 0, image TEXT,
+  createdAt DATE NOT NULL, updatedAt DATE NOT NULL
 );
 
-CREATE TABLE sessions (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  csrf_token TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
-  FOREIGN KEY (user_id) REFERENCES users(id)
+CREATE TABLE auth_throttle (
+  key TEXT PRIMARY KEY, strikes INTEGER NOT NULL DEFAULT 0,
+  blocked_until INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE shares (
@@ -74,11 +68,11 @@ CREATE TABLE rate_limits (
       const r = await env.DB.prepare(`PRAGMA table_info(${t})`).all();
       return (r.results as Array<{ name: string }>).map((c) => c.name).sort();
     };
-    expect(await cols('users')).toEqual(
-      ['created_at', 'email', 'id', 'oauth_provider', 'oauth_subject'].sort(),
+    expect(await cols('user')).toEqual(
+      ['createdAt', 'email', 'emailVerified', 'id', 'image', 'name', 'updatedAt'].sort(),
     );
-    expect(await cols('sessions')).toEqual(
-      ['csrf_token', 'expires_at', 'id', 'user_id'].sort(),
+    expect(await cols('auth_throttle')).toEqual(
+      ['blocked_until', 'key', 'strikes', 'updated_at'].sort(),
     );
     expect(await cols('shares')).toEqual(
       ['access', 'content_type', 'created_at', 'expires_at', 'id', 'object_key',

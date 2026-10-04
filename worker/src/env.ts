@@ -13,4 +13,9 @@ export interface Env {
   GOOGLE_CLIENT_SECRET: string;
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
+  KV_BLOCKED_EMAIL_DOMAINS: KVNamespace;
+  BETTER_AUTH_SECRET: string;
+  RESEND_API_KEY: string;
+  RESEND_FROM: string;
+  TURNSTILE_SECRET_KEY: string;
 }

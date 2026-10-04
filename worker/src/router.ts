@@ -1,30 +1,25 @@
 // worker/src/router.ts
 import type { Env } from './env';
-import { json, error, preflight, requireCsrf, originAllowed, timingSafeEqual, isAllowedOrigin } from './http';
-import { ownerRef } from './identity';
+import { json, error, preflight, originAllowed, isAllowedOrigin } from './http';
+import { ownerRef, ipHash } from './identity';
 import { rateLimit } from './ratelimit';
 import { createShare, confirmShare, resolveShare, initSaveBack } from './shares';
-import { getSession, createSession, deleteSession, parseCookies, sessionCookie, csrfCookie, clearCookie } from './sessions';
-import { pkcePair, buildAuthUrl, exchangeCode } from './oauth';
+import { createAuth } from './auth';
+import { normalizeEmail, isValidSyntax, domainOf, isDisposable, hasMx } from './email/validate';
+import { checkThrottle, recordStrike, clearThrottle } from './throttle';
+import { verifyTurnstile } from './turnstile';
 
 const WINDOW = 60_000;
-
-function redirectUri(env: Env, provider: string): string {
-  return `${env.API_BASE_URL}/api/auth/${provider}/callback`;
-}
 
 export async function handle(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
-  const cookies = parseCookies(req.headers.get('cookie'));
 
   if (req.method === 'OPTIONS') return preflight(env);
 
   if (req.method === 'GET' && path === '/api/health') return json({ ok: true }, env);
 
-  // Live game rooms: WebSocket upgrade → GameRoom Durable Object. WS upgrades
-  // can't use normal CORS, so validate the Origin header against ALLOWED_ORIGIN
-  // (reject a mismatched browser origin; absent Origin = non-browser client).
+  // Live game rooms: WebSocket upgrade → GameRoom Durable Object.
   const room = path.match(/^\/rooms\/([A-Za-z0-9_-]{1,64})\/ws$/);
   if (room) {
     if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
@@ -36,71 +31,67 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     return env.GAME_ROOM.get(id).fetch(req);
   }
 
-  const session = await getSession(env.DB, cookies['sid'] ?? null);
-  const userId = session?.userId ?? null;
+  const auth = createAuth(env);
+
+  // --- Email-OTP request: defense pipeline BEFORE Better Auth sends a code ---
+  if (req.method === 'POST' && path === '/api/auth/email-otp/send-verification-otp') {
+    const raw = (await req.clone().json().catch(() => ({}))) as {
+      email?: string;
+      turnstileToken?: string;
+    };
+    const email = normalizeEmail(raw.email ?? '');
+    const ip = req.headers.get('CF-Connecting-IP') ?? '0.0.0.0';
+    const hashedIp = await ipHash(ip, env.IP_HASH_SECRET);
+    const ipKey = `otp:ip:${hashedIp}`;
+    const emailKey = `otp:email:${email}`;
+
+    if (!isValidSyntax(email)) return error('invalid_email', env, 400);
+    if (!(await verifyTurnstile(env, raw.turnstileToken ?? '', ip))) {
+      return error('turnstile_failed', env, 400);
+    }
+    for (const key of [ipKey, emailKey]) {
+      const t = await checkThrottle(env.DB, key);
+      if (!t.allowed) return json({ error: 'rate_limited', retryAfter: t.retryAfter }, env, { status: 429 });
+    }
+    const domain = domainOf(email);
+    if (await isDisposable(env, domain)) {
+      await recordStrike(env.DB, emailKey);
+      return error('disposable_email', env, 400);
+    }
+    if (!(await hasMx(domain))) {
+      await recordStrike(env.DB, emailKey);
+      return error('no_mx', env, 400);
+    }
+    if (!(await rateLimit(env.DB, hashedIp, 'otp_req', 3, 10 * 60_000)).ok) {
+      await recordStrike(env.DB, ipKey);
+      return json({ error: 'rate_limited', retryAfter: 600 }, env, { status: 429 });
+    }
+    // Passed all gates → let Better Auth generate + send the OTP.
+    return auth.handler(req);
+  }
+
+  // Successful OTP sign-in clears the email throttle.
+  if (req.method === 'POST' && path === '/api/auth/sign-in/email-otp') {
+    const raw = (await req.clone().json().catch(() => ({}))) as { email?: string };
+    const res = await auth.handler(req);
+    if (res.ok) await clearThrottle(env.DB, `otp:email:${normalizeEmail(raw.email ?? '')}`);
+    return res;
+  }
+
+  // All other Better Auth routes (social sign-in, callbacks, get-session, sign-out).
+  if (path.startsWith('/api/auth/')) {
+    return auth.handler(req);
+  }
+
+  // Identify the caller for owner-scoped endpoints below.
+  const sessionData = await auth.api.getSession({ headers: req.headers });
+  const userId = sessionData?.user?.id ?? null;
   const owner = await ownerRef(req, env, userId);
 
-  if (req.method === 'GET' && path === '/api/me') {
-    if (!session) return json({ authenticated: false }, env);
-    const u = await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(session.userId).first<{ email: string | null }>();
-    return json({ authenticated: true, email: u?.email ?? null, csrfToken: session.csrfToken }, env);
-  }
-
-  if (req.method === 'POST' && path === '/api/logout') {
-    if (session && !(await requireCsrf(req, session.csrfToken))) return error('csrf', env, 403);
-    if (cookies['sid']) await deleteSession(env.DB, cookies['sid']);
-    return json({ ok: true }, env, { headers: { 'set-cookie': clearCookie('sid') } });
-  }
-
-  // OAuth start
-  let m = path.match(/^\/api\/auth\/(google|github)\/start$/);
-  if (req.method === 'GET' && m) {
-    const provider = m[1] as 'google' | 'github';
-    if (!(await rateLimit(env.DB, owner, 'auth', 20, WINDOW)).ok) return error('rate_limited', env, 429);
-    const state = crypto.randomUUID();
-    const { verifier, challenge } = await pkcePair();
-    const authUrl = buildAuthUrl(provider, env, state, challenge, redirectUri(env, provider));
-    const headers = new Headers({ location: authUrl });
-    headers.append('set-cookie', `oauth_state=${state}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`);
-    headers.append('set-cookie', `oauth_verifier=${verifier}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`);
-    return new Response(null, { status: 302, headers });
-  }
-
-  // OAuth callback
-  m = path.match(/^\/api\/auth\/(google|github)\/callback$/);
-  if (req.method === 'GET' && m) {
-    const provider = m[1] as 'google' | 'github';
-    const code = url.searchParams.get('code');
-    const state = url.searchParams.get('state');
-    if (
-      !code || !state || !cookies['oauth_state'] || !cookies['oauth_verifier'] ||
-      !(await timingSafeEqual(state, cookies['oauth_state']))
-    ) {
-      return error('bad_oauth_state', env, 400);
-    }
-    const ex = await exchangeCode(provider, env, code, cookies['oauth_verifier'], redirectUri(env, provider), fetch);
-    if (!ex.ok) return error(ex.error, env, 400);
-    let user = await env.DB.prepare('SELECT id FROM users WHERE oauth_provider = ? AND oauth_subject = ?')
-      .bind(provider, ex.subject).first<{ id: string }>();
-    let userIdNew: string;
-    if (user) { userIdNew = user.id; }
-    else {
-      userIdNew = crypto.randomUUID();
-      await env.DB.prepare('INSERT INTO users (id, oauth_provider, oauth_subject, email, created_at) VALUES (?,?,?,?,?)')
-        .bind(userIdNew, provider, ex.subject, ex.email, Date.now()).run();
-    }
-    const s = await createSession(env.DB, userIdNew);
-    const headers = new Headers({ location: env.ALLOWED_ORIGIN });
-    headers.append('set-cookie', sessionCookie(s.id, 30 * 24 * 60 * 60));
-    headers.append('set-cookie', csrfCookie(s.csrfToken, 30 * 24 * 60 * 60));
-    headers.append('set-cookie', clearCookie('oauth_state'));
-    headers.append('set-cookie', clearCookie('oauth_verifier'));
-    return new Response(null, { status: 302, headers });
-  }
-
+  // Same-site Lax cookies + strict CORS allowlist mean cross-site POSTs can't
+  // carry the session cookie, so an Origin check is sufficient CSRF defense.
   if (req.method === 'POST' && path === '/api/share') {
-    if (session && !(await requireCsrf(req, session.csrfToken))) return error('csrf', env, 403);
-    if (!session && !originAllowed(req, env)) return error('bad_origin', env, 403);
+    if (!originAllowed(req, env)) return error('bad_origin', env, 403);
     if (!(await rateLimit(env.DB, owner, 'share', 30, WINDOW)).ok) return error('rate_limited', env, 429);
     const b = await req.json<{ access: 'ro'|'rw'; storageKind: 'embedded'|'filebase'; contentType: string; title: string; sizeBytes: number }>();
     const r = await createShare(env, {
@@ -112,8 +103,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
   }
 
   if (req.method === 'POST' && path === '/api/share/confirm') {
-    if (session && !(await requireCsrf(req, session.csrfToken))) return error('csrf', env, 403);
-    if (!session && !originAllowed(req, env)) return error('bad_origin', env, 403);
+    if (!originAllowed(req, env)) return error('bad_origin', env, 403);
     if (!(await rateLimit(env.DB, owner, 'presign', 30, WINDOW)).ok) return error('rate_limited', env, 429);
     const b = await req.json<{ shareId: string }>();
     const r = await confirmShare(env, b.shareId, owner);
@@ -121,10 +111,9 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     return json({ ok: true }, env);
   }
 
-  m = path.match(/^\/api\/share\/([A-Za-z0-9_-]{22})\/save$/);
+  let m = path.match(/^\/api\/share\/([A-Za-z0-9_-]{22})\/save$/);
   if (req.method === 'POST' && m) {
-    if (session && !(await requireCsrf(req, session.csrfToken))) return error('csrf', env, 403);
-    if (!session && !originAllowed(req, env)) return error('bad_origin', env, 403);
+    if (!originAllowed(req, env)) return error('bad_origin', env, 403);
     if (!(await rateLimit(env.DB, owner, 'presign', 30, WINDOW)).ok) return error('rate_limited', env, 429);
     const b = await req.json<{ size: number }>();
     const r = await initSaveBack(env, m[1]!, b.size, owner, !!userId);
