@@ -48,6 +48,9 @@ Better Auth generates/owns: `user`, `session`, `account`, `verification`
 
 Existing schema changes:
 - **Drop** custom `users` and `sessions` tables (clean cutover).
+- **Add** `auth_throttle` table for exponential backoff: `key` (e.g.
+  `otp:ip:<hash>` / `otp:email:<addr>`), `strikes` INTEGER, `blocked_until`
+  INTEGER (epoch ms), `updated_at` INTEGER. PRIMARY KEY (`key`).
 - **Keep** `shares`, `quota_ledger`, `rate_limits` unchanged. `owner_ref` now
   stores Better Auth's `user.id`; `ownerRef()` logic in `identity.ts` unchanged
   (userId when logged in, IP-hash when anon).
@@ -78,8 +81,14 @@ generating any OTP (fail fast, cheapest checks first):
    KV list (`BLOCKED_EMAIL_DOMAINS`) editable without redeploy.
 5. **MX record check** — DNS-over-HTTPS query to `https://cloudflare-dns.com/
    dns-query?type=MX` for the domain; reject if no MX records.
-6. **Rate limit** — reuse `rate_limits`: max 3 OTP requests / 10 min per IP and
-   per email.
+6. **Rate limit + exponential backoff** — a throttle keyed on IP and on email.
+   A sliding allowance (e.g. 3 OTP requests / 10 min) plus an **exponential
+   backoff lockout**: after a threshold of failures (bad OTP verifies or repeat
+   OTP requests), the next attempt is blocked for a cooldown that **doubles**
+   each subsequent strike — e.g. 30s → 1m → 2m → 4m → 8m … **capped at 1h**.
+   The counter decays after a quiet window (e.g. 1h with no strikes resets to
+   zero). Blocked requests return `rate_limited` with a `retryAfter` seconds
+   value so the UI can show "try again in N".
 
 Only if all pass: Better Auth Email-OTP plugin generates a 6-digit code
 (TTL ~5 min, max ~3 verify attempts), stores it in `verification`, and
@@ -121,13 +130,17 @@ block newly discovered temp-mail domains quickly.
   (`disposable_email`, `no_mx`, `rate_limited`, `turnstile_failed`,
   `invalid_email`) surfaced as friendly copy in the modal.
 - OTP verify failures: `invalid_code`, `expired_code`, `too_many_attempts`.
+- Backoff lockout: `rate_limited` with `retryAfter` (seconds); UI shows a live
+  "try again in N" countdown and disables the submit button until it elapses.
 - Resend send failure → generic "couldn't send code, try again" + logged.
 
 ## Testing
 
 - **Worker unit:** each defense layer (syntax, blocklist hit/miss, mocked MX
   response, rate limit, mocked Turnstile), OTP request + verify happy/failure
-  paths. Keep share/quota tests; update session acquisition.
+  paths, and the **exponential backoff** state machine (strike increments,
+  doubling cooldown, 1h cap, quiet-window reset, `retryAfter` value). Keep
+  share/quota tests; update session acquisition.
 - **E2E (Playwright):** email-OTP signup using a test OTP hook / captured mail;
   assert OAuth buttons present.
 - **Manual:** real Resend send once DNS verifies.
