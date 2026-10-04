@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderAuthBar, loginIncentive } from '../../src/auth/authUi';
+import { renderAuthBar, loginIncentive, openSignInModal } from '../../src/auth/authUi';
 
 describe('authUi', () => {
   it('shows a single Sign in button that opens the sign-in flow when signed out', () => {
@@ -20,6 +20,15 @@ describe('authUi', () => {
     expect(host.textContent).toContain('a@b.co');
     (host.querySelector('button[data-role="logout"]') as HTMLButtonElement).click();
     expect(onLogout).toHaveBeenCalled();
+  });
+
+  it('sign-in modal renders email OTP step and social buttons', () => {
+    document.body.innerHTML = '';
+    openSignInModal();
+    expect(document.querySelector('[data-role="otp-email"]')).toBeTruthy();
+    expect(document.body.textContent).toContain('Send code');
+    expect(document.querySelector('[data-role="oauth-google"]')).toBeTruthy();
+    expect(document.querySelector('[data-role="oauth-github"]')).toBeTruthy();
   });
 
   it('provides incentive copy for each friction point', () => {

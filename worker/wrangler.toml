@@ -6,18 +6,26 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 # Comma-separated allowlist of browser origins permitted to call the API.
 ALLOWED_ORIGIN = "https://genzeditor.com,https://www.genzeditor.com,https://anyedits-aay.pages.dev,http://localhost:4173"
-# API_BASE_URL is the Worker's own public base URL (the OAuth callback is served
-# by the Worker, not Pages), and must match the client's API base in
-# src/api/client.ts. RECONCILE to the real deployed Worker URL
-# (anyedits-api.<subdomain>.workers.dev) after `wrangler deploy`; must match the
-# OAuth app redirect URIs registered in Google/GitHub.
-API_BASE_URL = "https://anyedits-api.skillmesh.workers.dev"
+# API_BASE_URL is the Worker's own public base URL. Served from a subdomain of
+# the app domain so Better Auth session cookies are same-site. Must match the
+# client's API base (src/api/client.ts) and the OAuth redirect URIs registered
+# in Google/GitHub (https://api.genzeditor.com/api/auth/callback/{google,github}).
+API_BASE_URL = "https://api.genzeditor.com"
+
+# Serve the Worker from api.genzeditor.com (zone already on Cloudflare).
+[[routes]]
+pattern = "api.genzeditor.com"
+custom_domain = true
 
 [[d1_databases]]
 binding = "DB"
 database_name = "anyedits-db"
 database_id = "01003425-0306-45de-a0fb-4f70642af589"
 migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "KV_BLOCKED_EMAIL_DOMAINS"
+id = "6a4e0cf023e642368dc44d471965aec7"
 
 [[durable_objects.bindings]]
 name = "GAME_ROOM"

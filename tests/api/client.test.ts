@@ -1,15 +1,20 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { getMe, createShare, resolveShare, loginUrl } from '../../src/api/client';
+import { getMe, createShare, resolveShare, requestEmailOtp } from '../../src/api/client';
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe('api client', () => {
-  it('getMe parses authenticated state', async () => {
+  it('getMe maps the Better Auth session to authenticated state', async () => {
     vi.stubGlobal('fetch', vi.fn(async () =>
-      new Response(JSON.stringify({ authenticated: true, email: 'a@b.co', csrfToken: 'c' }), { status: 200 })));
-    expect(await getMe()).toEqual({ authenticated: true, email: 'a@b.co', csrfToken: 'c' });
+      new Response(JSON.stringify({ user: { email: 'a@b.co' } }), { status: 200 })));
+    expect(await getMe()).toEqual({ authenticated: true, email: 'a@b.co' });
+  });
+
+  it('getMe returns unauthenticated when no user', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('null', { status: 200 })));
+    expect(await getMe()).toEqual({ authenticated: false });
   });
 
   it('createShare posts with credentials and CSRF header', async () => {
@@ -31,7 +36,12 @@ describe('api client', () => {
     expect(r.downloadUrl).toBe('https://x');
   });
 
-  it('loginUrl points at the provider start endpoint', () => {
-    expect(loginUrl('github')).toContain('/api/auth/github/start');
+  it('requestEmailOtp posts email + turnstile token and throws OtpError on 429', async () => {
+    const spy = vi.fn(async () => new Response(JSON.stringify({ error: 'rate_limited', retryAfter: 42 }), { status: 429 }));
+    vi.stubGlobal('fetch', spy);
+    await expect(requestEmailOtp('a@b.co', 'tok')).rejects.toMatchObject({ error: 'rate_limited', retryAfter: 42 });
+    const init = (spy.mock.calls as unknown as [string, RequestInit][])[0][1];
+    expect(init.body).toContain('a@b.co');
+    expect(init.body).toContain('tok');
   });
 });

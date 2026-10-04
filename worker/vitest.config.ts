@@ -7,6 +7,7 @@ export default defineWorkersConfig({
         wrangler: { configPath: './wrangler.toml' },
         miniflare: {
           d1Databases: ['DB'],
+          kvNamespaces: ['KV_BLOCKED_EMAIL_DOMAINS'],
           bindings: {
             ALLOWED_ORIGIN: 'https://anyedits-aay.pages.dev',
             API_BASE_URL: 'https://anyedits-aay.pages.dev',
@@ -20,6 +21,10 @@ export default defineWorkersConfig({
             GOOGLE_CLIENT_SECRET: 'gsecret',
             GITHUB_CLIENT_ID: 'hid',
             GITHUB_CLIENT_SECRET: 'hsecret',
+            BETTER_AUTH_SECRET: 'test-better-auth-secret-0123456789',
+            RESEND_API_KEY: 'test-resend',
+            RESEND_FROM: 'GenZ <noreply@genzeditor.com>',
+            TURNSTILE_SECRET_KEY: 'test-turnstile',
           },
         },
       },

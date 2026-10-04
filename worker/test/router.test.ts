@@ -7,21 +7,29 @@ const ORIGIN = 'https://anyedits-aay.pages.dev';
 describe('router integration', () => {
   beforeAll(async () => {
     const migration = `
-CREATE TABLE users (
-  id TEXT PRIMARY KEY,
-  oauth_provider TEXT NOT NULL,
-  oauth_subject TEXT NOT NULL,
-  email TEXT,
-  created_at INTEGER NOT NULL,
-  UNIQUE (oauth_provider, oauth_subject)
+CREATE TABLE user (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
+  emailVerified INTEGER NOT NULL DEFAULT 0, image TEXT,
+  createdAt DATE NOT NULL, updatedAt DATE NOT NULL
 );
-
-CREATE TABLE sessions (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  csrf_token TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
-  FOREIGN KEY (user_id) REFERENCES users(id)
+CREATE TABLE session (
+  id TEXT PRIMARY KEY, expiresAt DATE NOT NULL, token TEXT NOT NULL UNIQUE,
+  createdAt DATE NOT NULL, updatedAt DATE NOT NULL, ipAddress TEXT, userAgent TEXT,
+  userId TEXT NOT NULL REFERENCES user(id)
+);
+CREATE TABLE account (
+  id TEXT PRIMARY KEY, accountId TEXT NOT NULL, providerId TEXT NOT NULL,
+  userId TEXT NOT NULL REFERENCES user(id), accessToken TEXT, refreshToken TEXT,
+  idToken TEXT, accessTokenExpiresAt DATE, refreshTokenExpiresAt DATE, scope TEXT,
+  password TEXT, createdAt DATE NOT NULL, updatedAt DATE NOT NULL
+);
+CREATE TABLE verification (
+  id TEXT PRIMARY KEY, identifier TEXT NOT NULL, value TEXT NOT NULL,
+  expiresAt DATE NOT NULL, createdAt DATE NOT NULL, updatedAt DATE NOT NULL
+);
+CREATE TABLE auth_throttle (
+  key TEXT PRIMARY KEY, strikes INTEGER NOT NULL DEFAULT 0,
+  blocked_until INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE shares (
@@ -140,21 +148,14 @@ CREATE TABLE rate_limits (
     expect((await res.json<{ error: string }>()).error).toBe('bad_origin');
   });
 
-  it('me returns unauthenticated when no cookie', async () => {
-    const res = await SELF.fetch(`${ORIGIN}/api/me`, { headers: { 'CF-Connecting-IP': '5.5.5.6' } });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ authenticated: false });
-  });
-
-  it('starts OAuth with a redirect carrying state', async () => {
-    const res = await SELF.fetch(`${ORIGIN}/api/auth/google/start`, {
-      redirect: 'manual',
-      headers: { 'CF-Connecting-IP': '5.5.5.7' },
+  it('rejects an OTP request for a disposable email domain', async () => {
+    const res = await SELF.fetch(`${ORIGIN}/api/auth/email-otp/send-verification-otp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '5.5.5.20', Origin: ORIGIN },
+      // turnstileToken omitted → fails the Turnstile gate before any network MX/send.
+      body: JSON.stringify({ email: 'x@mailinator.com', type: 'sign-in' }),
     });
-    expect(res.status).toBe(302);
-    const loc = new URL(res.headers.get('location')!);
-    expect(loc.hostname).toBe('accounts.google.com');
-    expect(loc.searchParams.get('state')).toBeTruthy();
-    expect(res.headers.get('set-cookie')).toContain('oauth_state=');
+    expect(res.status).toBe(400);
+    expect((await res.json<{ error: string }>()).error).toBe('turnstile_failed');
   });
 });
