@@ -1,0 +1,34 @@
+# GenZ Editor
+
+> A free, private, browser-based editor for almost any file type. Open, edit, and
+> export files, code, images, documents, sketches, and even playable games —
+> entirely in your browser. No account required, no uploads to a server for basic
+> editing, and no limits for everyday use.
+
+## What it is
+
+GenZ Editor (https://genzeditor.com) is a client-side web application. Files are
+stored locally in the browser (OPFS) and never leave your device unless you
+explicitly create a share link. It is built on Cloudflare Workers/Pages.
+
+## Key capabilities
+
+- Text, Markdown, JSON, and code editing with syntax awareness.
+- Image editing (crop, filters, background removal) and format conversion.
+- Document and PDF viewing/editing.
+- Diagrams and sketches (Excalidraw-style whiteboard, floor plans, 3D view).
+- Audio/video processing and export (ffmpeg in the browser).
+- A collaborative Game Builder for live co-building and playing games.
+- Shareable links: read-only snapshots or editable (save-back) links.
+
+## Privacy
+
+- Local-first: editing happens on-device; files live in browser storage.
+- Sharing is opt-in and uses expiring, revocable links.
+- Sign-in (email one-time code, Google, or GitHub) is optional and only needed
+  for editable share links and higher limits.
+
+## Contact / links
+
+- App: https://genzeditor.com
+- Sitemap: https://genzeditor.com/sitemap.xml

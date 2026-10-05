@@ -1,0 +1,17 @@
+{
+  "name": "GenZ Editor — edit anything, instantly",
+  "short_name": "GenZ Editor",
+  "description": "Edit anything in your browser — files, code, images, docs, sketches, even games. No account, no limits, fully private.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0E0B14",
+  "theme_color": "#F3F1FA",
+  "categories": ["productivity", "utilities", "developer tools"],
+  "icons": [
+    { "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ]
+}
