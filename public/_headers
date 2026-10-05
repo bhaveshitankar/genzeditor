@@ -1,5 +1,5 @@
 /*
-  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; script-src 'self' blob: 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://esm.sh; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; font-src 'self' data:; frame-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' https://anyedits-api.skillmesh.workers.dev wss://anyedits-api.skillmesh.workers.dev https://s3.filebase.io https://cdn.jsdelivr.net https://esm.sh https://staticimgly.com; object-src 'none'; base-uri 'none'
+  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; script-src 'self' blob: 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://esm.sh https://challenges.cloudflare.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; font-src 'self' data:; frame-src 'self' blob: https://challenges.cloudflare.com; worker-src 'self' blob:; connect-src 'self' https://api.genzeditor.com wss://api.genzeditor.com https://anyedits-api.skillmesh.workers.dev wss://anyedits-api.skillmesh.workers.dev https://s3.filebase.io https://cdn.jsdelivr.net https://esm.sh https://staticimgly.com https://challenges.cloudflare.com https://static.cloudflareinsights.com; object-src 'none'; base-uri 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
 
