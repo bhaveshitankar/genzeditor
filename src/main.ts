@@ -19,14 +19,23 @@ export async function mount(root: HTMLElement): Promise<void> {
     try {
       const shared = await openFromHash(location.hash);
       if (shared) {
-        // Save the shared file to the store, deriving a meaningful name and a
-        // version suffix so re-opening the same link doesn't pile up identical
-        // duplicates.
         const blob = shared.blob ?? new Blob([shared.text ?? ''], { type: shared.contentType });
-        const existing = (await store.list()).map((f) => f.name);
-        const base = deriveBaseName(shared.title, shared.text);
-        const name = versionedName(base, existing);
-        const rec = await store.save(name, blob, shared.kind);
+        // Dedupe by share token: re-opening the same link must reuse the local
+        // file we already imported (refreshing its content so saved-back edits
+        // show up) instead of piling up a new versioned duplicate every refresh.
+        const token = shared.token ?? new URLSearchParams(location.hash.replace(/^#/, '')).get('t') ?? undefined;
+        const files = await store.list();
+        const prior = token ? files.find((f) => f.sourceShareToken === token) : undefined;
+        let rec;
+        if (prior) {
+          await store.update(prior.id, blob);
+          rec = prior;
+        } else {
+          const base = deriveBaseName(shared.title, shared.text);
+          const name = versionedName(base, files.map((f) => f.name));
+          rec = await store.save(name, blob, shared.kind);
+          if (token) await store.updateMeta(rec.id, { sourceShareToken: token });
+        }
         await shell.refreshLibrary();
         await shell.openFile(rec.id);
 
