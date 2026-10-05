@@ -796,6 +796,14 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   border-radius: 6px;
   padding: 0.1rem 0.4rem;
 }
+.empty-state .oss-note { font-size: 0.82rem; color: var(--text-faint); margin: 0; }
+.empty-state .oss-note a {
+  color: var(--brand-500);
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1.5px solid color-mix(in srgb, var(--brand-500) 40%, transparent);
+}
+.empty-state .oss-note a:hover { border-bottom-color: var(--brand-500); }
 
 /* Global drop overlay when dragging over an open editor */
 .drop-overlay {

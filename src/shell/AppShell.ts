@@ -282,6 +282,7 @@ export class AppShell {
           <button class="browse-btn" type="button">Pick a file</button>
           <div class="kbd-hint">psst — hit <kbd>⌘</kbd> <kbd>K</kbd> for the command palette</div>
         </div>
+        <p class="oss-note">✦ 100% open source &amp; free — <a href="https://github.com/bhaveshitankar/genzeditor" target="_blank" rel="noopener noreferrer">star or contribute on GitHub</a> 💜</p>
       </div>
     `;
     const dz = this.editorHost.querySelector('[data-role="dropzone"]') as HTMLElement;
