@@ -1,6 +1,6 @@
 // worker/src/router.ts
 import type { Env } from './env';
-import { json, error, preflight, originAllowed, isAllowedOrigin } from './http';
+import { json, error, preflight, originAllowed, isAllowedOrigin, withCors } from './http';
 import { ownerRef, ipHash } from './identity';
 import { rateLimit } from './ratelimit';
 import { createShare, confirmShare, resolveShare, initSaveBack } from './shares';
@@ -67,7 +67,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
       return json({ error: 'rate_limited', retryAfter: 600 }, env, { status: 429 });
     }
     // Passed all gates → let Better Auth generate + send the OTP.
-    return auth.handler(req);
+    return withCors(await auth.handler(req), env, req);
   }
 
   // Successful OTP sign-in clears the email throttle.
@@ -75,12 +75,12 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     const raw = (await req.clone().json().catch(() => ({}))) as { email?: string };
     const res = await auth.handler(req);
     if (res.ok) await clearThrottle(env.DB, `otp:email:${normalizeEmail(raw.email ?? '')}`);
-    return res;
+    return withCors(res, env, req);
   }
 
   // All other Better Auth routes (social sign-in, callbacks, get-session, sign-out).
   if (path.startsWith('/api/auth/')) {
-    return auth.handler(req);
+    return withCors(await auth.handler(req), env, req);
   }
 
   // Identify the caller for owner-scoped endpoints below.

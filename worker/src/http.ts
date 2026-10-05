@@ -63,6 +63,16 @@ export function preflight(env: Env): Response {
   return new Response(null, { status: 204, headers: { ...corsHeaders(env), ...securityHeaders() } });
 }
 
+// Better Auth's handler returns its own Response with no CORS headers, so
+// browser calls to /api/auth/* get blocked ("No 'Access-Control-Allow-Origin'").
+// Re-emit the response with the CORS headers merged in (preserving Set-Cookie
+// and every other header Better Auth set).
+export function withCors(res: Response, env: Env, req?: Request): Response {
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(corsHeaders(env, req))) headers.set(k, v);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 // Constant-time string comparison using WebCrypto HMAC. Both inputs are HMAC'd
 // with an ephemeral random key producing fixed-length (32-byte) digests, so the
 // final byte-wise compare runs in time independent of the inputs — closing the
