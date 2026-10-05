@@ -1406,7 +1406,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   font-size: 0.78rem;
   cursor: pointer;
 }
-.pdf-hint { color: var(--text-muted); font-size: 0.75rem; align-self: center; margin-left: auto; }
+.pdf-hint { color: var(--text-muted); font-size: 0.75rem; align-self: center; margin-left: auto; flex: 0 0 auto; white-space: nowrap; }
 .pdf-annot-layer { position: absolute; inset: 0; }
 
 /* Selectable existing-PDF text layer */
