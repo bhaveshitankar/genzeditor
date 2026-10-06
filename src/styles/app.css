@@ -1268,11 +1268,11 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 .docx-sep { width: 1px; height: 22px; background: var(--border); margin: 0 0.2rem; flex-shrink: 0; }
 .docx-page {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--bg);
   padding: 2rem 2.5rem;
   display: block;
-  scroll-behavior: smooth;
   position: relative;
 }
 .docx-page::before {
@@ -2458,33 +2458,38 @@ li.selecting .delete-btn { display: none; }
 
 /* Improve search panel in CodeMirror */
 .cm-search {
-  display: flex;
+  display: flex !important;
   gap: 0.5rem;
   align-items: center;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
   border-radius: var(--r-md);
-  padding: 0.5rem;
+  padding: 0.5rem !important;
   position: sticky;
   top: 0;
   z-index: 10;
   flex-wrap: wrap;
 }
-.cm-search input {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 0.4rem 0.6rem;
+
+.cm-search input,
+.cm-search .cm-searchfield {
+  background: var(--bg) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text) !important;
+  padding: 0.4rem 0.6rem !important;
   border-radius: var(--r-sm);
-  font-size: 0.85rem;
+  font-size: 0.85rem !important;
   flex: 1;
   min-width: 150px;
 }
-.cm-search input:focus {
-  border-color: var(--brand-500);
+
+.cm-search input:focus,
+.cm-search .cm-searchfield:focus {
+  border-color: var(--brand-500) !important;
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-500) 20%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-500) 20%, transparent) !important;
 }
+
 .cm-search button {
   padding: 0.35rem 0.65rem;
   background: var(--surface);
@@ -2495,8 +2500,23 @@ li.selecting .delete-btn { display: none; }
   font-size: 0.8rem;
   transition: all 0.12s var(--ease);
 }
-.cm-search button:hover { color: var(--text); background: var(--surface-hover); border-color: var(--border-strong); }
-.cm-search button.cm-close-button { padding: 0.3rem 0.5rem; }
+
+.cm-search button:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.cm-search .cm-close-button {
+  padding: 0.3rem 0.5rem;
+}
+
+/* Ensure search panel is visible */
+.cm-search {
+  visibility: visible !important;
+  opacity: 1 !important;
+  display: flex !important;
+}
 
 /* Modal input improvements */
 .fr-find, .fr-replace { width: 100%; padding: 0.6rem 0.75rem; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg); color: var(--text); font-size: 0.85rem; }
