@@ -90,9 +90,12 @@ export async function mount3D(host: HTMLElement, plan: FloorPlan): Promise<View3
   controls.target.set(0, 1, 0);
   controls.update();
 
+  // Render on demand (camera moves / resize) instead of a continuous 60fps loop.
   let raf = 0;
-  const loop = () => { controls.update(); renderer.render(scene, camera); raf = requestAnimationFrame(loop); };
-  loop();
+  const render = () => { raf = 0; renderer.render(scene, camera); };
+  const requestRender = () => { if (!raf) raf = requestAnimationFrame(render); };
+  controls.addEventListener('change', requestRender);
+  render();
 
   const onResize = () => {
     const w = host.clientWidth || width;
@@ -100,6 +103,7 @@ export async function mount3D(host: HTMLElement, plan: FloorPlan): Promise<View3
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
+    requestRender();
   };
   window.addEventListener('resize', onResize);
 
@@ -107,6 +111,7 @@ export async function mount3D(host: HTMLElement, plan: FloorPlan): Promise<View3
     dispose() {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', onResize);
+      controls.removeEventListener('change', requestRender);
       controls.dispose();
       renderer.dispose();
       renderer.domElement.remove();

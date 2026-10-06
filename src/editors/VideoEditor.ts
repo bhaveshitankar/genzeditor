@@ -128,6 +128,8 @@ export class VideoEditor implements DocEditor {
   private lastTs = 0;
   private waitSince = 0;
   private raf = 0;
+  private idleTimer = 0;
+  private lastActivity = 0;
   private pps = 50;
   private zoom = 100;
   private tlDirty = true;
@@ -192,6 +194,7 @@ export class VideoEditor implements DocEditor {
 
   destroy(): void {
     cancelAnimationFrame(this.raf);
+    clearTimeout(this.idleTimer);
     this.raf = 0;
     document.removeEventListener('pointermove', this.onDocMove);
     document.removeEventListener('pointerup', this.onDocUp);
@@ -354,6 +357,7 @@ export class VideoEditor implements DocEditor {
 
   // Call after any change to clips/overlays (not per-frame tweaks).
   private structureChanged(): void {
+    this.lastActivity = performance.now();
     const T = this.total();
     if (this.t > T) this.t = T;
     if (this.sel && !this.find(this.sel.id)) this.sel = null;
@@ -1080,6 +1084,10 @@ export class VideoEditor implements DocEditor {
     });
 
     // Timeline + canvas pointer interactions.
+    const wake = (): void => { this.lastActivity = performance.now(); };
+    for (const ev of ['pointerdown', 'pointermove', 'input', 'change', 'keydown', 'wheel']) {
+      this.host.addEventListener(ev, wake, { passive: true });
+    }
     this.tlInner.addEventListener('pointerdown', this.onTlDown);
     this.canvas.addEventListener('pointerdown', this.onCanvasDown);
     this.canvas.addEventListener('pointermove', this.onCanvasHover);
@@ -1748,6 +1756,7 @@ export class VideoEditor implements DocEditor {
   // ---- Playback engine ----------------------------------------------------------
 
   private setPlaying(p: boolean): void {
+    this.lastActivity = performance.now();
     if (p && this.t >= this.total() - 0.05) this.t = 0;
     this.playing = p;
     this.waitSince = 0;
@@ -1838,7 +1847,11 @@ export class VideoEditor implements DocEditor {
     else this.updatePlayhead();
     const label = `${fmtT(this.t)} / ${fmtT(T)}`;
     if (this.timeEl.textContent !== label) this.timeEl.textContent = label;
-    this.raf = requestAnimationFrame(this.tick);
+    // Paused and untouched: redraw a few times a second instead of every frame
+    // (keeps late-decoded frames/thumbnails appearing without burning CPU).
+    const idle = !this.playing && !this.drag && performance.now() - this.lastActivity > 1500;
+    if (idle) this.idleTimer = window.setTimeout(() => { this.raf = requestAnimationFrame(this.tick); }, 400);
+    else this.raf = requestAnimationFrame(this.tick);
   };
 
   // Keep every hidden media element at the right time / play state for this.t.

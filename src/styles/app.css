@@ -2444,7 +2444,7 @@ html[data-theme-animated] body::before {
     radial-gradient(40% 50% at 20% 20%, color-mix(in srgb, var(--brand-500) 40%, transparent), transparent 70%),
     radial-gradient(45% 55% at 80% 30%, color-mix(in srgb, var(--brand-700) 45%, transparent), transparent 70%),
     radial-gradient(50% 60% at 50% 90%, color-mix(in srgb, var(--brand-600) 35%, transparent), transparent 70%);
-  filter: blur(60px) saturate(1.1);
+  will-change: transform;
   opacity: 0.55;
   animation: aurora-drift 22s ease-in-out infinite alternate;
   pointer-events: none;
@@ -2639,3 +2639,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 /* Smooth transitions */
 * { transition-property: background-color, border-color, color, box-shadow; transition-duration: 0.15s; }
 button, input, select, a { transition-property: background-color, border-color, color, box-shadow, transform; }
+
+/* Excalidraw: hide built-in links to excalidraw.com (help header, library browser). */
+.sketch-host .HelpDialog__header,
+.sketch-host .library-menu-browse-button,
+.sketch-host .library-menu-control-buttons a[href*="excalidraw"],
+.sketch-host a[href*="excalidraw.com"],
+.sketch-host a[href*="plus.excalidraw"] { display: none !important; }

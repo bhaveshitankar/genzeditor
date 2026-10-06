@@ -1,0 +1,40 @@
+import { test, expect } from '@playwright/test';
+test('sketch persists across file switch, no excalidraw links', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  const up = page.locator('input[type=file]').first();
+  await up.setInputFiles({ name: 'pic.excalidraw', mimeType: 'application/json', buffer: Buffer.from('{"type":"excalidraw","version":2,"elements":[],"appState":{},"files":{}}') });
+  await page.waitForTimeout(500);
+  await up.setInputFiles({ name: 'note.md', mimeType: 'text/markdown', buffer: Buffer.from('# hi') });
+  await page.waitForTimeout(500);
+  const open = (n: string) => page.locator('[data-role="file-drawer"] button', { hasText: n }).first().click();
+  await open('pic.excalidraw');
+  const canvas = page.locator('.sketch-host canvas.interactive');
+  await expect(canvas).toBeVisible({ timeout: 20000 });
+  await page.locator('.sketch-host [title^="Rectangle"]').first().click();
+  const b = (await canvas.boundingBox())!;
+  await page.mouse.move(b.x + 200, b.y + 200); await page.mouse.down();
+  await page.mouse.move(b.x + 400, b.y + 350, { steps: 5 }); await page.mouse.up();
+  await page.waitForTimeout(800);
+  console.log('welcome before switch:', await page.locator('.welcome-screen-center').count());
+  await page.screenshot({ path: '/tmp/vidtest/sk1.png' });
+  await open('note.md'); await page.waitForTimeout(800);
+  await open('pic.excalidraw');
+  await expect(page.locator('.sketch-host canvas.interactive')).toBeVisible({ timeout: 20000 });
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: '/tmp/vidtest/sk2.png' });
+  const stored = await page.evaluate(async () => {
+    const dbs = await indexedDB.databases(); return JSON.stringify(dbs);
+  });
+  console.log('dbs', stored);
+  await expect(page.locator('.welcome-screen-center')).toHaveCount(0);
+  const n = await page.evaluate(() => document.querySelectorAll('.sketch-host a[href*="excalidraw"]:not([style*="none"])').length);
+  console.log('visible excalidraw links:', n, 'errors:', errors);
+  // open main menu and check for links
+  await page.locator('.sketch-host .dropdown-menu-button').first().click();
+  const menuLinks = await page.locator('.sketch-host .dropdown-menu a').count();
+  console.log('menu links:', menuLinks);
+  expect(menuLinks).toBe(0);
+  expect(errors).toEqual([]);
+});
