@@ -29,6 +29,7 @@ export class DocxEditor implements DocEditor {
   private host: HTMLElement;
   private onChange: () => void;
   private editable!: HTMLElement;
+  private zoom = 100;
   private name: string;
 
   private constructor(host: HTMLElement, onChange: () => void, name: string) {
@@ -329,8 +330,8 @@ export class DocxEditor implements DocEditor {
     this.host.innerHTML = `
       <div class="docx-editor">
         <div class="docx-toolbar" data-role="fmt">
-          <button type="button" data-cmd="undo" title="Undo (Ctrl+Z)">↶ Undo</button>
-          <button type="button" data-cmd="redo" title="Redo (Ctrl+Y)">↷ Redo</button>
+          <button type="button" data-cmd="undo" title="Undo (Ctrl+Z)">↶</button>
+          <button type="button" data-cmd="redo" title="Redo (Ctrl+Y)">↷</button>
           <span class="docx-sep"></span>
           <button type="button" data-cmd="bold" title="Bold"><b>B</b></button>
           <button type="button" data-cmd="italic" title="Italic"><i>I</i></button>
@@ -340,39 +341,65 @@ export class DocxEditor implements DocEditor {
           <label class="docx-color docx-hilite" title="Highlight color"><span class="docx-hilite-icon">▌</span><input type="color" data-color="hiliteColor" value="#ffe600"></label>
           <select data-role="fontsize" title="Font size">
             <option value="">Size</option>
-            <option value="1">Small (8pt)</option>
+            <option value="1">8pt</option>
             <option value="2">9pt</option>
-            <option value="3" selected>Normal (12pt)</option>
+            <option value="3" selected>12pt</option>
             <option value="4">14pt</option>
-            <option value="5">Large (18pt)</option>
+            <option value="5">18pt</option>
             <option value="6">24pt</option>
-            <option value="7">Huge (36pt)</option>
+            <option value="7">36pt</option>
           </select>
           <span class="docx-sep"></span>
-          <button type="button" data-block="h1">H1</button>
-          <button type="button" data-block="h2">H2</button>
-          <button type="button" data-block="h3">H3</button>
-          <button type="button" data-block="p">¶</button>
+          <div class="docx-dropdown" data-role="format-menu">
+            <button type="button" class="docx-menu-btn" title="Format">⚡ Format ▼</button>
+            <div class="docx-menu" data-menu="format">
+              <button type="button" data-block="h1">Heading 1</button>
+              <button type="button" data-block="h2">Heading 2</button>
+              <button type="button" data-block="h3">Heading 3</button>
+              <button type="button" data-block="p">Paragraph</button>
+            </div>
+          </div>
+          <div class="docx-dropdown" data-role="align-menu">
+            <button type="button" class="docx-menu-btn" title="Alignment">≡ Align ▼</button>
+            <div class="docx-menu" data-menu="align">
+              <button type="button" data-cmd="justifyLeft" title="Align left">⯇ Left</button>
+              <button type="button" data-cmd="justifyCenter" title="Align center">≡ Center</button>
+              <button type="button" data-cmd="justifyRight" title="Align right">⯈ Right</button>
+            </div>
+          </div>
+          <div class="docx-dropdown" data-role="list-menu">
+            <button type="button" class="docx-menu-btn" title="Lists">≣ List ▼</button>
+            <div class="docx-menu" data-menu="list">
+              <button type="button" data-cmd="insertUnorderedList">• Bullet list</button>
+              <button type="button" data-cmd="insertOrderedList">1. Numbered list</button>
+            </div>
+          </div>
           <span class="docx-sep"></span>
-          <button type="button" data-cmd="justifyLeft" title="Align left">⯇</button>
-          <button type="button" data-cmd="justifyCenter" title="Align center">≡</button>
-          <button type="button" data-cmd="justifyRight" title="Align right">⯈</button>
-          <button type="button" data-cmd="insertUnorderedList" title="Bulleted list">• List</button>
-          <button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button>
-          <span class="docx-sep"></span>
-          <button type="button" data-ins="link" title="Insert link">🔗 Link</button>
-          <button type="button" data-ins="image" title="Insert image">🖼 Image</button>
-          <button type="button" data-ins="table" title="Insert table">▦ Table</button>
-          <button type="button" data-ins="hr" title="Insert divider">— HR</button>
-          <button type="button" data-ins="pagesetup" title="Page setup">⚙ Setup</button>
-          <button type="button" data-ins="sign" title="Insert signature">✍ Sign</button>
+          <div class="docx-dropdown" data-role="insert-menu">
+            <button type="button" class="docx-menu-btn" title="Insert">+ Insert ▼</button>
+            <div class="docx-menu" data-menu="insert">
+              <button type="button" data-ins="link">🔗 Link</button>
+              <button type="button" data-ins="image">🖼 Image</button>
+              <button type="button" data-ins="table">▦ Table</button>
+              <button type="button" data-ins="hr">— Divider</button>
+              <button type="button" data-ins="pagesetup">⚙ Page setup</button>
+              <button type="button" data-ins="sign">✍ Signature</button>
+            </div>
+          </div>
           <button type="button" data-cmd="unlink" title="Remove link">🔗‌ Unlink</button>
           <button type="button" data-cmd="removeFormat" title="Clear formatting">⌫ Clear</button>
           <button type="button" data-ins="find" title="Find & Replace">🔍 Find</button>
           <span class="docx-sep"></span>
-          <button type="button" data-role="save-pdf" title="Save a copy as PDF">⤓ PDF</button>
+          <button type="button" data-role="save-pdf" title="Save as PDF">⤓ PDF</button>
         </div>
         <div class="docx-page" contenteditable="true" data-role="editable" spellcheck="true"></div>
+        <div class="docx-zoom" data-role="zoom">
+          <button type="button" data-zoom="out" title="Zoom out">−</button>
+          <input type="range" data-role="zoom-slider" min="50" max="200" value="100" step="10">
+          <span data-role="zoom-value">100%</span>
+          <button type="button" data-zoom="in" title="Zoom in">+</button>
+          <button type="button" data-zoom="reset" title="Reset zoom">Reset</button>
+        </div>
         <input type="file" accept="image/*" data-role="img-input" hidden>
       </div>`;
     this.editable = this.host.querySelector('[data-role="editable"]') as HTMLElement;
@@ -382,6 +409,19 @@ export class DocxEditor implements DocEditor {
     bar.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest('button');
       if (!btn) return;
+      const menuBtn = btn.closest('.docx-dropdown')?.querySelector('.docx-menu-btn');
+      if (menuBtn && btn === menuBtn) {
+        const menu = btn.parentElement?.querySelector('.docx-menu') as HTMLElement;
+        if (menu) {
+          const isOpen = menu.style.display === 'block';
+          bar.querySelectorAll('.docx-menu').forEach(m => (m as HTMLElement).style.display = 'none');
+          menu.style.display = isOpen ? 'none' : 'block';
+        }
+        return;
+      }
+      // Close menus when clicking menu items
+      bar.querySelectorAll('.docx-menu').forEach(m => (m as HTMLElement).style.display = 'none');
+
       if (btn.getAttribute('data-role') === 'save-pdf') { void this.exportPdf(btn as HTMLButtonElement); return; }
       const ins = btn.getAttribute('data-ins');
       if (ins) { void this.insertAction(ins); return; }
@@ -429,6 +469,32 @@ export class DocxEditor implements DocEditor {
       document.execCommand('fontSize', false, sizeSel.value);
       this.onChange();
     });
+
+    // Zoom controls
+    const zoomSlider = this.host.querySelector('[data-role="zoom-slider"]') as HTMLInputElement;
+    const zoomValue = this.host.querySelector('[data-role="zoom-value"]') as HTMLElement;
+    const zoomContainer = this.host.querySelector('[data-role="zoom"]') as HTMLElement;
+    const updateZoom = (val: number) => {
+      this.zoom = Math.max(50, Math.min(200, val));
+      zoomSlider.value = String(this.zoom);
+      zoomValue.textContent = `${this.zoom}%`;
+      this.editable.style.transform = `scale(${this.zoom / 100})`;
+      this.editable.style.transformOrigin = 'top left';
+      this.editable.style.width = `${100 * 100 / this.zoom}%`;
+    };
+    if (zoomContainer) {
+      zoomContainer.addEventListener('click', (e) => {
+        const btn = (e.target as HTMLElement).closest('button');
+        if (!btn) return;
+        const zoomAction = btn.getAttribute('data-zoom');
+        if (zoomAction === 'in') updateZoom(this.zoom + 10);
+        else if (zoomAction === 'out') updateZoom(this.zoom - 10);
+        else if (zoomAction === 'reset') updateZoom(100);
+      });
+    }
+    if (zoomSlider) {
+      zoomSlider.addEventListener('input', () => updateZoom(Number(zoomSlider.value)));
+    }
 
     this.editable.addEventListener('input', () => this.onChange());
     // Track the last selection so toolbar controls that steal focus can restore it.
