@@ -14,7 +14,9 @@ async function render(source: string): Promise<void> {
   const container = document.getElementById('container');
   if (!container) return;
   try {
-    const { svg } = await mermaid.render(`d${counter++}`, source);
+    const id = `d${counter++}`;
+    mermaid.contentLoaded();
+    const { svg } = await mermaid.render(id, source);
     container.innerHTML = svg;
     container.style.backgroundColor = 'transparent';
   } catch (err) {
