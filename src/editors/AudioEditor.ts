@@ -25,10 +25,58 @@ export type AiAudioOp =
   | { t: 'filter'; kind: 'lowpass' | 'highpass'; freq: number }
   | { t: 'speed'; rate: number };
 
+// Multitrack model: tracks hold clips; a clip plays [offset, offset+dur) of its
+// (immutable) buffer at timeline time `start`. Clips on one track play in
+// sequence, tracks play in parallel and are mixed.
+interface MClip {
+  id: string;
+  name: string;
+  buffer: AudioBuffer;
+  start: number;
+  offset: number;
+  dur: number;
+  gain: number;
+  fadeIn: number;
+  fadeOut: number;
+}
+interface MTrack { id: string; name: string; clips: MClip[]; gain: number; mute: boolean; solo: boolean; }
+interface Snapshot { tracks: MTrack[]; sel: string | null; }
+type MtDrag =
+  | { kind: 'seek' }
+  | { kind: 'move'; id: string; x0: number; start0: number; hist: boolean }
+  | { kind: 'trim'; id: string; side: 'l' | 'r'; x0: number; start0: number; offset0: number; dur0: number; hist: boolean };
+
+let mtSeq = 0;
+const mtId = (): string => `m${Date.now().toString(36)}${(++mtSeq).toString(36)}`;
+const peakCache = new WeakMap<AudioBuffer, Float32Array>();
+const PEAKS_PER_SEC = 200;
+
 export class AudioEditor implements DocEditor {
   private host: HTMLElement;
   private ctx: AudioContext;
   private buffer: AudioBuffer | null = null;
+
+  // Multitrack timeline state.
+  private tracks: MTrack[] = [];
+  private selId: string | null = null;
+  private origBlob: Blob | null = null;
+  private origBuffer: AudioBuffer | null = null;
+  private fmtChosen = false;
+  private mixT = 0;
+  private mtZoom = 1;
+  private mtPps = 50;
+  private mtDrag: MtDrag | null = null;
+  private mixSources: AudioBufferSourceNode[] = [];
+  private mixPlaying = false;
+  private mixCtxStart = 0;
+  private mixFrom = 0;
+  private mixRaf = 0;
+  private sliderSession = false;
+  private mtHeads!: HTMLElement;
+  private mtScroll!: HTMLElement;
+  private mtInner!: HTMLElement;
+  private mtProps!: HTMLElement;
+  private mtPlayhead: HTMLElement | null = null;
   private clipboard: AudioBuffer | null = null;
   private onChange: () => void;
 
@@ -42,8 +90,8 @@ export class AudioEditor implements DocEditor {
   private zoom = 1;
 
   // History of buffer snapshots (working buffer copies).
-  private undoStack: AudioBuffer[] = [];
-  private redoStack: AudioBuffer[] = [];
+  private undoStack: Snapshot[] = [];
+  private redoStack: Snapshot[] = [];
 
   // Playback / recording lifecycle.
   private source: AudioBufferSourceNode | null = null;
@@ -82,6 +130,8 @@ export class AudioEditor implements DocEditor {
     if (blob.size > 0) {
       try {
         const buf = await ed.ctx.decodeAudioData(await blob.arrayBuffer());
+        ed.origBlob = blob;
+        ed.origBuffer = buf;
         ed.setBuffer(buf, false);
       } catch {
         ed.setStatus('Could not decode this audio — try recording or uploading a WAV/MP3.');
@@ -90,6 +140,11 @@ export class AudioEditor implements DocEditor {
       ed.setStatus('Empty clip — press ● Record to capture audio.');
     }
     window.addEventListener('resize', ed.onResize);
+    document.addEventListener('keydown', ed.onKey);
+    document.addEventListener('pointermove', ed.onMtMove);
+    document.addEventListener('pointerup', ed.onMtUp);
+    ed.renderTimeline();
+    ed.renderProps();
     return ed;
   }
 
@@ -97,6 +152,10 @@ export class AudioEditor implements DocEditor {
     this.unbindKeys?.();
     this.unbindKeys = null;
     window.removeEventListener('resize', this.onResize);
+    document.removeEventListener('keydown', this.onKey);
+    document.removeEventListener('pointermove', this.onMtMove);
+    document.removeEventListener('pointerup', this.onMtUp);
+    this.stopMix();
     cancelAnimationFrame(this.raf);
     this.stopPlayback();
     this.stopRecording();
@@ -104,22 +163,55 @@ export class AudioEditor implements DocEditor {
   }
 
   async export(): Promise<{ blob: Blob; contentType: string } | null> {
-    if (!this.buffer) return null;
+    const clips = this.allClips();
+    if (!clips.length) return null;
+    if (this.isUntouched() && this.origBlob && !this.fmtChosen) {
+      return { blob: this.origBlob, contentType: this.origBlob.type || 'audio/wav' };
+    }
+    const mixed = await this.renderMix();
     if (this.exportFmt === 'mp3') {
-      const mp3 = await encodeMp3(this.buffer).catch(() => null);
+      const mp3 = await encodeMp3(mixed).catch(() => null);
       if (mp3) return { blob: mp3, contentType: 'audio/mpeg' };
       this.setStatus('MP3 encoder unavailable — exported WAV instead.');
     }
-    return { blob: encodeWav(this.buffer), contentType: 'audio/wav' };
+    return { blob: encodeWav(mixed), contentType: 'audio/wav' };
+  }
+
+  private isUntouched(): boolean {
+    const t = this.tracks[0];
+    const c = t?.clips[0];
+    return this.tracks.length === 1 && !!t && t.clips.length === 1 && !!c && c.buffer === this.origBuffer &&
+      c.start === 0 && c.offset === 0 && Math.abs(c.dur - c.buffer.duration) < 1e-6 && c.gain === 1 &&
+      c.fadeIn === 0 && c.fadeOut === 0 && t.gain === 1 && !t.mute;
+  }
+
+  private async renderMix(): Promise<AudioBuffer> {
+    const total = Math.max(0.05, this.mixTotal());
+    const sr = this.allClips()[0]?.buffer.sampleRate || 44100;
+    const oac = new OfflineAudioContext(2, Math.ceil(total * sr), sr);
+    this.scheduleMix(oac, oac.destination, 0, 0);
+    return oac.startRendering();
   }
 
   // ---- buffer / view state -------------------------------------------------
 
+  // Replace the selected clip's audio (all clip-editor ops funnel through here).
   private setBuffer(buf: AudioBuffer, pushHistory = true) {
-    if (pushHistory && this.buffer) {
-      this.undoStack.push(this.buffer);
-      if (this.undoStack.length > 40) this.undoStack.shift();
-      this.redoStack = [];
+    if (pushHistory) this.pushHistory();
+    const c = this.selClip();
+    if (c) {
+      const wasWhole = c.offset < 1e-6 && Math.abs(c.dur - c.buffer.duration) < 1e-3;
+      c.buffer = buf;
+      if (wasWhole) { c.offset = 0; c.dur = buf.duration; }
+      else {
+        c.offset = Math.min(c.offset, Math.max(0, buf.duration - 0.05));
+        c.dur = Math.max(0.05, Math.min(c.dur, buf.duration - c.offset));
+      }
+    } else {
+      if (!this.tracks.length) this.tracks.push(this.newTrack());
+      const nc = this.newClip(buf, 'Clip 1', 0);
+      this.tracks[0]!.clips.push(nc);
+      this.selId = nc.id;
     }
     this.buffer = buf;
     if (this.selEnd > buf.duration || this.selEnd === 0) { this.selStart = 0; this.selEnd = 0; }
@@ -128,6 +220,7 @@ export class AudioEditor implements DocEditor {
     this.redraw();
     this.updateButtons();
     this.setStatus(`${fmt(buf.duration)} · ${buf.numberOfChannels}ch · ${(buf.sampleRate / 1000).toFixed(1)}kHz`);
+    if (this.mtInner) { this.renderTimeline(); this.renderProps(); }
     this.onChange();
   }
 
@@ -146,9 +239,33 @@ export class AudioEditor implements DocEditor {
   private renderShell() {
     this.host.innerHTML = `
       <div class="aud-editor">
+        <div class="amt">
+          <div class="amt-bar">
+            <button type="button" class="aud-btn aud-primary" data-mt="play" title="Play the whole mix (Space)">▶ Play mix</button>
+            <button type="button" class="aud-btn" data-mt="stop">■</button>
+            <span class="amt-time" data-role="mtTime">0:00.0</span>
+            <button type="button" class="aud-btn" data-mt="append" title="Add audio after the last clip of the selected track (sequential merge)">+ Add audio (append)</button>
+            <button type="button" class="aud-btn" data-mt="addtrack" title="Add audio on a new track at the playhead (parallel mix)">+ Add track (mix)</button>
+            <button type="button" class="aud-btn" data-mt="split" title="Split clip at playhead (S)">✂ Split</button>
+            <button type="button" class="aud-btn" data-mt="del" title="Delete selected clip (Del)">Delete clip</button>
+            <button type="button" class="aud-btn" data-mt="undo" title="Undo (Ctrl/Cmd+Z)">↶</button>
+            <button type="button" class="aud-btn" data-mt="redo" title="Redo">↷</button>
+            <button type="button" class="aud-btn" data-mt="zout" title="Zoom out timeline">−</button>
+            <button type="button" class="aud-btn" data-mt="zin" title="Zoom in timeline">+</button>
+            <button type="button" class="aud-btn" data-mt="zfit">Fit</button>
+            <input type="file" accept="audio/*,video/*" multiple data-role="mtAppend" hidden>
+            <input type="file" accept="audio/*,video/*" multiple data-role="mtTrack" hidden>
+          </div>
+          <div class="amt-body">
+            <div class="amt-heads" data-role="mtHeads"></div>
+            <div class="amt-scroll" data-role="mtScroll"><div class="amt-inner" data-role="mtInner"></div></div>
+          </div>
+          <div class="amt-props" data-role="mtProps"></div>
+        </div>
+        <div class="aud-clip-title" data-role="clipTitle">Clip editor</div>
         <div class="aud-toolbar" data-role="toolbar">
           <div class="aud-group">
-            <button type="button" class="aud-btn aud-primary" data-act="play">▶ Play</button>
+            <button type="button" class="aud-btn aud-primary" data-act="play">▶ Play clip</button>
             <button type="button" class="aud-btn" data-act="stop">■ Stop</button>
             <button type="button" class="aud-btn" data-act="loop" title="Loop selection">⟳ Loop</button>
           </div>
@@ -216,6 +333,7 @@ export class AudioEditor implements DocEditor {
       if (act) void this.dispatch(act);
     });
     this.scrollEl.addEventListener('scroll', () => this.redraw());
+    this.bindTimeline();
     this.attachPointer();
     this.fitZoom();
 
@@ -234,6 +352,10 @@ export class AudioEditor implements DocEditor {
     const set = (a: string, on: boolean) => { const b = this.btn(a); if (b) b.disabled = !on; };
     set('undo', this.undoStack.length > 0);
     set('redo', this.redoStack.length > 0);
+    const mu = this.host.querySelector<HTMLButtonElement>('[data-mt="undo"]');
+    const mr = this.host.querySelector<HTMLButtonElement>('[data-mt="redo"]');
+    if (mu) mu.disabled = this.undoStack.length === 0;
+    if (mr) mr.disabled = this.redoStack.length === 0;
     set('paste', !!this.clipboard);
     this.btn('loop')?.classList.toggle('active', this.looping);
   }
@@ -271,8 +393,8 @@ export class AudioEditor implements DocEditor {
       case 'selall': if (this.buffer) { this.selStart = 0; this.selEnd = this.buffer.duration; this.redraw(); } break;
       case 'rec': void this.toggleRecord(); break;
       case 'recmode': this.recInsert = !this.recInsert; { const b = this.btn('recmode'); if (b) b.textContent = this.recInsert ? 'Insert' : 'Append'; } break;
-      case 'fmtwav': this.exportFmt = 'wav'; this.btn('fmtwav')?.classList.add('active'); this.btn('fmtmp3')?.classList.remove('active'); break;
-      case 'fmtmp3': this.exportFmt = 'mp3'; this.btn('fmtmp3')?.classList.add('active'); this.btn('fmtwav')?.classList.remove('active'); break;
+      case 'fmtwav': this.fmtChosen = true; this.exportFmt = 'wav'; this.btn('fmtwav')?.classList.add('active'); this.btn('fmtmp3')?.classList.remove('active'); break;
+      case 'fmtmp3': this.fmtChosen = true; this.exportFmt = 'mp3'; this.btn('fmtmp3')?.classList.add('active'); this.btn('fmtwav')?.classList.remove('active'); break;
     }
   }
 
@@ -362,23 +484,43 @@ export class AudioEditor implements DocEditor {
     this.setStatus(`Inserted ${sec}s silence`);
   }
 
+  private snap(): Snapshot {
+    return { tracks: this.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c })) })), sel: this.selId };
+  }
+
+  private pushHistory() {
+    this.undoStack.push(this.snap());
+    if (this.undoStack.length > 60) this.undoStack.shift();
+    this.redoStack = [];
+    this.updateButtons();
+  }
+
+  private restore(s: Snapshot) {
+    this.stopMix();
+    this.stopPlayback();
+    this.tracks = s.tracks;
+    this.selId = s.sel && this.findClip(s.sel) ? s.sel : null;
+    this.buffer = this.selClip()?.buffer ?? null;
+    this.selStart = this.selEnd = 0;
+    this.playhead = 0;
+    this.fitZoom(); this.redraw(); this.updateButtons();
+    this.renderTimeline(); this.renderProps();
+    this.onChange();
+  }
+
   private undo() {
     const prev = this.undoStack.pop();
-    if (!prev || !this.buffer) return;
-    this.redoStack.push(this.buffer);
-    this.buffer = prev;
-    this.selStart = this.selEnd = 0;
-    this.fitZoom(); this.redraw(); this.updateButtons(); this.onChange();
+    if (!prev) return;
+    this.redoStack.push(this.snap());
+    this.restore(prev);
     this.setStatus('Undo');
   }
 
   private redo() {
     const next = this.redoStack.pop();
-    if (!next || !this.buffer) return;
-    this.undoStack.push(this.buffer);
-    this.buffer = next;
-    this.selStart = this.selEnd = 0;
-    this.fitZoom(); this.redraw(); this.updateButtons(); this.onChange();
+    if (!next) return;
+    this.undoStack.push(this.snap());
+    this.restore(next);
     this.setStatus('Redo');
   }
 
@@ -740,6 +882,453 @@ export class AudioEditor implements DocEditor {
 
   // ---- rendering -----------------------------------------------------------
 
+  // ---- multitrack timeline --------------------------------------------------
+
+  private newTrack(): MTrack {
+    return { id: mtId(), name: `Track ${this.tracks.length + 1}`, clips: [], gain: 1, mute: false, solo: false };
+  }
+
+  private newClip(buffer: AudioBuffer, name: string, start: number): MClip {
+    return { id: mtId(), name, buffer, start, offset: 0, dur: buffer.duration, gain: 1, fadeIn: 0, fadeOut: 0 };
+  }
+
+  private allClips(): MClip[] { return this.tracks.flatMap((t) => t.clips); }
+
+  private findClip(id: string): { clip: MClip; track: MTrack } | null {
+    for (const track of this.tracks) {
+      const clip = track.clips.find((c) => c.id === id);
+      if (clip) return { clip, track };
+    }
+    return null;
+  }
+
+  private selClip(): MClip | null { return this.selId ? this.findClip(this.selId)?.clip ?? null : null; }
+
+  private mixTotal(): number {
+    return this.allClips().reduce((m, c) => Math.max(m, c.start + c.dur), 0);
+  }
+
+  private trackEnd(t: MTrack): number { return t.clips.reduce((m, c) => Math.max(m, c.start + c.dur), 0); }
+
+  private selectClip(id: string | null) {
+    if (id === this.selId) return;
+    this.stopPlayback();
+    this.selId = id;
+    const c = this.selClip();
+    this.buffer = c?.buffer ?? null;
+    this.selStart = this.selEnd = 0;
+    this.playhead = 0;
+    this.fitZoom();
+    this.redraw();
+    this.renderProps();
+    this.mtInner.querySelectorAll<HTMLElement>('.amt-clip').forEach((n) => n.classList.toggle('sel', n.dataset.id === id));
+  }
+
+  // Schedule every audible clip into an (Offline)AudioContext starting at timeline time `from`.
+  private scheduleMix(ac: BaseAudioContext, dest: AudioNode, from: number, t0: number): AudioBufferSourceNode[] {
+    const out: AudioBufferSourceNode[] = [];
+    const solo = this.tracks.some((t) => t.solo);
+    for (const t of this.tracks) {
+      if (t.mute || (solo && !t.solo)) continue;
+      const tg = ac.createGain();
+      tg.gain.value = t.gain;
+      tg.connect(dest);
+      for (const c of t.clips) {
+        if (c.start + c.dur <= from) continue;
+        const skip = Math.max(0, from - c.start);
+        const when = t0 + Math.max(0, c.start - from);
+        const env = (u: number): number => c.gain * Math.max(0, Math.min(1,
+          c.fadeIn > 0 ? u / c.fadeIn : 1, c.fadeOut > 0 ? (c.dur - u) / c.fadeOut : 1));
+        const src = ac.createBufferSource();
+        src.buffer = c.buffer;
+        const g = ac.createGain();
+        src.connect(g).connect(tg);
+        g.gain.setValueAtTime(env(skip), when);
+        if (c.fadeIn > skip) g.gain.linearRampToValueAtTime(env(c.fadeIn), when + (c.fadeIn - skip));
+        if (c.fadeOut > 0) {
+          const fo = Math.max(skip, c.dur - c.fadeOut);
+          g.gain.setValueAtTime(env(fo), when + (fo - skip));
+          g.gain.linearRampToValueAtTime(0, when + (c.dur - skip));
+        }
+        src.start(when, c.offset + skip, Math.max(0.01, c.dur - skip));
+        out.push(src);
+      }
+    }
+    return out;
+  }
+
+  private playMix() {
+    if (this.mixPlaying) { this.stopMix(); return; }
+    this.stopPlayback();
+    const total = this.mixTotal();
+    if (!total) return;
+    void this.ctx.resume();
+    if (this.mixT >= total - 0.02) this.mixT = 0;
+    const t0 = this.ctx.currentTime + 0.05;
+    this.mixSources = this.scheduleMix(this.ctx, this.ctx.destination, this.mixT, t0);
+    this.mixCtxStart = t0;
+    this.mixFrom = this.mixT;
+    this.mixPlaying = true;
+    const b = this.host.querySelector('[data-mt="play"]');
+    if (b) b.textContent = '❚❚ Pause';
+    const loop = () => {
+      if (!this.mixPlaying) return;
+      this.mixT = this.mixFrom + Math.max(0, this.ctx.currentTime - this.mixCtxStart);
+      if (this.mixT >= this.mixTotal()) { this.mixT = this.mixTotal(); this.stopMix(); }
+      this.updateMixPlayhead(true);
+      this.mixRaf = requestAnimationFrame(loop);
+    };
+    this.mixRaf = requestAnimationFrame(loop);
+  }
+
+  private stopMix() {
+    for (const s of this.mixSources) { try { s.stop(); } catch { /* not started */ } s.disconnect(); }
+    this.mixSources = [];
+    this.mixPlaying = false;
+    cancelAnimationFrame(this.mixRaf);
+    const b = this.host.querySelector('[data-mt="play"]');
+    if (b) b.textContent = '▶ Play mix';
+    this.updateMixPlayhead(false);
+  }
+
+  private seekMix(t: number) {
+    const was = this.mixPlaying;
+    if (was) this.stopMix();
+    this.mixT = Math.max(0, Math.min(t, this.mixTotal()));
+    if (was) this.playMix();
+    else this.updateMixPlayhead(false);
+  }
+
+  private updateMixPlayhead(follow: boolean) {
+    if (this.mtPlayhead) {
+      const x = this.mixT * this.mtPps;
+      this.mtPlayhead.style.left = `${x}px`;
+      const sc = this.mtScroll;
+      if (follow && (x < sc.scrollLeft || x > sc.scrollLeft + sc.clientWidth - 20)) sc.scrollLeft = Math.max(0, x - 40);
+    }
+    const tl = this.host.querySelector('[data-role="mtTime"]');
+    if (tl) tl.textContent = `${fmtT(this.mixT)} / ${fmtT(this.mixTotal())}`;
+  }
+
+  private async decodeFiles(files: File[]): Promise<{ buf: AudioBuffer; name: string }[]> {
+    const out: { buf: AudioBuffer; name: string }[] = [];
+    for (const f of files) {
+      try { out.push({ buf: await this.ctx.decodeAudioData(await f.arrayBuffer()), name: f.name.replace(/\.[^.]+$/, '') }); }
+      catch { this.setStatus(`Couldn't decode "${f.name}".`); }
+    }
+    return out;
+  }
+
+  // Sequential merge: add after the last clip of the selected (or first) track.
+  private async appendFiles(files: File[]) {
+    const decoded = await this.decodeFiles(files);
+    if (!decoded.length) return;
+    this.pushHistory();
+    if (!this.tracks.length) this.tracks.push(this.newTrack());
+    const track = (this.selId && this.findClip(this.selId)?.track) || this.tracks[0]!;
+    let at = this.trackEnd(track);
+    let last: MClip | null = null;
+    for (const d of decoded) {
+      last = this.newClip(d.buf, d.name, at);
+      track.clips.push(last);
+      at += last.dur;
+    }
+    this.afterStructure(last?.id ?? null);
+    this.setStatus(`Appended ${decoded.length} clip${decoded.length > 1 ? 's' : ''} to ${track.name}.`);
+  }
+
+  // Parallel mix: each file goes on a new track starting at the playhead.
+  private async addTrackFiles(files: File[]) {
+    const decoded = await this.decodeFiles(files);
+    if (!decoded.length) return;
+    this.pushHistory();
+    let last: MClip | null = null;
+    for (const d of decoded) {
+      const t = this.newTrack();
+      last = this.newClip(d.buf, d.name, this.mixT);
+      t.clips.push(last);
+      this.tracks.push(t);
+    }
+    this.afterStructure(last?.id ?? null);
+    this.setStatus(`Added ${decoded.length} track${decoded.length > 1 ? 's' : ''} — they play mixed together.`);
+  }
+
+  private splitMix() {
+    let hit = this.selClip();
+    const t = this.mixT;
+    const inside = (c: MClip | null): boolean => !!c && t > c.start + 0.02 && t < c.start + c.dur - 0.02;
+    if (!inside(hit)) hit = this.allClips().find((c) => inside(c)) ?? null;
+    if (!hit) { this.setStatus('Move the playhead inside a clip to split it.'); return; }
+    this.pushHistory();
+    const f = this.findClip(hit.id)!;
+    const cut = t - hit.start;
+    const b: MClip = { ...hit, id: mtId(), start: t, offset: hit.offset + cut, dur: hit.dur - cut, fadeIn: 0 };
+    hit.dur = cut;
+    hit.fadeOut = 0;
+    f.track.clips.splice(f.track.clips.indexOf(hit) + 1, 0, b);
+    this.afterStructure(b.id);
+    this.setStatus(`Split at ${fmtT(t)}`);
+  }
+
+  private deleteClip() {
+    const f = this.selId ? this.findClip(this.selId) : null;
+    if (!f) { this.setStatus('Select a clip first.'); return; }
+    this.pushHistory();
+    f.track.clips = f.track.clips.filter((c) => c !== f.clip);
+    if (!f.track.clips.length && this.tracks.length > 1) this.tracks = this.tracks.filter((t) => t !== f.track);
+    this.afterStructure(null);
+  }
+
+  private afterStructure(selectId: string | null | undefined) {
+    this.stopMix();
+    if (selectId !== undefined) {
+      this.selId = null;
+      this.selectClip(selectId);
+    }
+    this.mixT = Math.min(this.mixT, this.mixTotal());
+    this.renderTimeline();
+    this.renderProps();
+    this.updateButtons();
+    this.onChange();
+  }
+
+  private bindTimeline() {
+    this.mtHeads = this.q('mtHeads');
+    this.mtScroll = this.q('mtScroll');
+    this.mtInner = this.q('mtInner');
+    this.mtProps = this.q('mtProps');
+    const appendIn = this.q('mtAppend') as HTMLInputElement;
+    const trackIn = this.q('mtTrack') as HTMLInputElement;
+    appendIn.addEventListener('change', () => { const f = Array.from(appendIn.files ?? []); appendIn.value = ''; if (f.length) void this.appendFiles(f); });
+    trackIn.addEventListener('change', () => { const f = Array.from(trackIn.files ?? []); trackIn.value = ''; if (f.length) void this.addTrackFiles(f); });
+    this.host.querySelector('.amt-bar')!.addEventListener('click', (e) => {
+      const act = (e.target as HTMLElement).closest<HTMLElement>('[data-mt]')?.dataset.mt;
+      switch (act) {
+        case 'play': this.playMix(); break;
+        case 'stop': this.stopMix(); this.seekMix(0); break;
+        case 'append': appendIn.click(); break;
+        case 'addtrack': trackIn.click(); break;
+        case 'split': this.splitMix(); break;
+        case 'del': this.deleteClip(); break;
+        case 'undo': this.undo(); break;
+        case 'redo': this.redo(); break;
+        case 'zin': this.mtZoom = Math.min(40, this.mtZoom * 1.5); this.renderTimeline(); break;
+        case 'zout': this.mtZoom = Math.max(1, this.mtZoom / 1.5); this.renderTimeline(); break;
+        case 'zfit': this.mtZoom = 1; this.renderTimeline(); break;
+      }
+    });
+    this.mtInner.addEventListener('pointerdown', this.onMtDown);
+    this.mtHeads.addEventListener('click', (e) => {
+      const el = (e.target as HTMLElement).closest<HTMLElement>('[data-tact]');
+      const t = this.tracks.find((x) => x.id === el?.closest<HTMLElement>('[data-track]')?.dataset.track);
+      if (!el || !t) return;
+      this.pushHistory();
+      if (el.dataset.tact === 'mute') t.mute = !t.mute;
+      else if (el.dataset.tact === 'solo') t.solo = !t.solo;
+      else if (el.dataset.tact === 'del' && this.tracks.length > 1) this.tracks = this.tracks.filter((x) => x !== t);
+      if (this.selId && !this.findClip(this.selId)) { this.selId = null; this.selectClip(this.allClips()[0]?.id ?? null); }
+      this.afterStructure(undefined);
+    });
+    this.mtHeads.addEventListener('input', (e) => {
+      const el = e.target as HTMLInputElement;
+      const t = this.tracks.find((x) => x.id === el.closest<HTMLElement>('[data-track]')?.dataset.track);
+      if (!t || el.dataset.tact !== 'vol') return;
+      if (!this.sliderSession) { this.pushHistory(); this.sliderSession = true; }
+      t.gain = Number(el.value);
+    });
+    this.mtHeads.addEventListener('change', () => { this.sliderSession = false; this.onChange(); });
+    new ResizeObserver(() => { if (!this.mtDrag) this.renderTimeline(); }).observe(this.mtScroll);
+  }
+
+  private mtX(e: PointerEvent): number { return e.clientX - this.mtInner.getBoundingClientRect().left; }
+
+  private onMtDown = (e: PointerEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    const node = target.closest<HTMLElement>('.amt-clip');
+    const x = this.mtX(e);
+    e.preventDefault();
+    if (!node) { this.mtDrag = { kind: 'seek' }; this.seekMix(x / this.mtPps); return; }
+    const f = this.findClip(node.dataset.id!);
+    if (!f) return;
+    this.selectClip(f.clip.id);
+    const side = target.dataset.side as 'l' | 'r' | undefined;
+    const c = f.clip;
+    this.mtDrag = side
+      ? { kind: 'trim', id: c.id, side, x0: x, start0: c.start, offset0: c.offset, dur0: c.dur, hist: false }
+      : { kind: 'move', id: c.id, x0: x, start0: c.start, hist: false };
+    if (!side) this.seekMix(x / this.mtPps);
+  };
+
+  private onMtMove = (e: PointerEvent) => {
+    const d = this.mtDrag;
+    if (!d) return;
+    const x = this.mtX(e);
+    if (d.kind === 'seek') { this.seekMix(x / this.mtPps); return; }
+    const f = this.findClip(d.id);
+    if (!f) return;
+    if (!d.hist) { this.pushHistory(); d.hist = true; this.stopMix(); }
+    const dt = (x - d.x0) / this.mtPps;
+    const c = f.clip;
+    if (d.kind === 'move') {
+      c.start = Math.max(0, d.start0 + dt);
+      // Drop onto another track lane under the pointer.
+      const lane = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>('.amt-lane');
+      const to = this.tracks.find((t) => t.id === lane?.dataset.track);
+      if (to && to !== f.track) {
+        f.track.clips = f.track.clips.filter((k) => k !== c);
+        to.clips.push(c);
+      }
+    } else if (d.side === 'l') {
+      const k = Math.min(Math.max(dt, -d.offset0, -d.start0), d.dur0 - 0.05);
+      c.offset = d.offset0 + k; c.start = d.start0 + k; c.dur = d.dur0 - k;
+    } else {
+      c.dur = Math.max(0.05, Math.min(d.dur0 + dt, c.buffer.duration - c.offset));
+    }
+    this.renderTimeline();
+  };
+
+  private onMtUp = () => {
+    const d = this.mtDrag;
+    if (!d) return;
+    this.mtDrag = null;
+    if (d.kind !== 'seek' && d.hist) {
+      for (const t of this.tracks) t.clips.sort((a, b) => a.start - b.start);
+      this.afterStructure(undefined);
+    }
+  };
+
+  private onKey = (e: KeyboardEvent) => {
+    if (!this.host.isConnected || e.metaKey || e.ctrlKey || e.altKey) return;
+    if ((e.target as HTMLElement).closest('input, textarea, select, button, [contenteditable="true"]')) return;
+    if (e.key === ' ') { e.preventDefault(); this.playMix(); }
+    else if (e.key === 's' || e.key === 'S') { e.preventDefault(); this.splitMix(); }
+    else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      if (this.selEnd - this.selStart > 0.001) this.deleteSel(); else this.deleteClip();
+    }
+  };
+
+  private renderTimeline() {
+    if (!this.mtInner) return;
+    const total = this.mixTotal();
+    const span = Math.max(total, 5);
+    if (!this.mtDrag) this.mtPps = ((Math.max(200, this.mtScroll.clientWidth) - 20) / span) * this.mtZoom;
+    const pps = this.mtPps;
+    const inner = this.mtInner;
+    inner.innerHTML = '';
+    inner.style.width = `${Math.ceil(span * pps) + 20}px`;
+
+    const ruler = document.createElement('div');
+    ruler.className = 'amt-ruler';
+    const step = niceStep(80 / pps);
+    for (let t = 0; t <= span + 1e-6; t += step) {
+      const tk = document.createElement('div');
+      tk.className = 'amt-tick';
+      tk.style.left = `${t * pps}px`;
+      tk.textContent = fmt(t);
+      ruler.appendChild(tk);
+    }
+    inner.appendChild(ruler);
+
+    this.mtHeads.innerHTML = '<div class="amt-head amt-head-ruler"></div>';
+    const solo = this.tracks.some((t) => t.solo);
+    for (const t of this.tracks) {
+      const head = document.createElement('div');
+      head.className = 'amt-head' + (t.mute || (solo && !t.solo) ? ' off' : '');
+      head.dataset.track = t.id;
+      head.innerHTML = `
+        <span class="amt-head-name"></span>
+        <div class="amt-head-btns">
+          <button type="button" class="amt-tbtn${t.mute ? ' on' : ''}" data-tact="mute" title="Mute">M</button>
+          <button type="button" class="amt-tbtn${t.solo ? ' on' : ''}" data-tact="solo" title="Solo">S</button>
+          ${this.tracks.length > 1 ? '<button type="button" class="amt-tbtn" data-tact="del" title="Remove track">×</button>' : ''}
+        </div>
+        <input type="range" min="0" max="2" step="0.05" data-tact="vol" title="Track volume">`;
+      head.querySelector('.amt-head-name')!.textContent = t.name;
+      (head.querySelector('[data-tact="vol"]') as HTMLInputElement).value = String(t.gain);
+      this.mtHeads.appendChild(head);
+
+      const lane = document.createElement('div');
+      lane.className = 'amt-lane';
+      lane.dataset.track = t.id;
+      for (const c of t.clips) lane.appendChild(this.clipNode(c));
+      inner.appendChild(lane);
+    }
+
+    this.mtPlayhead = document.createElement('div');
+    this.mtPlayhead.className = 'amt-playhead';
+    inner.appendChild(this.mtPlayhead);
+    this.updateMixPlayhead(false);
+  }
+
+  private clipNode(c: MClip): HTMLElement {
+    const pps = this.mtPps;
+    const w = Math.max(6, c.dur * pps);
+    const node = document.createElement('div');
+    node.className = 'amt-clip' + (c.id === this.selId ? ' sel' : '');
+    node.dataset.id = c.id;
+    node.style.left = `${c.start * pps}px`;
+    node.style.width = `${w}px`;
+    const cv = document.createElement('canvas');
+    const cw = Math.min(4000, Math.ceil(w)), ch = 46;
+    cv.width = cw; cv.height = ch;
+    const g = cv.getContext('2d')!;
+    const peaks = peaksOf(c.buffer);
+    g.fillStyle = 'rgba(255,255,255,0.75)';
+    for (let x = 0; x < cw; x++) {
+      const t0 = c.offset + (x / cw) * c.dur, t1 = c.offset + ((x + 1) / cw) * c.dur;
+      let m = 0;
+      for (let i = Math.floor(t0 * PEAKS_PER_SEC); i <= Math.floor(t1 * PEAKS_PER_SEC) && i < peaks.length; i++) m = Math.max(m, peaks[i]!);
+      const env = c.gain * Math.min(1, c.fadeIn > 0 ? ((x / cw) * c.dur) / c.fadeIn : 1, c.fadeOut > 0 ? (c.dur - (x / cw) * c.dur) / c.fadeOut : 1);
+      const hh = Math.max(1, Math.min(1, m * env) * ch);
+      g.fillRect(x, (ch - hh) / 2, 1, hh);
+    }
+    const name = document.createElement('span');
+    name.className = 'amt-clip-name';
+    name.textContent = `${c.name} · ${fmtT(c.dur)}`;
+    const l = document.createElement('div'); l.className = 'amt-handle l'; l.dataset.side = 'l'; l.title = 'Drag to trim start';
+    const r = document.createElement('div'); r.className = 'amt-handle r'; r.dataset.side = 'r'; r.title = 'Drag to trim end';
+    node.append(cv, name, l, r);
+    return node;
+  }
+
+  private renderProps() {
+    const host = this.mtProps;
+    if (!host) return;
+    host.innerHTML = '';
+    const title = this.q('clipTitle');
+    const c = this.selClip();
+    if (title) title.textContent = c ? `Clip editor — ${c.name} (cut, effects and recording apply to this clip)` : 'Clip editor';
+    if (!c) {
+      host.innerHTML = '<span class="amt-hint">Select a clip to set its volume and fades. Drag clips to move them (even onto another track), drag edges to trim. Space = play mix, S = split.</span>';
+      return;
+    }
+    const field = (label: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void, unit: string) => {
+      const wrap = document.createElement('label');
+      wrap.className = 'amt-field';
+      const val = document.createElement('b');
+      val.textContent = `${get().toFixed(step < 1 ? 2 : 0)}${unit}`;
+      const inp = document.createElement('input');
+      inp.type = 'range'; inp.min = String(min); inp.max = String(max); inp.step = String(step); inp.value = String(get());
+      inp.addEventListener('input', () => {
+        if (!this.sliderSession) { this.pushHistory(); this.sliderSession = true; }
+        set(Number(inp.value));
+        val.textContent = `${get().toFixed(step < 1 ? 2 : 0)}${unit}`;
+      });
+      inp.addEventListener('change', () => { this.sliderSession = false; this.renderTimeline(); this.onChange(); });
+      wrap.append(document.createTextNode(`${label} `), val, inp);
+      host.appendChild(wrap);
+    };
+    const name = document.createElement('strong');
+    name.textContent = c.name;
+    host.appendChild(name);
+    field('Volume', 0, 2, 0.05, () => c.gain, (v) => { c.gain = v; }, '×');
+    field('Fade in', 0, Math.min(10, c.dur), 0.1, () => c.fadeIn, (v) => { c.fadeIn = Math.min(v, c.dur); }, 's');
+    field('Fade out', 0, Math.min(10, c.dur), 0.1, () => c.fadeOut, (v) => { c.fadeOut = Math.min(v, c.dur); }, 's');
+    field('Start', 0, Math.max(60, this.mixTotal() + 10), 0.1, () => c.start, (v) => { c.start = v; }, 's');
+  }
+
   private redraw() {
     if (!this.canvas) return;
     const d = this.buffer?.duration || 1;
@@ -930,4 +1519,29 @@ async function encodeMp3(buf: AudioBuffer): Promise<Blob | null> {
   const tail = enc.flush();
   if (tail.length) chunks.push(tail);
   return new Blob(chunks as unknown as BlobPart[], { type: 'audio/mpeg' });
+}
+
+// Max-abs peaks at PEAKS_PER_SEC resolution, cached per (immutable) buffer.
+function peaksOf(buf: AudioBuffer): Float32Array {
+  const hit = peakCache.get(buf);
+  if (hit) return hit;
+  const per = Math.max(1, Math.floor(buf.sampleRate / PEAKS_PER_SEC));
+  const n = Math.ceil(buf.length / per);
+  const out = new Float32Array(n);
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const d = buf.getChannelData(c);
+    for (let i = 0; i < n; i++) {
+      let m = out[i]!;
+      const end = Math.min(d.length, (i + 1) * per);
+      for (let j = i * per; j < end; j++) { const v = Math.abs(d[j]!); if (v > m) m = v; }
+      out[i] = m;
+    }
+  }
+  peakCache.set(buf, out);
+  return out;
+}
+
+function fmtT(sec: number): string {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60), d = Math.floor(sec * 10) % 10;
+  return `${m}:${s.toString().padStart(2, '0')}.${d}`;
 }

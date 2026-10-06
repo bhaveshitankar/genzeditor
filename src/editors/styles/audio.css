@@ -94,3 +94,40 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ---- Multitrack timeline ---- */
+.amt { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.amt-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.amt-time { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--text-muted); min-width: 110px; }
+.amt-body { display: flex; border: 1px solid var(--border); border-radius: var(--r-sm, 8px); background: var(--surface-2); overflow: hidden; user-select: none; }
+.amt-heads { flex: 0 0 132px; border-right: 1px solid var(--border); background: var(--surface); }
+.amt-head { height: 64px; box-sizing: border-box; padding: 6px 8px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.amt-head.off { opacity: 0.5; }
+.amt-head-ruler { height: 22px; padding: 0; }
+.amt-head-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.amt-head-btns { display: flex; gap: 4px; }
+.amt-tbtn { width: 24px; height: 20px; padding: 0; font-size: 11px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-2); color: var(--text); cursor: pointer; }
+.amt-tbtn.on { background: var(--brand-500); color: #fff; border-color: transparent; }
+.amt-head input[type="range"] { width: 100%; accent-color: var(--brand-500); height: 12px; }
+.amt-scroll { flex: 1 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+.amt-inner { position: relative; min-width: 100%; }
+.amt-ruler { position: relative; height: 22px; border-bottom: 1px solid var(--border); background: var(--surface); cursor: pointer; }
+.amt-tick { position: absolute; top: 0; height: 100%; padding-left: 4px; border-left: 1px solid var(--border); font-size: 10px; line-height: 22px; color: var(--text-muted); white-space: nowrap; }
+.amt-lane { position: relative; height: 64px; border-bottom: 1px solid var(--border); }
+.amt-clip { position: absolute; top: 4px; bottom: 4px; box-sizing: border-box; border: 2px solid transparent; border-radius: 6px; background: color-mix(in srgb, var(--brand-500) 55%, #000); overflow: hidden; cursor: grab; }
+.amt-clip.sel { border-color: #fff; box-shadow: 0 0 0 2px var(--brand-500); z-index: 2; }
+.amt-clip canvas { position: absolute; inset: 2px 0 12px; width: 100%; height: calc(100% - 14px); pointer-events: none; }
+.amt-clip-name { position: absolute; left: 10px; right: 10px; bottom: 0; font-size: 10px; font-weight: 600; color: #fff; text-shadow: 0 1px 2px #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.amt-handle { position: absolute; top: 0; bottom: 0; width: 8px; background: rgba(255,255,255,0.3); cursor: ew-resize; }
+.amt-handle.l { left: 0; }
+.amt-handle.r { right: 0; }
+.amt-handle:hover, .amt-clip.sel .amt-handle { background: rgba(255,255,255,0.85); }
+.amt-playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #e5484d; pointer-events: none; z-index: 5; }
+.amt-props { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; font-size: 12px; color: var(--text-muted); min-height: 28px; }
+.amt-props strong { color: var(--text); font-size: 13px; }
+.amt-field { display: flex; align-items: center; gap: 6px; }
+.amt-field b { color: var(--text); min-width: 40px; }
+.amt-field input[type="range"] { width: 110px; accent-color: var(--brand-500); }
+.amt-hint { font-size: 12px; color: var(--text-muted); }
+.aud-clip-title { font-size: 12px; font-weight: 600; letter-spacing: 0.3px; color: var(--text-muted); text-transform: uppercase; margin-top: 4px; }
+@media (max-width: 640px) { .amt-heads { flex-basis: 96px; } }
