@@ -17,14 +17,58 @@ export function renderAuthBar(
     host.append(signIn);
     return;
   }
-  const email = document.createElement('span');
-  email.className = 'auth-email';
-  email.textContent = me.email ?? 'Signed in';
-  const out = document.createElement('button');
-  out.type = 'button'; out.textContent = 'Log out';
-  out.setAttribute('data-role', 'logout'); out.className = 'auth-link';
-  out.addEventListener('click', handlers.onLogout);
-  host.append(email, out);
+
+  // Create profile avatar with dropdown menu
+  const email = me.email ?? 'User';
+  const initials = email
+    .split('@')[0]
+    .split(/[._-]/)
+    .map((part) => part[0]?.toUpperCase() || '')
+    .slice(0, 2)
+    .join('');
+
+  const container = document.createElement('div');
+  container.className = 'auth-profile';
+
+  const avatar = document.createElement('button');
+  avatar.type = 'button';
+  avatar.className = 'auth-avatar';
+  avatar.title = email;
+  avatar.setAttribute('data-role', 'profile-avatar');
+  avatar.textContent = initials || '👤';
+  avatar.setAttribute('aria-label', `Profile for ${email}`);
+
+  const menu = document.createElement('div');
+  menu.className = 'auth-menu';
+  menu.innerHTML = `
+    <div class="auth-menu-header">
+      <div class="auth-avatar-large">${initials || '👤'}</div>
+      <div class="auth-menu-info">
+        <div class="auth-menu-email">${email}</div>
+      </div>
+    </div>
+    <button type="button" class="auth-logout" data-role="logout">Sign out</button>
+  `;
+
+  const logout = menu.querySelector('[data-role="logout"]') as HTMLButtonElement;
+  logout.addEventListener('click', () => {
+    menu.classList.remove('active');
+    handlers.onLogout();
+  });
+
+  avatar.addEventListener('click', () => {
+    menu.classList.toggle('active');
+  });
+
+  // Close menu when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!container.contains(e.target as Node)) {
+      menu.classList.remove('active');
+    }
+  }, { capture: true });
+
+  container.append(avatar, menu);
+  host.append(container);
 }
 
 const TURNSTILE_SITE_KEY = (import.meta.env?.VITE_TURNSTILE_SITE_KEY as string) ?? '';

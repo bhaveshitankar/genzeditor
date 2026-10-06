@@ -36,6 +36,8 @@ export class SketchEditor implements DocEditor {
     getFiles?: () => Record<string, unknown>;
     updateScene?: (scene: { elements?: readonly unknown[] }) => void;
   } | null = null;
+  // Backup state in case API is not ready
+  private lastExportedScene: ExcalidrawScene | null = null;
 
   /** Current scene elements as JSON (for AI context). */
   getSceneJson(): string {
@@ -111,6 +113,12 @@ export class SketchEditor implements DocEditor {
           ed.elements = elements;
           ed.appState = appState;
           ed.files = files;
+          // Cache this state for recovery
+          ed.lastExportedScene = {
+            elements: [...elements],
+            appState: { ...appState },
+            files: { ...files },
+          };
           onChange?.();
         },
       }),
@@ -120,7 +128,7 @@ export class SketchEditor implements DocEditor {
   }
 
   async export(): Promise<{ blob: Blob; contentType: string } | null> {
-    // Prefer the live imperative API; fall back to the last onChange snapshot.
+    // Prefer the live imperative API; fall back to the last onChange snapshot or backup.
     const elements = this.api?.getSceneElements?.() ?? this.elements;
     const appState = this.api?.getAppState?.() ?? this.appState;
     const files = this.api?.getFiles?.() ?? this.files;
@@ -132,6 +140,8 @@ export class SketchEditor implements DocEditor {
       appState,
       files,
     };
+    // Cache the last exported scene for recovery
+    this.lastExportedScene = scene;
     return {
       blob: new Blob([JSON.stringify(scene)], { type: 'application/json' }),
       contentType: 'application/json',

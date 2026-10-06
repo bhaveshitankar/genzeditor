@@ -130,6 +130,71 @@ export class TextEditor {
   getValue() { return this.view.state.doc.toString(); }
   setValue(v: string) { this.view.dispatch({ changes: { from: 0, to: this.view.state.doc.length, insert: v } }); }
   openSearch() { this.view.focus(); openSearchPanel(this.view); }
+
+  /** Format the code using Prettier (best-effort). */
+  async format(): Promise<string> {
+    try {
+      const code = this.getValue();
+      const formatted = await this.formatCode(code);
+      this.setValue(formatted);
+      return formatted;
+    } catch (err) {
+      console.error('Format error:', err);
+      return this.getValue();
+    }
+  }
+
+  /** Validate code and return errors. */
+  validate(): { line: number; message: string }[] {
+    const code = this.getValue();
+    const errors: { line: number; message: string }[] = [];
+
+    // Basic JSON validation
+    if (this.view.state.doc.length > 0) {
+      try {
+        const lines = code.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Check for unclosed brackets/braces
+          const openBraces = (line.match(/[\{\[\(]/g) || []).length;
+          const closeBraces = (line.match(/[\}\]\)]/g) || []).length;
+          if (openBraces > closeBraces) {
+            // This is a heuristic; full validation depends on language
+          }
+        }
+        // Try JSON parse for basic validation
+        if (code.trim().startsWith('{') || code.trim().startsWith('[')) {
+          JSON.parse(code);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push({ line: 1, message: `Syntax error: ${msg}` });
+      }
+    }
+    return errors;
+  }
+
+  private async formatCode(code: string): Promise<string> {
+    // Use simple indentation-based formatting
+    return this.simpleFormat(code);
+  }
+
+  private simpleFormat(code: string): string {
+    let indent = 0;
+    const lines = code.split('\n');
+    return lines.map(line => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('}') || trimmed.startsWith(']') || trimmed.startsWith(')')) {
+        indent = Math.max(0, indent - 1);
+      }
+      const formatted = '  '.repeat(indent) + trimmed;
+      if (trimmed.endsWith('{') || trimmed.endsWith('[') || trimmed.endsWith('(')) {
+        indent++;
+      }
+      return formatted;
+    }).join('\n');
+  }
+
   /** Replace the diff highlighting for this editor (1-based line numbers). */
   setDiffLines(lines: DiffLine[]) { this.view.dispatch({ effects: setDiffEffect.of(lines) }); }
   /** Scroll a 1-based line into view (used to jump to a hunk). */

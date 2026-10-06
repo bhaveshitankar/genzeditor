@@ -348,6 +348,111 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 }
 .auth-bar span { color: var(--text-muted); }
 
+/* Profile avatar with dropdown menu */
+.auth-profile {
+  position: relative;
+}
+
+.auth-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--brand-500), var(--brand-600));
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: all 0.15s var(--ease);
+}
+
+.auth-avatar:hover {
+  box-shadow: var(--shadow-md);
+  transform: scale(1.05);
+}
+
+.auth-avatar:active {
+  transform: scale(0.98);
+}
+
+.auth-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  min-width: 220px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px);
+  transition: all 0.15s var(--ease);
+  z-index: 100;
+}
+
+.auth-menu.active {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.auth-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.auth-avatar-large {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--brand-500), var(--brand-600));
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.auth-menu-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.auth-menu-email {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.auth-logout {
+  width: 100%;
+  padding: 0.7rem 1rem;
+  background: transparent;
+  border: none;
+  color: var(--danger);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.12s var(--ease);
+}
+
+.auth-logout:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+/* Old styles for backward compatibility */
 .auth-link {
   display: inline-flex;
   align-items: center;
@@ -2345,15 +2450,53 @@ li.selecting .delete-btn { display: none; }
 .sketch-host { display: flex; align-items: stretch; }
 
 /* Text editor (CodeMirror) styling */
-.cm-editor { font-size: 0.9rem; }
-.cm-gutters { border-right: 1px solid var(--border); }
+.cm-editor { font-size: 0.9rem; background: var(--bg); }
+.cm-gutters { background: var(--surface-2); border-right: 1px solid var(--border); color: var(--text-muted); }
+.cm-activeLineGutter { background: var(--surface); }
+.cm-cursor { border-left-color: var(--brand-500); }
+.cm-selectionBackground { background: color-mix(in srgb, var(--brand-500) 25%, transparent); }
 
 /* Improve search panel in CodeMirror */
-.cm-search { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); }
-.cm-search input { background: var(--bg); border: 1px solid var(--border); color: var(--text); }
-.cm-search input:focus { border-color: var(--brand-500); }
-.cm-search button { color: var(--text-muted); }
-.cm-search button:hover { color: var(--text); background: var(--surface-hover); }
+.cm-search {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 0.5rem;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  flex-wrap: wrap;
+}
+.cm-search input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--r-sm);
+  font-size: 0.85rem;
+  flex: 1;
+  min-width: 150px;
+}
+.cm-search input:focus {
+  border-color: var(--brand-500);
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-500) 20%, transparent);
+}
+.cm-search button {
+  padding: 0.35rem 0.65rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.12s var(--ease);
+}
+.cm-search button:hover { color: var(--text); background: var(--surface-hover); border-color: var(--border-strong); }
+.cm-search button.cm-close-button { padding: 0.3rem 0.5rem; }
 
 /* Modal input improvements */
 .fr-find, .fr-replace { width: 100%; padding: 0.6rem 0.75rem; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg); color: var(--text); font-size: 0.85rem; }
