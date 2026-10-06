@@ -239,14 +239,27 @@ export class DocxEditor implements DocEditor {
       let y = PAGE_H - MARGIN;
 
       interface Word { t: string; b: boolean; i: boolean }
+      // Remove emoji and special Unicode characters that WinAnsi cannot encode
+      const sanitizeForPdf = (text: string): string => {
+        return text
+          .replace(/[\u{1F300}-\u{1F9FF}]/gu, '') // Emoji
+          .replace(/[\u{2600}-\u{27BF}]/gu, '') // Miscellaneous symbols
+          .replace(/[\u{2300}-\u{23FF}]/gu, '') // Miscellaneous technical
+          .replace(/[\u{2B50}]/gu, '') // Star
+          .replace(/[\u{2714}]/gu, '') // Check mark
+          .trim();
+      };
       // Flatten a block element into whitespace-split styled words.
       const wordsOf = (el: HTMLElement, forceBold: boolean): Word[] => {
         const out: Word[] = [];
         const walk = (n: Node, b: boolean, i: boolean) => {
           if (n.nodeType === Node.TEXT_NODE) {
-            for (const part of (n.textContent ?? '').split(/(\s+)/)) {
+            const text = n.textContent ?? '';
+            for (const part of text.split(/(\s+)/)) {
               if (part === '') continue;
-              out.push({ t: part.replace(/\s+/g, ' '), b, i });
+              const sanitized = sanitizeForPdf(part);
+              if (!sanitized) continue; // Skip if only emoji
+              out.push({ t: sanitized.replace(/\s+/g, ' '), b, i });
             }
             return;
           }
@@ -288,7 +301,7 @@ export class DocxEditor implements DocEditor {
       let listIndex = 0;
       for (const node of Array.from(this.editable.childNodes)) {
         if (node.nodeType === Node.TEXT_NODE) {
-          const t = (node.textContent ?? '').trim();
+          const t = sanitizeForPdf(node.textContent ?? '').trim();
           if (t) drawWords([{ t, b: false, i: false }], 11, 0);
           continue;
         }
