@@ -17,7 +17,7 @@ export async function mount(root: HTMLElement): Promise<void> {
   const openShared = async (): Promise<boolean> => {
     if (typeof location === 'undefined' || !location.hash) return false;
     try {
-      const shared = await openFromHash(location.hash);
+      const shared = await openFromHash(location.hash, { askPassword: (retry) => askSharePassword(root, retry) });
       if (shared) {
         const blob = shared.blob ?? new Blob([shared.text ?? ''], { type: shared.contentType });
         // Dedupe by share token: re-opening the same link must reuse the local
@@ -63,7 +63,7 @@ export async function mount(root: HTMLElement): Promise<void> {
             try {
               const current = await shell.getCurrentBlob();
               if (!current) return;
-              await saveBackShared(token, current.blob, { csrfToken });
+              await saveBackShared(token, current.blob, { csrfToken, password: shared.password, name: shared.title });
               status.textContent = ' Saved back to shared file.';
             } catch (err) {
               const code = err instanceof Error ? err.message : String(err);
@@ -105,3 +105,33 @@ export async function mount(root: HTMLElement): Promise<void> {
 
 const el = typeof document !== 'undefined' && document.getElementById('app');
 if (el) mount(el);
+
+// Password prompt for protected share links. Resolves null when cancelled.
+function askSharePassword(root: HTMLElement, retry: boolean): Promise<string | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal share-modal" role="dialog" aria-modal="true">
+        <h3>This shared file is password protected</h3>
+        <p>Enter the password the sender gave you. It's decrypted in your browser.</p>
+        <input type="password" data-role="pw" placeholder="Password" autocomplete="current-password">
+        <p class="share-pw-error" data-role="err"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel">Cancel</button>
+          <button type="button" class="btn-confirm">Open</button>
+        </div>
+      </div>`;
+    const input = overlay.querySelector('[data-role="pw"]') as HTMLInputElement;
+    if (retry) (overlay.querySelector('[data-role="err"]') as HTMLElement).textContent = 'Wrong password — try again.';
+    const close = (v: string | null) => { overlay.remove(); resolve(v); };
+    overlay.querySelector('.btn-cancel')!.addEventListener('click', () => close(null));
+    overlay.querySelector('.btn-confirm')!.addEventListener('click', () => { if (input.value) close(input.value); });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && input.value) close(input.value);
+      if (e.key === 'Escape') close(null);
+    });
+    root.appendChild(overlay);
+    input.focus();
+  });
+}

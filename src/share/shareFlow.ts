@@ -1,6 +1,7 @@
 import type { FileKind } from '../store/types';
 import * as defaultApi from '../api/client';
 import { compressBlob } from './compress';
+import { encryptBlob } from './crypto';
 
 export interface ShareContext {
   kind: FileKind;
@@ -11,6 +12,8 @@ export interface ShareContext {
   isLoggedIn: boolean;
   wantRw: boolean;
   csrfToken?: string;
+  // Optional: encrypt in the browser; the server only stores ciphertext.
+  password?: string;
 }
 
 async function defaultUploadPut(url: string, blob: Blob): Promise<void> {
@@ -34,9 +37,17 @@ export async function shareFile(
   if (ctx.wantRw && !ctx.isLoggedIn) return { needLogin: 'Sign in to create editable (read-write) links.' };
 
   const access: 'ro' | 'rw' = ctx.wantRw ? 'rw' : 'ro';
-  const blob = await compressBlob(ctx.blob ?? new Blob([ctx.text ?? ''], { type: ctx.contentType }));
+  let blob = await compressBlob(ctx.blob ?? new Blob([ctx.text ?? ''], { type: ctx.contentType }));
+  // Protected shares keep the real name inside the ciphertext; the server only
+  // gets a generic title (with the extension, so the file type still resolves).
+  let title = ctx.title;
+  if (ctx.password) {
+    blob = await encryptBlob(blob, ctx.password, ctx.title);
+    const ext = /\.[^.]+$/.exec(ctx.title)?.[0] ?? '';
+    title = `Protected file${ext}`;
+  }
   const created = await api.createShare(
-    { access, storageKind: 'filebase', contentType: ctx.contentType, title: ctx.title, sizeBytes: blob.size },
+    { access, storageKind: 'filebase', contentType: ctx.contentType, title, sizeBytes: blob.size },
     ctx.csrfToken,
   );
   if (!created.uploadUrl) throw new Error('no_upload_url');

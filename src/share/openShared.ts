@@ -3,6 +3,7 @@ import { decodeEmbedded } from './embedded';
 import { detectKind } from '../detect/fileKind';
 import * as defaultApi from '../api/client';
 import { compressBlob, decompressBlob } from './compress';
+import { decryptBlob, encryptBlob, isEncrypted } from './crypto';
 
 export interface OpenedShare {
   title: string; contentType: string; kind: FileKind;
@@ -11,6 +12,8 @@ export interface OpenedShare {
   // request a save-back PUT (presigned against the actual edited size) via
   // POST /api/share/:token/save. ro shares never carry a token.
   token?: string;
+  // Set when the share was password protected; reused to re-encrypt save-backs.
+  password?: string;
 }
 
 async function defaultUploadPut(url: string, blob: Blob, contentType: string): Promise<void> {
@@ -34,12 +37,15 @@ export async function saveBackShared(
     api?: Pick<typeof import('../api/client'), 'initSaveBack'>;
     uploadPut?: (url: string, blob: Blob, contentType: string) => Promise<void>;
     csrfToken?: string;
+    password?: string;
+    name?: string;
   },
 ): Promise<void> {
   const api = deps?.api ?? defaultApi;
   const uploadPut = deps?.uploadPut ?? defaultUploadPut;
 
-  const stored = await compressBlob(blob);
+  let stored = await compressBlob(blob);
+  if (deps?.password) stored = await encryptBlob(stored, deps.password, deps.name ?? 'file');
   const { uploadUrl } = await api.initSaveBack(token, stored.size, deps?.csrfToken);
   await uploadPut(uploadUrl, stored, blob.type);
 }
@@ -55,12 +61,17 @@ function inferKindFromContentType(contentType: string): FileKind {
 async function defaultFetchBlob(url: string): Promise<Blob> {
   const res = await fetch(url);
   if (!res.ok) throw new Error('download_failed');
-  return decompressBlob(await res.blob());
+  return res.blob();
 }
 
 export async function openFromHash(
   hash: string,
-  deps?: { api?: typeof import('../api/client'); fetchBlob?: (url: string) => Promise<Blob> },
+  deps?: {
+    api?: typeof import('../api/client');
+    fetchBlob?: (url: string) => Promise<Blob>;
+    // Asked for protected shares; resolve null to cancel. `retry` = previous attempt was wrong.
+    askPassword?: (retry: boolean) => Promise<string | null>;
+  },
 ): Promise<OpenedShare | null> {
   const api = deps?.api ?? defaultApi;
   const fetchBlob = deps?.fetchBlob ?? defaultFetchBlob;
@@ -81,8 +92,28 @@ export async function openFromHash(
     const kind = r.title ? detectKind(r.title, contentType) : inferKindFromContentType(contentType);
     const token = r.access === 'rw' && r.storageKind === 'filebase' ? t : undefined;
     if (r.storageKind === 'filebase' && r.downloadUrl) {
-      const blob = await fetchBlob(r.downloadUrl);
-      return { title: r.title ?? 'Shared file', contentType, kind, blob, access: r.access, token };
+      let raw = await fetchBlob(r.downloadUrl);
+      let title = r.title ?? 'Shared file';
+      let password: string | undefined;
+      if (await isEncrypted(raw)) {
+        if (!deps?.askPassword) throw new Error('password_required');
+        for (let retry = false; ; retry = true) {
+          const pw = await deps.askPassword(retry);
+          if (pw === null) return null;
+          try {
+            const dec = await decryptBlob(raw, pw);
+            raw = dec.blob;
+            title = dec.name || title;
+            password = pw;
+            break;
+          } catch (err) {
+            if (!(err instanceof Error && err.message === 'bad_password')) throw err;
+          }
+        }
+      }
+      const blob = await decompressBlob(raw, contentType);
+      const realKind = password ? detectKind(title, contentType) : kind;
+      return { title, contentType, kind: realKind, blob, access: r.access, token, password };
     }
     return { title: r.title ?? 'Shared', contentType, kind, access: r.access, token };
   }

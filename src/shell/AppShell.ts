@@ -490,6 +490,67 @@ export class AppShell {
     });
   }
 
+  /** Explain the upload + retention before sharing; optionally collect a password. */
+  private shareConsentModal(wantRw: boolean): Promise<{ password?: string } | null> {
+    const days = this.meState.authenticated ? 30 : 7;
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal share-modal" role="dialog" aria-modal="true">
+          <h3></h3>
+          <p class="share-note"></p>
+          <ul class="share-facts">
+            <li data-f="where"></li>
+            <li data-f="keep"></li>
+            <li data-f="who"></li>
+          </ul>
+          <label class="share-pw-toggle"><input type="checkbox" data-role="pw-on"> Protect with a password</label>
+          <div class="share-pw" hidden>
+            <input type="password" data-role="pw" placeholder="Password (min 4 characters)" autocomplete="new-password">
+            <input type="password" data-role="pw2" placeholder="Confirm password" autocomplete="new-password">
+            <p class="share-pw-hint">Encrypted in your browser before upload — we never see the password and can't recover it. Share it separately from the link.</p>
+            <p class="share-pw-error" data-role="pw-err"></p>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn-cancel">Cancel</button>
+            <button type="button" class="btn-confirm">Upload &amp; copy link</button>
+          </div>
+        </div>`;
+      const q = <T extends HTMLElement>(sel: string) => overlay.querySelector(sel) as T;
+      q('h3').textContent = wantRw ? 'Create an editable share link?' : 'Create a share link?';
+      q('.share-note').textContent = 'Sharing uploads a copy of this file to our server so it can be opened from a link.';
+      q('[data-f="where"]').textContent = 'Your file leaves this device and is stored on our cloud storage.';
+      q('[data-f="keep"]').textContent = `We keep it for ${days} days${this.meState.authenticated ? '' : ' (30 days when signed in)'}, then delete it automatically.`;
+      q('[data-f="who"]').textContent = wantRw
+        ? 'Anyone with the link can open and edit it.'
+        : 'Anyone with the link can open it (public).';
+      const on = q<HTMLInputElement>('[data-role="pw-on"]');
+      const box = q('.share-pw');
+      const pw = q<HTMLInputElement>('[data-role="pw"]');
+      const pw2 = q<HTMLInputElement>('[data-role="pw2"]');
+      const err = q('[data-role="pw-err"]');
+      on.addEventListener('change', () => { box.hidden = !on.checked; if (on.checked) pw.focus(); });
+      const close = (v: { password?: string } | null) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(v); };
+      const submit = () => {
+        if (!on.checked) { close({}); return; }
+        if (pw.value.length < 4) { err.textContent = 'Use at least 4 characters.'; return; }
+        if (pw.value !== pw2.value) { err.textContent = 'Passwords do not match.'; return; }
+        close({ password: pw.value });
+      };
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') close(null);
+        else if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') submit();
+      };
+      document.addEventListener('keydown', onKey);
+      q('.btn-cancel').addEventListener('click', () => close(null));
+      q('.btn-confirm').addEventListener('click', submit);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+      this.root.appendChild(overlay);
+      q<HTMLButtonElement>('.btn-confirm').focus();
+    });
+  }
+
   // Templates for the "New file" flow. Each entry maps to a FileKind plus a
   // default extension and starter content (Mermaid ships a ready-to-edit graph).
   private static readonly NEW_FILE_TEMPLATES: Array<{
@@ -1097,8 +1158,16 @@ export class AppShell {
       return;
     }
 
+    if (wantRw && !this.meState.authenticated) {
+      this.toast('Sign in to create editable (read-write) links.', 'info', 5000);
+      return;
+    }
+    const consent = await this.shareConsentModal(wantRw);
+    if (!consent) return;
+
     try {
       const result = await shareFile({
+        password: consent.password,
         kind: record.kind,
         text: content.text,
         blob: content.blob,
@@ -1114,7 +1183,7 @@ export class AppShell {
         return;
       }
 
-      const link: ShareLink = { access: result.access, token: result.token, shareId: result.shareId, url: result.url };
+      const link: ShareLink = { access: result.access, token: result.token, shareId: result.shareId, url: result.url, password: consent.password };
       const shares = [...(record.shares ?? []).filter(s => s.access !== link.access), link];
       await this.store.updateMeta(record.id, { shares });
       this.syncSaveButton(true);
@@ -1168,9 +1237,10 @@ export class AppShell {
     const content = await this.getCurrentBlob();
     if (!content) throw new Error('nothing to save');
     const blob = content.blob.type ? content.blob : new Blob([content.blob], { type: content.contentType });
+    const name = (await this.store.list()).find((f) => f.id === this.currentFileId)?.name;
     let n = 0;
     for (const s of shares) {
-      await saveBackShared(s.token, blob, { csrfToken: this.meState.csrfToken });
+      await saveBackShared(s.token, blob, { csrfToken: this.meState.csrfToken, password: s.password, name });
       n++;
     }
     return n;
