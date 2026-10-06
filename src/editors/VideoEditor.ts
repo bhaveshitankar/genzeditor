@@ -30,6 +30,7 @@ export class VideoEditor implements DocEditor {
   private blob: Blob;
   private name: string;
   private url: string;
+  private zoom = 100;
   private video!: HTMLVideoElement;
   private statusEl!: HTMLElement;
   private barEl!: HTMLElement;
@@ -473,6 +474,14 @@ export class VideoEditor implements DocEditor {
           <span class="vid-status" data-role="status"></span>
           <div class="vid-progress" data-role="progress"><span data-role="progressFill"></span></div>
         </div>
+
+        <div class="vid-zoom" data-role="zoom">
+          <button type="button" data-zoom="out" title="Zoom out">−</button>
+          <input type="range" data-role="zoom-slider" min="50" max="200" value="100" step="10">
+          <span data-role="zoom-value">100%</span>
+          <button type="button" data-zoom="in" title="Zoom in">+</button>
+          <button type="button" data-zoom="reset" title="Reset zoom">Reset</button>
+        </div>
       </div>`;
 
     this.bind();
@@ -601,6 +610,31 @@ export class VideoEditor implements DocEditor {
     // Export format.
     const fs = this.q<HTMLSelectElement>('fmt');
     fs.addEventListener('change', () => { this.outFmt = fs.value as Fmt; });
+
+    // Zoom controls
+    const zoomSlider = this.q<HTMLInputElement>('zoom-slider');
+    const zoomValue = this.q('zoom-value');
+    const zoomContainer = this.q('zoom');
+    const updateZoom = (val: number) => {
+      this.zoom = Math.max(50, Math.min(200, val));
+      zoomSlider.value = String(this.zoom);
+      zoomValue.textContent = `${this.zoom}%`;
+      this.video.style.transform = `scale(${this.zoom / 100})`;
+      this.video.style.transformOrigin = 'top left';
+    };
+    if (zoomContainer) {
+      zoomContainer.addEventListener('click', (e) => {
+        const btn = (e.target as HTMLElement).closest('button');
+        if (!btn) return;
+        const zoomAction = btn.getAttribute('data-zoom');
+        if (zoomAction === 'in') updateZoom(this.zoom + 10);
+        else if (zoomAction === 'out') updateZoom(this.zoom - 10);
+        else if (zoomAction === 'reset') updateZoom(100);
+      });
+    }
+    if (zoomSlider) {
+      zoomSlider.addEventListener('input', () => updateZoom(Number(zoomSlider.value)));
+    }
   }
 
   private setLook(l: Look) {

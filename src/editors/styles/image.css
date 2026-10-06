@@ -235,6 +235,35 @@
 .img-decode-title { font-size: 18px; font-weight: 600; color: var(--text); }
 .img-decode-msg { font-size: 14px; color: var(--text-muted); max-width: 360px; line-height: 1.5; }
 
+/* Zoom control */
+.img-zoom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+.img-zoom-btn {
+  padding: 4px 8px !important;
+  font-size: 12px;
+  min-width: 30px;
+}
+.img-zoom-slider {
+  width: 100px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.img-zoom-value {
+  min-width: 35px;
+  text-align: center;
+  font-weight: 500;
+  flex: 0 0 auto;
+}
+
 @media (max-width: 720px) {
   .img-body { flex-direction: column; }
   .img-panel { flex: 0 0 auto; width: 100%; border-left: none; border-top: 1px solid var(--border); max-height: 44%; }

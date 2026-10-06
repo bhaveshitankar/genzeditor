@@ -85,6 +85,7 @@ export class ImageEditor {
   private container: HTMLElement;
   private onChange?: () => void;
   private contentType: string;
+  private zoom = 100;
 
   private state: EditorState;
   private undoStack: EditorState[] = [];
@@ -717,12 +718,41 @@ export class ImageEditor {
     this.panelHost = el('div', 'img-panel');
     body.appendChild(this.panelHost);
     root.appendChild(body);
+
+    // Zoom controls
+    const zoomBar = el('div', 'img-zoom');
+    const zoomOut = button('−', 'img-zoom-btn'); zoomOut.title = 'Zoom out'; zoomOut.dataset.zoom = 'out';
+    const zoomSlider = document.createElement('input'); zoomSlider.type = 'range'; zoomSlider.min = '50'; zoomSlider.max = '200'; zoomSlider.value = '100'; zoomSlider.step = '10'; zoomSlider.className = 'img-zoom-slider';
+    const zoomValue = document.createElement('span'); zoomValue.className = 'img-zoom-value'; zoomValue.textContent = '100%';
+    const zoomIn = button('+', 'img-zoom-btn'); zoomIn.title = 'Zoom in'; zoomIn.dataset.zoom = 'in';
+    const zoomReset = button('Reset', 'img-zoom-btn'); zoomReset.title = 'Reset zoom'; zoomReset.dataset.zoom = 'reset';
+    zoomBar.append(zoomOut, zoomSlider, zoomValue, zoomIn, zoomReset);
+    root.appendChild(zoomBar);
+
     this.container.appendChild(root);
 
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
     this.canvas.addEventListener('pointercancel', this.onPointerUp);
+
+    // Zoom controls
+    const updateZoom = (val: number) => {
+      this.zoom = Math.max(50, Math.min(200, val));
+      zoomSlider.value = String(this.zoom);
+      zoomValue.textContent = `${this.zoom}%`;
+      this.wrap.style.transform = `scale(${this.zoom / 100})`;
+      this.wrap.style.transformOrigin = 'top left';
+    };
+    zoomBar.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest('button');
+      if (!btn) return;
+      const action = btn.dataset.zoom;
+      if (action === 'in') updateZoom(this.zoom + 10);
+      else if (action === 'out') updateZoom(this.zoom - 10);
+      else if (action === 'reset') updateZoom(100);
+    });
+    zoomSlider.addEventListener('input', () => updateZoom(Number(zoomSlider.value)));
 
     this.buildToolbar();
     this.rebuildPanel();
