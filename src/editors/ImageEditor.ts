@@ -47,7 +47,7 @@ function neutralAdjustments(): Adjustments {
 }
 
 type Point = { x: number; y: number };
-type Tool = 'select' | 'crop' | 'brush' | 'eraser' | 'text' | 'rect' | 'ellipse' | 'arrow';
+type Tool = 'select' | 'crop' | 'brush' | 'eraser' | 'text' | 'rect' | 'ellipse' | 'arrow' | 'wand' | 'lasso';
 
 interface StrokeLayer { id: string; kind: 'brush' | 'eraser'; points: Point[]; color: string; size: number; opacity?: number; }
 interface TextLayer { id: string; kind: 'text'; x: number; y: number; text: string; size: number; color: string; bold: boolean; opacity?: number; }
@@ -79,6 +79,12 @@ const STICKERS = ['😀', '😎', '❤️', '⭐', '🔥', '🎉', '👍', '💯
 
 let idSeq = 0;
 const uid = (): string => `l${++idSeq}`;
+
+// structuredClone can't copy canvases; image layers share their pixel canvas.
+function cloneLayer<T extends Layer>(l: T): T {
+  if (l.kind === 'image') return { ...l } as T;
+  return structuredClone(l);
+}
 
 // ---- Editor ---------------------------------------------------------------
 
@@ -118,7 +124,14 @@ export class ImageEditor {
   private cropAspect: number | null = null; // null = free
 
   // Active pointer gesture bookkeeping.
-  private drag: { mode: 'draw' | 'move' | 'resize' | 'shape' | 'crop-move' | 'crop-resize';
+  // Pixel selection (wand / lasso): alpha mask the size of the base image.
+  private selMask: HTMLCanvasElement | null = null;
+  private selTint: HTMLCanvasElement | null = null;
+  private lassoPts: Point[] = [];
+  private wandTol = 32;
+  private feather = 0;
+
+  private drag: { mode: 'draw' | 'move' | 'resize' | 'shape' | 'crop-move' | 'crop-resize' | 'lasso';
     corner?: string; start: Point; orig?: Layer; origCrop?: { x: number; y: number; w: number; h: number } } | null = null;
 
   private constructor(container: HTMLElement, base: HTMLCanvasElement, contentType: string, onChange?: () => void) {
@@ -181,7 +194,7 @@ export class ImageEditor {
           canvas.getContext('2d')!.drawImage(l.canvas, 0, 0);
           return { ...l, canvas };
         }
-        return structuredClone(l);
+        return cloneLayer(l);
       }),
     };
   }
@@ -364,6 +377,7 @@ export class ImageEditor {
   private render(): void {
     this.composite(this.canvas);
     this.ctx = this.canvas.getContext('2d')!;
+    this.drawSelectionOverlay();
     this.positionCropBox();
     this.positionSelBox();
   }
@@ -421,6 +435,16 @@ export class ImageEditor {
 
     if (this.tool === 'crop') return; // crop uses its own overlay handles
 
+    if (this.tool === 'wand') {
+      this.magicWand(p, e.shiftKey);
+      return;
+    }
+    if (this.tool === 'lasso') {
+      this.lassoPts = [p];
+      this.drag = { mode: 'lasso', start: p };
+      return;
+    }
+
     if (this.tool === 'brush' || this.tool === 'eraser') {
       this.commit();
       const l: StrokeLayer = { id: uid(), kind: this.tool, points: [p], color: this.color, size: this.brushSize };
@@ -457,7 +481,7 @@ export class ImageEditor {
     // select tool: pick topmost hit and start moving
     const hit = this.hitTest(p);
     this.selectedId = hit?.id ?? null;
-    if (hit) this.drag = { mode: 'move', start: p, orig: structuredClone(hit) };
+    if (hit) { this.commit(); this.drag = { mode: 'move', start: p, orig: cloneLayer(hit) }; }
     else this.drag = null;
     this.render();
     this.rebuildPanel();
@@ -466,6 +490,7 @@ export class ImageEditor {
   private onPointerMove = (e: PointerEvent): void => {
     if (!this.drag) return;
     const p = this.toImage(e);
+    if (this.drag.mode === 'lasso') { this.lassoPts.push(p); this.render(); return; }
     const dx = p.x - this.drag.start.x, dy = p.y - this.drag.start.y;
     const cur = this.selected();
     if (!cur) return;
@@ -482,7 +507,12 @@ export class ImageEditor {
     this.render();
   };
 
-  private onPointerUp = (): void => {
+  private onPointerUp = (e: PointerEvent): void => {
+    if (this.drag?.mode === 'lasso') {
+      this.drag = null;
+      this.finishLasso(e.shiftKey);
+      return;
+    }
     if (this.drag && (this.drag.mode === 'move' || this.drag.mode === 'resize' || this.drag.mode === 'shape' || this.drag.mode === 'draw')) {
       this.onChange?.();
     }
@@ -505,6 +535,11 @@ export class ImageEditor {
       cur.size = Math.max(12, orig.size + dy);
     } else if ((cur.kind === 'rect' || cur.kind === 'ellipse' || cur.kind === 'arrow') && 'w' in orig) {
       cur.w = orig.w + dx; cur.h = orig.h + dy;
+    } else if (cur.kind === 'image' && orig.kind === 'image') {
+      // Keep aspect ratio; drive by the larger drag component.
+      const ratio = orig.h / orig.w;
+      const w = Math.max(10, Math.abs(dx) >= Math.abs(dy) ? orig.w + dx : orig.w + dy / ratio);
+      cur.w = w; cur.h = w * ratio;
     }
   }
 
@@ -517,7 +552,7 @@ export class ImageEditor {
 
   private flip(axis: 'h' | 'v'): void {
     this.commit();
-    const b = this.state.base;
+    const b = this.flatten();
     const out = document.createElement('canvas');
     out.width = b.width; out.height = b.height;
     const c = out.getContext('2d')!;
@@ -529,7 +564,7 @@ export class ImageEditor {
 
   private rotate90(deg: 90 | 180 | 270): void {
     this.commit();
-    const b = this.state.base;
+    const b = this.flatten();
     const size = computeRotatedSize(b.width, b.height, deg);
     const out = document.createElement('canvas');
     out.width = size.w; out.height = size.h;
@@ -538,7 +573,18 @@ export class ImageEditor {
     c.rotate((deg * Math.PI) / 180);
     c.drawImage(b, -b.width / 2, -b.height / 2);
     this.replaceBase(out);
-    this.state.layers = []; // overlay coords no longer valid after rotate
+  }
+
+  // Bake adjustments + overlay layers into a single canvas and reset them, so
+  // geometric ops (flip/rotate) carry layers along instead of dropping them.
+  private flatten(): HTMLCanvasElement {
+    const flat = document.createElement('canvas');
+    this.composite(flat);
+    this.state.adjustments = neutralAdjustments();
+    this.state.layers = [];
+    this.selectedId = null;
+    this.selMask = null;
+    return flat;
   }
 
   private rotateFree(angleDeg: number): void {
@@ -765,7 +811,7 @@ export class ImageEditor {
     });
   }
 
-  private activePanel: 'adjust' | 'filters' | 'transform' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' = 'adjust';
+  private activePanel: 'adjust' | 'filters' | 'transform' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' | 'select' = 'adjust';
 
   private buildToolbar(): void {
     this.toolbar.innerHTML = '';
@@ -783,6 +829,8 @@ export class ImageEditor {
     tool('Rect', 'rect');
     tool('Ellipse', 'ellipse');
     tool('Arrow', 'arrow');
+    tool('Wand', 'wand');
+    tool('Lasso', 'lasso');
 
     this.toolbar.appendChild(el('div', 'img-sep'));
 
@@ -833,6 +881,7 @@ export class ImageEditor {
     if (t === 'brush' || t === 'eraser') this.activePanel = 'draw';
     else if (t === 'text') this.activePanel = 'text';
     else if (t === 'rect' || t === 'ellipse' || t === 'arrow') this.activePanel = 'shapes';
+    else if (t === 'wand' || t === 'lasso') this.activePanel = 'select';
     this.rebuildPanel();
     this.syncToolbar();
   }
@@ -949,7 +998,7 @@ export class ImageEditor {
     if (!cur) return;
     this.commit();
     const start = this.toImage(e);
-    const orig = structuredClone(cur);
+    const orig = cloneLayer(cur);
     const move = (ev: PointerEvent): void => {
       const p = this.toImage(ev);
       this.resizeLayer(cur, orig, p.x - start.x, p.y - start.y);
@@ -974,6 +1023,7 @@ export class ImageEditor {
       case 'shapes': this.buildShapesPanel(host); break;
       case 'layers': this.buildLayersPanel(host); break;
       case 'bg': this.buildBgPanel(host); break;
+      case 'select': this.buildSelectPanel(host); break;
     }
     this.positionSelBox();
   }
@@ -1299,16 +1349,10 @@ export class ImageEditor {
       bitmap.close();
 
       this.commit();
-      const sz = Math.min(this.state.base.width * 0.5, this.state.base.height * 0.5);
-      const layer: ImageLayer = {
-        id: uid(),
-        kind: 'image',
-        canvas,
-        x: (this.state.base.width - sz) / 2,
-        y: (this.state.base.height - sz) / 2,
-        w: sz,
-        h: sz,
-      };
+      const bw = this.state.base.width, bh = this.state.base.height;
+      const scale = Math.min(1, (bw * 0.6) / canvas.width, (bh * 0.6) / canvas.height);
+      const w = canvas.width * scale, h = canvas.height * scale;
+      const layer: ImageLayer = { id: uid(), kind: 'image', canvas, x: (bw - w) / 2, y: (bh - h) / 2, w, h };
       this.state.layers.push(layer);
       this.selectedId = layer.id;
       this.setTool('select');
@@ -1317,6 +1361,231 @@ export class ImageEditor {
     } catch (err) {
       console.error('Failed to add image layer:', err);
     }
+  }
+
+  // ---- Pixel selection (magic wand / lasso) ----
+
+  private newMask(): HTMLCanvasElement {
+    const m = document.createElement('canvas');
+    m.width = this.state.base.width;
+    m.height = this.state.base.height;
+    return m;
+  }
+
+  private setMask(mask: HTMLCanvasElement | null): void {
+    this.selMask = mask;
+    this.selTint = null;
+    if (mask) {
+      const t = document.createElement('canvas');
+      t.width = mask.width; t.height = mask.height;
+      const c = t.getContext('2d')!;
+      c.fillStyle = 'rgba(255, 59, 107, 0.45)';
+      c.fillRect(0, 0, t.width, t.height);
+      c.globalCompositeOperation = 'destination-in';
+      c.drawImage(mask, 0, 0);
+      this.selTint = t;
+    }
+    this.render();
+    if (this.activePanel === 'select') this.rebuildPanel();
+  }
+
+  private mergeMask(next: HTMLCanvasElement, add: boolean): HTMLCanvasElement {
+    const cur = this.selMask;
+    if (!add || !cur || cur.width !== next.width || cur.height !== next.height) return next;
+    next.getContext('2d')!.drawImage(cur, 0, 0);
+    return next;
+  }
+
+  // Contiguous flood fill on the composited image; stops at colour edges.
+  private magicWand(p: Point, add: boolean): void {
+    const flat = document.createElement('canvas');
+    this.composite(flat);
+    const w = flat.width, h = flat.height;
+    const x0 = Math.floor(p.x), y0 = Math.floor(p.y);
+    if (x0 < 0 || y0 < 0 || x0 >= w || y0 >= h) return;
+    const src = flat.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, w, h).data;
+    const i0 = (y0 * w + x0) * 4;
+    const r0 = src[i0], g0 = src[i0 + 1], b0 = src[i0 + 2], a0 = src[i0 + 3];
+    const tol = this.wandTol * 2.55;
+    const seen = new Uint8Array(w * h);
+    const stack = [y0 * w + x0];
+    const mask = this.newMask();
+    const mctx = mask.getContext('2d')!;
+    const out = mctx.createImageData(w, h);
+    const d = out.data;
+    while (stack.length) {
+      const k = stack.pop()!;
+      if (seen[k]) continue;
+      seen[k] = 1;
+      const j = k * 4;
+      if (Math.max(Math.abs(src[j] - r0), Math.abs(src[j + 1] - g0), Math.abs(src[j + 2] - b0), Math.abs(src[j + 3] - a0)) > tol) continue;
+      d[j + 3] = 255;
+      const x = k % w, y = (k - x) / w;
+      if (x > 0) stack.push(k - 1);
+      if (x < w - 1) stack.push(k + 1);
+      if (y > 0) stack.push(k - w);
+      if (y < h - 1) stack.push(k + w);
+    }
+    mctx.putImageData(out, 0, 0);
+    this.setMask(this.mergeMask(mask, add));
+  }
+
+  private finishLasso(add: boolean): void {
+    const pts = this.lassoPts;
+    this.lassoPts = [];
+    if (pts.length < 3) { this.render(); return; }
+    const mask = this.newMask();
+    const c = mask.getContext('2d')!;
+    c.fillStyle = '#fff';
+    c.beginPath();
+    pts.forEach((pt, i) => (i ? c.lineTo(pt.x, pt.y) : c.moveTo(pt.x, pt.y)));
+    c.closePath();
+    c.fill();
+    this.setMask(this.mergeMask(mask, add));
+  }
+
+  private drawSelectionOverlay(): void {
+    if (this.selMask && (this.selMask.width !== this.canvas.width || this.selMask.height !== this.canvas.height)) {
+      this.selMask = null; this.selTint = null; // base size changed (crop/rotate/undo)
+    }
+    const ctx = this.ctx;
+    if (this.selTint) ctx.drawImage(this.selTint, 0, 0);
+    const b = this.selMask ? this.maskBounds(this.selMask) : null;
+    const lw = Math.max(1, this.canvas.width / 600);
+    if (b) {
+      ctx.save();
+      ctx.lineWidth = lw;
+      ctx.setLineDash([lw * 5, lw * 4]);
+      ctx.strokeStyle = '#fff';
+      ctx.strokeRect(b.x, b.y, b.w, b.h);
+      ctx.lineDashOffset = lw * 5;
+      ctx.strokeStyle = '#000';
+      ctx.strokeRect(b.x, b.y, b.w, b.h);
+      ctx.restore();
+    }
+    if (this.lassoPts.length > 1) {
+      ctx.save();
+      ctx.lineWidth = lw * 1.5;
+      ctx.strokeStyle = '#ff3b6b';
+      ctx.setLineDash([lw * 4, lw * 3]);
+      ctx.beginPath();
+      this.lassoPts.forEach((pt, i) => (i ? ctx.lineTo(pt.x, pt.y) : ctx.moveTo(pt.x, pt.y)));
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  private maskBounds(mask: HTMLCanvasElement): { x: number; y: number; w: number; h: number } | null {
+    const w = mask.width, h = mask.height;
+    const d = mask.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, w, h).data;
+    let x1 = w, y1 = h, x2 = -1, y2 = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (d[(y * w + x) * 4 + 3] > 8) {
+          if (x < x1) x1 = x; if (x > x2) x2 = x;
+          if (y < y1) y1 = y; if (y > y2) y2 = y;
+        }
+      }
+    }
+    return x2 < 0 ? null : { x: x1, y: y1, w: x2 - x1 + 1, h: y2 - y1 + 1 };
+  }
+
+  // Selection mask with optional feathered edge.
+  private effectiveMask(): HTMLCanvasElement | null {
+    const m = this.selMask;
+    if (!m || this.feather <= 0) return m;
+    const f = this.newMask();
+    const c = f.getContext('2d')!;
+    c.filter = `blur(${this.feather}px)`;
+    c.drawImage(m, 0, 0);
+    return f;
+  }
+
+  private extractSelection(cut: boolean): void {
+    const mask = this.effectiveMask();
+    const b = mask ? this.maskBounds(mask) : null;
+    if (!mask || !b) return;
+    const flat = document.createElement('canvas');
+    this.composite(flat);
+    const piece = document.createElement('canvas');
+    piece.width = b.w; piece.height = b.h;
+    const pc = piece.getContext('2d')!;
+    pc.drawImage(flat, b.x, b.y, b.w, b.h, 0, 0, b.w, b.h);
+    pc.globalCompositeOperation = 'destination-in';
+    pc.drawImage(mask, b.x, b.y, b.w, b.h, 0, 0, b.w, b.h);
+    this.commit();
+    if (cut) this.clearBasePixels(mask);
+    const layer: ImageLayer = { id: uid(), kind: 'image', canvas: piece, x: b.x, y: b.y, w: b.w, h: b.h };
+    this.state.layers.push(layer);
+    this.selectedId = layer.id;
+    this.selMask = null; this.selTint = null;
+    this.setTool('select');
+    this.activePanel = 'layers';
+    this.render();
+    this.rebuildPanel();
+    this.syncToolbar();
+  }
+
+  private clearBasePixels(mask: HTMLCanvasElement): void {
+    const b = this.state.base;
+    const out = document.createElement('canvas');
+    out.width = b.width; out.height = b.height;
+    const c = out.getContext('2d')!;
+    c.drawImage(b, 0, 0);
+    c.globalCompositeOperation = 'destination-out';
+    c.drawImage(mask, 0, 0);
+    this.state.base = out;
+    this.contentType = 'image/png'; // transparency requires PNG
+  }
+
+  private deleteSelectionPixels(): void {
+    const mask = this.effectiveMask();
+    if (!mask) return;
+    this.commit();
+    this.clearBasePixels(mask);
+    this.render();
+  }
+
+  private invertSelection(): void {
+    const inv = this.newMask();
+    const c = inv.getContext('2d')!;
+    c.fillStyle = '#fff';
+    c.fillRect(0, 0, inv.width, inv.height);
+    if (this.selMask) {
+      c.globalCompositeOperation = 'destination-out';
+      c.drawImage(this.selMask, 0, 0);
+    }
+    this.setMask(inv);
+  }
+
+  private buildSelectPanel(host: HTMLElement): void {
+    host.appendChild(title('Smart selection'));
+    host.appendChild(note('Wand: click a region to select similar connected colours (edge-aware). Lasso: drag around an area. Hold Shift to add to the selection.'));
+    const mk = (label: string, min: number, max: number, val: number, set: (v: number) => void): void => {
+      const field = el('div', 'img-field');
+      const lab = document.createElement('label');
+      const v = document.createElement('span'); v.textContent = String(val);
+      lab.append(document.createTextNode(label), v);
+      const input = document.createElement('input');
+      input.type = 'range'; input.min = String(min); input.max = String(max); input.value = String(val);
+      input.oninput = (): void => { set(Number(input.value)); v.textContent = input.value; };
+      field.append(lab, input);
+      host.appendChild(field);
+    };
+    mk('Wand tolerance', 0, 100, this.wandTol, (v) => { this.wandTol = v; });
+    mk('Feather (px)', 0, 10, this.feather, (v) => { this.feather = v; });
+    const has = !!this.selMask;
+    const row1 = el('div', 'img-row');
+    const ext = button('Extract to layer', 'img-btn primary'); ext.disabled = !has; ext.onclick = (): void => this.extractSelection(false);
+    const cut = button('Cut to layer', 'img-btn'); cut.disabled = !has; cut.onclick = (): void => this.extractSelection(true);
+    row1.append(ext, cut);
+    const row2 = el('div', 'img-row');
+    const del = button('Delete pixels', 'img-btn'); del.disabled = !has; del.onclick = (): void => this.deleteSelectionPixels();
+    const inv = button('Invert', 'img-btn'); inv.onclick = (): void => this.invertSelection();
+    const clr = button('Clear', 'img-btn'); clr.disabled = !has; clr.onclick = (): void => this.setMask(null);
+    row2.append(del, inv, clr);
+    host.append(row1, row2);
+    if (!has) host.appendChild(note('No selection yet.'));
   }
 
   private buildBgPanel(host: HTMLElement): void {

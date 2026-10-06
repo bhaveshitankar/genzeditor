@@ -1,62 +1,31 @@
-// Compression utilities for Filebase storage optimization.
-// Uses gzip via pako library for reducing file sizes.
+// Gzip blobs before they go to Filebase and restore them on download.
+// The marker lives in the bytes (not the MIME type), because storage and the
+// presigned PUT/GET don't preserve a custom blob type.
 
-const COMPRESSION_THRESHOLD = 1024; // Only compress files > 1KB
-const COMPRESSED_MARKER = 'X-Gzip-Compressed'; // Header to indicate compression
+const MAGIC = new TextEncoder().encode('GZE1');
+const MIN_SIZE = 1024;
+// Already-compressed formats: gzip gains nothing, so skip the CPU cost.
+const INCOMPRESSIBLE = /^(image\/(jpeg|png|webp|gif|avif)|video\/|audio\/|application\/(zip|gzip|x-7z|x-rar|pdf|vnd\.openxmlformats|epub))/;
 
-/** Compress a blob using gzip and add metadata */
+async function pipe(blob: Blob, stream: CompressionStream | DecompressionStream): Promise<Blob> {
+  return new Response(blob.stream().pipeThrough(stream)).blob();
+}
+
 export async function compressBlob(blob: Blob): Promise<Blob> {
-  // Skip compression for small files
-  if (blob.size < COMPRESSION_THRESHOLD) {
+  if (blob.size < MIN_SIZE || INCOMPRESSIBLE.test(blob.type) || typeof CompressionStream === 'undefined') return blob;
+  try {
+    const gz = await pipe(blob, new CompressionStream('gzip'));
+    // Keep it only when it saves at least 5%.
+    if (gz.size + MAGIC.length > blob.size * 0.95) return blob;
+    return new Blob([MAGIC, gz], { type: blob.type });
+  } catch {
     return blob;
   }
-
-  try {
-    const { compress } = await import('pako');
-    const buffer = await blob.arrayBuffer();
-    const uint8 = new Uint8Array(buffer);
-    const compressed = compress(uint8);
-
-    // Only use compression if it actually reduces size
-    if (compressed.length < blob.size) {
-      return new Blob([compressed], { type: `${blob.type}; ${COMPRESSED_MARKER}` });
-    }
-  } catch (err) {
-    console.warn('Compression failed, uploading uncompressed', err);
-  }
-
-  return blob;
 }
 
-/** Decompress a blob if it was compressed, otherwise return as-is */
-export async function decompressBlob(blob: Blob): Promise<Blob> {
-  // Check if blob type indicates compression
-  if (!blob.type.includes(COMPRESSED_MARKER)) {
-    return blob;
-  }
-
-  try {
-    const { decompress } = await import('pako');
-    const buffer = await blob.arrayBuffer();
-    const uint8 = new Uint8Array(buffer);
-    const decompressed = decompress(uint8);
-
-    // Restore original content type (remove the marker)
-    const originalType = blob.type.replace(`; ${COMPRESSED_MARKER}`, '');
-    return new Blob([decompressed], { type: originalType });
-  } catch (err) {
-    console.error('Decompression failed', err);
-    throw err;
-  }
-}
-
-/** Check if blob is compressed */
-export function isCompressed(blob: Blob): boolean {
-  return blob.type.includes(COMPRESSED_MARKER);
-}
-
-/** Get compression ratio as percentage */
-export function getCompressionRatio(original: number, compressed: number): number {
-  if (original === 0) return 0;
-  return Math.round(((original - compressed) / original) * 100);
+export async function decompressBlob(blob: Blob, type = blob.type): Promise<Blob> {
+  const head = new Uint8Array(await blob.slice(0, MAGIC.length).arrayBuffer());
+  if (head.length !== MAGIC.length || !head.every((b, i) => b === MAGIC[i])) return blob;
+  const raw = await pipe(blob.slice(MAGIC.length), new DecompressionStream('gzip'));
+  return new Blob([raw], { type });
 }

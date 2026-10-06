@@ -39,12 +39,9 @@ export async function saveBackShared(
   const api = deps?.api ?? defaultApi;
   const uploadPut = deps?.uploadPut ?? defaultUploadPut;
 
-  // Compress blob before save-back
-  const compressedBlob = await compressBlob(blob);
-  console.log(`Save-back: ${blob.size} → ${compressedBlob.size} bytes`);
-
-  const { uploadUrl } = await api.initSaveBack(token, compressedBlob.size, deps?.csrfToken);
-  await uploadPut(uploadUrl, compressedBlob, compressedBlob.type);
+  const stored = await compressBlob(blob);
+  const { uploadUrl } = await api.initSaveBack(token, stored.size, deps?.csrfToken);
+  await uploadPut(uploadUrl, stored, blob.type);
 }
 
 function inferKindFromContentType(contentType: string): FileKind {
@@ -58,10 +55,7 @@ function inferKindFromContentType(contentType: string): FileKind {
 async function defaultFetchBlob(url: string): Promise<Blob> {
   const res = await fetch(url);
   if (!res.ok) throw new Error('download_failed');
-  let blob = await res.blob();
-  // Decompress if compressed
-  blob = await decompressBlob(blob);
-  return blob;
+  return decompressBlob(await res.blob());
 }
 
 export async function openFromHash(

@@ -1,6 +1,6 @@
 import type { FileKind } from '../store/types';
 import * as defaultApi from '../api/client';
-import { compressBlob, getCompressionRatio } from './compress';
+import { compressBlob } from './compress';
 
 export interface ShareContext {
   kind: FileKind;
@@ -11,7 +11,6 @@ export interface ShareContext {
   isLoggedIn: boolean;
   wantRw: boolean;
   csrfToken?: string;
-  onCompressionInfo?: (ratio: number, originalSize: number, compressedSize: number) => void;
 }
 
 async function defaultUploadPut(url: string, blob: Blob): Promise<void> {
@@ -35,20 +34,9 @@ export async function shareFile(
   if (ctx.wantRw && !ctx.isLoggedIn) return { needLogin: 'Sign in to create editable (read-write) links.' };
 
   const access: 'ro' | 'rw' = ctx.wantRw ? 'rw' : 'ro';
-  let blob = ctx.blob ?? new Blob([ctx.text ?? ''], { type: ctx.contentType });
-  const originalSize = blob.size;
-
-  // Compress blob for Filebase storage
-  blob = await compressBlob(blob);
-  const compressedSize = blob.size;
-  if (compressedSize < originalSize) {
-    const ratio = getCompressionRatio(originalSize, compressedSize);
-    console.log(`Compression: ${originalSize} → ${compressedSize} bytes (${ratio}% reduction)`);
-    ctx.onCompressionInfo?.(ratio, originalSize, compressedSize);
-  }
-
+  const blob = await compressBlob(ctx.blob ?? new Blob([ctx.text ?? ''], { type: ctx.contentType }));
   const created = await api.createShare(
-    { access, storageKind: 'filebase', contentType: ctx.contentType, title: ctx.title, sizeBytes: compressedSize },
+    { access, storageKind: 'filebase', contentType: ctx.contentType, title: ctx.title, sizeBytes: blob.size },
     ctx.csrfToken,
   );
   if (!created.uploadUrl) throw new Error('no_upload_url');
