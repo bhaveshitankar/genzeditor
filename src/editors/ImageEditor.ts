@@ -1289,7 +1289,7 @@ export class ImageEditor {
     this.rebuildPanel();
   }
 
-  private async addImageLayer(file: File): Promise<void> {
+  private async addImageLayer(file: Blob): Promise<void> {
     try {
       const bitmap = await createImageBitmap(file);
       const canvas = document.createElement('canvas');

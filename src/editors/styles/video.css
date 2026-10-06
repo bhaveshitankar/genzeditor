@@ -1,17 +1,17 @@
-/* Video editor — Picsart-inspired. All classes prefixed `vid-`, using the
-   app design tokens (--surface, --brand-*, --r-*, --shadow-*, --ease). */
+/* Video editor — multi-clip timeline. All classes prefixed `vid-` / `vt-`, using
+   the app design tokens (--surface, --brand-*, --r-*, --shadow-*, --ease). */
 
 .vid-editor {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   width: 100%;
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
   color: var(--text);
 }
 
-/* Stage: video + crop overlay */
+/* Stage: composited preview canvas */
 .vid-stage {
   position: relative;
   display: flex;
@@ -22,83 +22,170 @@
   border-radius: var(--r-md, 12px);
   overflow: hidden;
   min-height: 220px;
+  padding: 8px;
 }
-.vid-video {
+.vid-canvas {
   display: block;
   max-width: 100%;
-  max-height: 60vh;
-  border-radius: var(--r-md, 12px);
+  max-height: 55vh;
+  background: #000;
+  border-radius: 6px;
+  touch-action: none;
 }
-/* Crop overlay */
-.vid-crop-layer {
+/* Hidden media sources feeding the canvas (kept in the DOM so they decode). */
+.vid-pool {
   position: absolute;
-  inset: 0;
-  cursor: crosshair;
-  display: none;
-}
-.vid-crop-layer.active { display: block; }
-.vid-crop-box {
-  position: absolute;
-  border: 2px solid var(--brand-500);
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
-  box-sizing: border-box;
+  width: 2px;
+  height: 2px;
+  overflow: hidden;
+  opacity: 0;
   pointer-events: none;
 }
+.vid-pool video, .vid-pool img { width: 2px; height: 2px; }
+
+/* Transport / editing toolbar */
+.vid-transport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.vid-time { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--text-muted); min-width: 120px; }
+.vid-sep { width: 1px; height: 22px; background: var(--border); margin: 0 2px; }
 
 /* Timeline */
-.vid-timeline {
-  position: relative;
+.vt {
+  display: flex;
   border: 1px solid var(--border);
   border-radius: var(--r-sm, 8px);
   background: var(--surface-2);
-  padding: 6px;
   overflow: hidden;
+  user-select: none;
 }
-.vid-thumbs {
-  display: flex;
-  height: 54px;
-  gap: 1px;
-  border-radius: var(--r-sm, 8px);
-  overflow: hidden;
+.vt-labels {
+  flex: 0 0 76px;
+  border-right: 1px solid var(--border);
   background: var(--surface);
 }
-.vid-thumbs img,
-.vid-thumbs canvas {
-  height: 54px;
-  flex: 1 1 0;
-  object-fit: cover;
-  min-width: 0;
-  display: block;
+.vt-label {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
 }
-/* Kept-region shading + playhead sit above thumbs */
-.vid-track {
+.vt-scroll { flex: 1 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+.vt-inner { position: relative; min-width: 100%; padding-right: 16px; cursor: text; }
+
+.vt-label.ruler, .vt-ruler { height: 22px; }
+.vt-label.main, .vt-row.main { height: 58px; }
+.vt-label.ov, .vt-row.ov { height: 44px; }
+.vt-label.audio, .vt-row.audio { height: 30px; }
+
+.vt-ruler {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+}
+.vt-tick {
   position: absolute;
-  inset: 6px;
+  top: 0;
+  height: 100%;
+  padding-left: 4px;
+  border-left: 1px solid var(--border);
+  font-size: 10px;
+  line-height: 22px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.vt-row { position: relative; border-bottom: 1px solid var(--border); }
+
+.vt-clip {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  box-sizing: border-box;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-color: color-mix(in srgb, var(--brand-500) 55%, #000);
+  background-repeat: repeat-x;
+  background-size: auto 100%;
+  overflow: hidden;
+  cursor: grab;
+}
+.vt-clip.ov { background-color: color-mix(in srgb, #3b82f6 60%, #000); }
+.vt-clip.img { background-size: auto 100%; }
+.vt-clip.sel { border-color: #fff; box-shadow: 0 0 0 2px var(--brand-500); z-index: 2; }
+.vt-clip.dragging { opacity: 0.75; cursor: grabbing; z-index: 3; }
+.vt-clip-name {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
 }
-.vid-seg {
+.vt-handle {
   position: absolute;
   top: 0;
   bottom: 0;
-  background: color-mix(in srgb, var(--brand-500) 22%, transparent);
-  border-left: 2px solid var(--brand-500);
-  border-right: 2px solid var(--brand-500);
+  width: 8px;
+  background: rgba(255, 255, 255, 0.35);
+  cursor: ew-resize;
 }
-.vid-playhead {
+.vt-handle.l { left: 0; }
+.vt-handle.r { right: 0; }
+.vt-handle:hover, .vt-clip.sel .vt-handle { background: rgba(255, 255, 255, 0.85); }
+
+.vt-audio {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  box-sizing: border-box;
+  border-radius: 6px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 22px;
+  color: #fff;
+  background: color-mix(in srgb, #10b981 60%, #000);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vt-playhead {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 2px;
-  background: var(--text);
+  margin-left: -1px;
+  background: #ff4d8d;
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  z-index: 5;
 }
-.vid-scrub {
+.vt-playhead::before {
+  content: '';
   position: absolute;
-  inset: 6px;
-  cursor: pointer;
+  top: 0;
+  left: -5px;
+  border: 6px solid transparent;
+  border-top-color: #ff4d8d;
 }
 
-/* Toolbar — horizontally scrollable tab row */
+/* Tabs */
 .vid-tabs {
   display: flex;
   gap: 6px;
@@ -128,7 +215,7 @@
   box-shadow: var(--shadow-sm);
 }
 
-/* Panel */
+/* Panels */
 .vid-panel {
   display: none;
   flex-wrap: wrap;
@@ -149,13 +236,11 @@
   color: var(--text-muted);
   min-width: 120px;
 }
-.vid-field.row {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-}
+.vid-field b { color: var(--text); font-weight: 600; }
+.vid-field.row { flex-direction: row; align-items: center; gap: 8px; }
 .vid-field input[type="range"] { width: 150px; accent-color: var(--brand-500); }
 .vid-field input[type="text"],
+.vid-field input[type="number"],
 .vid-field select {
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -164,12 +249,41 @@
   color: var(--text);
   font-size: 13px;
 }
+.vid-field input[type="number"] { width: 90px; }
 .vid-field input[type="color"] { width: 36px; height: 28px; border: none; background: none; padding: 0; }
+.vid-hint { font-size: 12px; color: var(--text-muted); margin: 0; }
+.vid-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+
+/* Clip properties */
+.vid-props { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.vid-props-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.vid-props-head strong { font-size: 14px; }
+.vid-props-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.vid-props-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 8px);
+  background: var(--surface-2);
+}
+.vid-group-title {
+  flex: 1 0 100%;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.vid-props-group .vid-field input[type="range"] { width: 120px; }
+.vid-props-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* Buttons */
 .vid-btn {
   flex: 0 0 auto;
-  padding: 8px 12px;
+  padding: 7px 12px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm, 8px);
   background: var(--surface-2);
@@ -179,13 +293,9 @@
   transition: all 0.14s var(--ease);
   white-space: nowrap;
 }
-.vid-btn:hover { border-color: var(--brand-500); background: var(--surface-hover); }
-.vid-btn.active {
-  background: var(--brand-gradient);
-  color: #fff;
-  border-color: transparent;
-}
-.vid-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.vid-btn:hover:not(:disabled) { border-color: var(--brand-500); background: var(--surface-hover); }
+.vid-btn.active { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+.vid-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* Status + progress */
 .vid-statusbar {
@@ -213,44 +323,6 @@
   transition: width 0.2s var(--ease);
 }
 
-.vid-transport {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
-}
-.vid-time { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--text-muted); }
-
-.vid-seglist {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  width: 100%;
-}
-.vid-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-.vid-chip button {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-}
-.vid-chip button:hover { color: var(--brand-500); }
-
 /* Unplayable video state */
 .vid-unplayable {
   display: flex;
@@ -266,22 +338,9 @@
   max-width: 500px;
   margin: 0 auto;
 }
-.vid-unplayable-icon {
-  font-size: 48px;
-  opacity: 0.6;
-}
-.vid-unplayable-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text);
-  margin: 0;
-}
-.vid-unplayable-message {
-  font-size: 14px;
-  color: var(--text-muted);
-  margin: 0;
-  line-height: 1.5;
-}
+.vid-unplayable-icon { font-size: 48px; opacity: 0.6; }
+.vid-unplayable-title { font-size: 18px; font-weight: 600; color: var(--text); margin: 0; }
+.vid-unplayable-message { font-size: 14px; color: var(--text-muted); margin: 0; line-height: 1.5; }
 .vid-unplayable-info {
   font-size: 12px;
   color: var(--text-muted);
@@ -290,77 +349,9 @@
   border-radius: var(--r-sm, 8px);
   border: 1px solid var(--border);
 }
-.vid-unplayable-info strong {
-  color: var(--text);
-}
+.vid-unplayable-info strong { color: var(--text); }
 
-/* Multi-track timeline */
-.vid-timeline-header {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-.vid-timeline-labels {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 70px;
-}
-.vid-track-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  padding: 4px 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.vid-timeline-tracks {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.vid-track-group {
-  position: relative;
-  background: var(--surface-2);
-  border-radius: var(--r-sm, 8px);
-  overflow: hidden;
-  padding: 4px;
-}
-.vid-video-track {
-  position: relative;
-  height: 54px;
-  margin: 0;
-  padding: 0;
-}
-.vid-audio-track-container {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.vid-audio-track {
-  position: relative;
-  height: 32px;
-  background: var(--surface-2);
-  border-radius: var(--r-sm, 8px);
-  padding: 4px;
-  border-left: 2px solid var(--brand-400);
-  font-size: 11px;
-  color: var(--text-muted);
-  padding-left: 8px;
-  display: flex;
-  align-items: center;
-}
-.vid-seglist-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-top: 8px;
-}
-
-/* Zoom control */
+/* Timeline zoom */
 .vid-zoom {
   display: flex;
   align-items: center;
@@ -372,23 +363,13 @@
   color: var(--text-muted);
   flex: 0 0 auto;
 }
-.vid-zoom button {
-  padding: 4px 8px !important;
-  font-size: 12px;
-  min-width: 30px;
-}
-.vid-zoom input[type="range"] {
-  width: 100px;
-  cursor: pointer;
-  flex: 0 0 auto;
-}
-.vid-zoom span {
-  min-width: 35px;
-  text-align: center;
-  font-weight: 500;
-  flex: 0 0 auto;
-}
+.vid-zoom button { padding: 4px 8px !important; font-size: 12px; min-width: 30px; }
+.vid-zoom input[type="range"] { width: 120px; cursor: pointer; flex: 0 0 auto; }
+.vid-zoom span { min-width: 35px; text-align: center; font-weight: 500; flex: 0 0 auto; }
 
 @media (max-width: 640px) {
   .vid-field input[type="range"] { width: 120px; }
+  .vt-labels { flex-basis: 56px; }
+  .vt-label { font-size: 10px; padding: 0 4px; }
+  .vid-time { min-width: 0; }
 }
