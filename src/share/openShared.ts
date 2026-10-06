@@ -2,6 +2,7 @@ import type { FileKind } from '../store/types';
 import { decodeEmbedded } from './embedded';
 import { detectKind } from '../detect/fileKind';
 import * as defaultApi from '../api/client';
+import { compressBlob, decompressBlob } from './compress';
 
 export interface OpenedShare {
   title: string; contentType: string; kind: FileKind;
@@ -37,8 +38,13 @@ export async function saveBackShared(
 ): Promise<void> {
   const api = deps?.api ?? defaultApi;
   const uploadPut = deps?.uploadPut ?? defaultUploadPut;
-  const { uploadUrl } = await api.initSaveBack(token, blob.size, deps?.csrfToken);
-  await uploadPut(uploadUrl, blob, blob.type);
+
+  // Compress blob before save-back
+  const compressedBlob = await compressBlob(blob);
+  console.log(`Save-back: ${blob.size} → ${compressedBlob.size} bytes`);
+
+  const { uploadUrl } = await api.initSaveBack(token, compressedBlob.size, deps?.csrfToken);
+  await uploadPut(uploadUrl, compressedBlob, compressedBlob.type);
 }
 
 function inferKindFromContentType(contentType: string): FileKind {
@@ -52,7 +58,10 @@ function inferKindFromContentType(contentType: string): FileKind {
 async function defaultFetchBlob(url: string): Promise<Blob> {
   const res = await fetch(url);
   if (!res.ok) throw new Error('download_failed');
-  return res.blob();
+  let blob = await res.blob();
+  // Decompress if compressed
+  blob = await decompressBlob(blob);
+  return blob;
 }
 
 export async function openFromHash(
