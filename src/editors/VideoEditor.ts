@@ -91,6 +91,29 @@ export class VideoEditor implements DocEditor {
 
   private duration(): number { return isFinite(this.video?.duration) ? this.video.duration : 0; }
 
+  /** Apply an AI-generated non-destructive patch, then re-render. Returns a summary. */
+  applyAiPatch(patch: Record<string, unknown>): string {
+    const done: string[] = [];
+    const num = (v: unknown): number | null => (typeof v === 'number' && isFinite(v) ? v : null);
+    const ts = num(patch.trimStart), te = num(patch.trimEnd);
+    if (ts != null || te != null) {
+      this.segments = [{ start: ts ?? 0, end: te ?? (this.duration() || (ts ?? 0)) }];
+      done.push('trimmed');
+    }
+    if (patch.mute === true) { this.mute = true; done.push('muted'); }
+    const sp = num(patch.speed); if (sp != null && sp > 0) { this.speed = sp; done.push(`speed ${sp}x`); }
+    if (patch.rotate === 90 || patch.rotate === 180 || patch.rotate === 270) { this.rotate = patch.rotate; done.push(`rotated ${patch.rotate}°`); }
+    if (patch.flipH === true) { this.flipH = true; done.push('flipped H'); }
+    if (patch.flipV === true) { this.flipV = true; done.push('flipped V'); }
+    const br = num(patch.brightness); if (br != null) { this.brightness = Math.max(-1, Math.min(1, br / 100)); done.push('brightness'); }
+    const ct = num(patch.contrast); if (ct != null) { this.contrast = Math.max(0, Math.min(2, 1 + ct / 100)); done.push('contrast'); }
+    const sa = num(patch.saturation); if (sa != null) { this.saturation = Math.max(0, Math.min(3, 1 + sa / 100)); done.push('saturation'); }
+    if (patch.outFmt === 'mp4' || patch.outFmt === 'webm') { this.outFmt = patch.outFmt; done.push(`format ${patch.outFmt}`); }
+    if (typeof patch.text === 'string' && patch.text) { this.text = patch.text; done.push('text overlay'); }
+    this.render();
+    return done.join(', ') || 'no changes';
+  }
+
   // ---- Export -----------------------------------------------------------
 
   private hasEdits(): boolean {

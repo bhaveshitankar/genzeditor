@@ -27,6 +27,9 @@ migrations_dir = "migrations"
 binding = "KV_BLOCKED_EMAIL_DOMAINS"
 id = "6a4e0cf023e642368dc44d471965aec7"
 
+[ai]
+binding = "AI"
+
 [[durable_objects.bindings]]
 name = "GAME_ROOM"
 class_name = "GameRoom"

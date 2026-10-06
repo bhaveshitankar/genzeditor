@@ -209,6 +209,16 @@ export class GameEditor {
   }
 
   // ---- Edit plumbing ----
+  /** Current game document (for AI context). */
+  aiDoc(): GameDoc { return this.doc; }
+
+  /** Apply a batch of AI-generated game ops through the normal local path. */
+  applyAiOps(ops: GameOp[]): string {
+    let n = 0;
+    for (const op of ops) { try { this.applyLocal(op); n++; } catch { /* skip bad op */ } }
+    return `applied ${n} change(s)`;
+  }
+
   private applyLocal(op: GameOp) {
     this.undoStack.push(serializeGameDoc(this.doc));
     if (this.undoStack.length > 100) this.undoStack.shift();

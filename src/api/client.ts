@@ -101,3 +101,46 @@ export async function initSaveBack(
 export function loginUrl(provider: 'google' | 'github'): string {
   return `${API_BASE}/api/auth/${provider}/start`;
 }
+
+// ---- AI edit -------------------------------------------------------------
+
+export type AiKind =
+  | 'text' | 'image' | 'video' | 'form'
+  | 'docx' | 'spreadsheet' | 'pdf' | 'game' | 'floorplan' | 'sketch' | 'audio';
+
+export interface AiEditInput {
+  kind: AiKind;
+  instruction: string;
+  content?: string;
+  meta?: Record<string, unknown>;
+}
+
+export interface AiEditResult {
+  provider: 'workers-ai' | 'openai' | 'anthropic';
+  text?: string;
+  ops?: unknown;
+}
+
+// A bring-your-own-key value stored client-side only (localStorage), sent per
+// request to unlock unlimited mode. Never persisted server-side.
+export interface ByoKey { key: string; provider?: 'openai' | 'anthropic' }
+
+export class AiError extends Error {
+  constructor(public code: string, public limit?: number) { super(code); }
+}
+
+export async function aiEdit(input: AiEditInput, byok?: ByoKey | null): Promise<AiEditResult> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (byok?.key) {
+    headers['X-AI-Key'] = byok.key;
+    if (byok.provider) headers['X-AI-Provider'] = byok.provider;
+  }
+  const res = await fetch(`${API_BASE}/api/ai/edit`, {
+    method: 'POST', credentials: 'include', headers, body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({ error: 'ai_failed' }))) as { error: string; limit?: number };
+    throw new AiError(data.error, data.limit);
+  }
+  return res.json();
+}

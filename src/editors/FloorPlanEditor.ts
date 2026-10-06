@@ -401,6 +401,19 @@ export class FloorPlanEditor {
   }
 
   // ---- Rendering ----
+  /** Current plan as JSON (for AI context). */
+  getPlanJson(): string { return serializeFloorPlan(this.plan); }
+
+  /** Replace the whole plan from AI-generated JSON; keeps undo + redraws. */
+  applyAiPlan(json: string): string {
+    const next = parseFloorPlan(json);
+    this.snapshot();
+    this.plan = next;
+    this.emitChange();
+    this.redraw();
+    return `plan updated (${next.walls.length} walls, ${next.furniture.length} items)`;
+  }
+
   private redraw() {
     this.applyTransform();
     this.world.replaceChildren();

@@ -8,6 +8,7 @@ import { createAuth } from './auth';
 import { normalizeEmail, isValidSyntax, domainOf, isDisposable, hasMx } from './email/validate';
 import { checkThrottle, recordStrike, clearThrottle } from './throttle';
 import { verifyTurnstile } from './turnstile';
+import { runAiEdit, type AiKind } from './ai';
 
 const WINDOW = 60_000;
 
@@ -87,6 +88,31 @@ export async function handle(req: Request, env: Env): Promise<Response> {
   const sessionData = await auth.api.getSession({ headers: req.headers });
   const userId = sessionData?.user?.id ?? null;
   const owner = await ownerRef(req, env, userId);
+
+  // --- AI edit: login-gated, 10 free edits/day (BYOK = unlimited) ---
+  if (req.method === 'POST' && path === '/api/ai/edit') {
+    if (!originAllowed(req, env)) return error('bad_origin', env, 403);
+    if (!userId) return error('unauthorized', env, 401);
+    const byokKey = req.headers.get('X-AI-Key');
+    const byokProvider = req.headers.get('X-AI-Provider');
+    // Free tier is capped at 10/day; a user key bypasses the daily quota.
+    if (!byokKey) {
+      if (!(await rateLimit(env.DB, owner, 'ai_edit', 10, 86_400_000)).ok) {
+        return json({ error: 'daily_limit', limit: 10 }, env, { status: 429 });
+      }
+    }
+    const b = await req.json<{ kind: AiKind; instruction: string; content?: string; meta?: Record<string, unknown> }>();
+    if (!b?.kind || !b?.instruction) return error('bad_request', env, 400);
+    if ((b.instruction?.length ?? 0) > 2000 || (b.content?.length ?? 0) > 200_000) {
+      return error('too_large', env, 413);
+    }
+    try {
+      const result = await runAiEdit(env, b, { byokKey, byokProvider });
+      return json(result, env);
+    } catch (e) {
+      return json({ error: 'ai_failed', detail: (e as Error).message }, env, { status: 502 });
+    }
+  }
 
   // Same-site Lax cookies + strict CORS allowlist mean cross-site POSTs can't
   // carry the session cookie, so an Origin check is sufficient CSRF defense.

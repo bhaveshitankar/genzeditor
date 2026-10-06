@@ -13,6 +13,18 @@ import { bindUndoKeys } from './undoKeys';
 
 type ExportFmt = 'wav' | 'mp3';
 
+// AI op shape emitted by the backend (see worker/src/ai.ts audio system prompt).
+export type AiAudioOp =
+  | { t: 'gain'; mult: number }
+  | { t: 'normalize' }
+  | { t: 'fade'; dir: 'in' | 'out' }
+  | { t: 'reverse' }
+  | { t: 'trim' }
+  | { t: 'reverb'; secs: number }
+  | { t: 'echo'; time: number }
+  | { t: 'filter'; kind: 'lowpass' | 'highpass'; freq: number }
+  | { t: 'speed'; rate: number };
+
 export class AudioEditor implements DocEditor {
   private host: HTMLElement;
   private ctx: AudioContext;
@@ -428,6 +440,87 @@ export class AudioEditor implements DocEditor {
     this.setStatus('Reversed region');
   }
 
+  /** Apply a batch of AI-generated audio ops (reuses the DSP helpers). */
+  async applyAiOps(ops: AiAudioOp[]): Promise<string> {
+    if (!this.buffer) return 'no audio';
+    const done: string[] = [];
+    for (const op of ops) {
+      switch (op.t) {
+        case 'gain': {
+          const g = Number(op.mult);
+          if (g > 0) { this.mapRegion((v) => v * g); done.push(`gain ×${g}`); }
+          break;
+        }
+        case 'normalize': this.normalize(); done.push('normalized'); break;
+        case 'fade': this.fade(op.dir === 'in'); done.push(`fade ${op.dir}`); break;
+        case 'reverse': this.reverse(); done.push('reversed'); break;
+        case 'trim': this.trim(); done.push('trimmed'); break;
+        case 'reverb': {
+          const secs = Number(op.secs) || 2;
+          await this.processRegion((oac, src) => {
+            const conv = oac.createConvolver();
+            conv.buffer = impulseResponse(oac, secs, 2.5);
+            const wet = oac.createGain(); wet.gain.value = 0.6;
+            const dry = oac.createGain(); dry.gain.value = 0.7;
+            src.connect(dry).connect(oac.destination);
+            src.connect(conv).connect(wet).connect(oac.destination);
+          });
+          done.push('reverb');
+          break;
+        }
+        case 'echo': {
+          const time = Number(op.time) || 0.3;
+          await this.processRegion((oac, src) => {
+            const delay = oac.createDelay(5); delay.delayTime.value = time;
+            const fb = oac.createGain(); fb.gain.value = 0.4;
+            delay.connect(fb).connect(delay);
+            src.connect(oac.destination);
+            src.connect(delay).connect(oac.destination);
+          }, time * 4);
+          done.push('echo');
+          break;
+        }
+        case 'filter': {
+          const type = op.kind === 'highpass' ? 'highpass' : 'lowpass';
+          const freq = Number(op.freq) || (type === 'lowpass' ? 3000 : 500);
+          await this.processRegion((oac, src) => {
+            const biq = oac.createBiquadFilter();
+            biq.type = type; biq.frequency.value = freq;
+            src.connect(biq).connect(oac.destination);
+          });
+          done.push(`${type} @ ${freq}Hz`);
+          break;
+        }
+        case 'speed': {
+          const rate = Number(op.rate);
+          if (rate > 0) { await this.speedBy(rate); done.push(`speed ×${rate}`); }
+          break;
+        }
+      }
+    }
+    return done.join(', ') || 'no changes';
+  }
+
+  // Parameterized speed change (shared by the toolbar speed() prompt and AI ops).
+  private async speedBy(rate: number) {
+    if (!this.buffer || rate <= 0) return;
+    const { s, e, whole } = this.region();
+    const region = sliceBuffer(this.ctx, this.buffer, s, e);
+    const outLen = Math.max(1, Math.ceil(region.length / rate));
+    const oac = new OfflineAudioContext(region.numberOfChannels, outLen, region.sampleRate);
+    const src = oac.createBufferSource();
+    src.buffer = region; src.playbackRate.value = rate;
+    src.connect(oac.destination); src.start();
+    const rendered = await oac.startRendering();
+    if (whole) { this.selStart = this.selEnd = 0; this.setBuffer(rendered); }
+    else {
+      const before = sliceBuffer(this.ctx, this.buffer, 0, s);
+      const after = sliceBuffer(this.ctx, this.buffer, e, this.buffer.duration);
+      this.selEnd = this.selStart;
+      this.setBuffer(concatBuffers(this.ctx, [before, rendered, after]));
+    }
+  }
+
   // Mutate every sample in the active region through fn.
   private mapRegion(fn: (v: number) => number) {
     if (!this.buffer) return;
@@ -485,22 +578,7 @@ export class AudioEditor implements DocEditor {
   private async speed() {
     const rate = promptNum('Speed factor (2 = 2× faster)', 1.5);
     if (rate == null || rate <= 0) return;
-    if (!this.buffer) return;
-    const { s, e, whole } = this.region();
-    const region = sliceBuffer(this.ctx, this.buffer, s, e);
-    const outLen = Math.max(1, Math.ceil(region.length / rate));
-    const oac = new OfflineAudioContext(region.numberOfChannels, outLen, region.sampleRate);
-    const src = oac.createBufferSource();
-    src.buffer = region; src.playbackRate.value = rate;
-    src.connect(oac.destination); src.start();
-    const rendered = await oac.startRendering();
-    if (whole) { this.selStart = this.selEnd = 0; this.setBuffer(rendered); }
-    else {
-      const before = sliceBuffer(this.ctx, this.buffer, 0, s);
-      const after = sliceBuffer(this.ctx, this.buffer, e, this.buffer.duration);
-      this.selEnd = this.selStart;
-      this.setBuffer(concatBuffers(this.ctx, [before, rendered, after]));
-    }
+    await this.speedBy(rate);
     this.setStatus(`Speed ×${rate}`);
   }
 

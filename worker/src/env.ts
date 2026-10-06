@@ -18,4 +18,9 @@ export interface Env {
   RESEND_API_KEY: string;
   RESEND_FROM: string;
   TURNSTILE_SECRET_KEY: string;
+  // AI edit feature.
+  AI: Ai;
+  // Optional server-side fallback provider keys (used when Workers AI errors).
+  OPENAI_API_KEY?: string;
+  ANTHROPIC_API_KEY?: string;
 }

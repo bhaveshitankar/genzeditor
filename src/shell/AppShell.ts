@@ -26,6 +26,9 @@ import type { ShareLink } from '../store/types';
 import { CompareView } from '../diff/CompareView';
 import { THEMES, applyTheme, getSavedTheme } from '../theme/themes';
 import { validatorFor } from '../editors/validate';
+import { AiPanel, type AiTarget } from '../ui/AiPanel';
+import type { AiEditResult } from '../api/client';
+import { icon, iconNameForKind } from '../ui/icons';
 
 export class AppShell {
   // localStorage key holding the id of the last-opened file, so a refresh can
@@ -54,6 +57,7 @@ export class AppShell {
   private toastRegion!: HTMLElement;
   private closeDrawer: () => void = () => {};
   private meState: MeState = { authenticated: false };
+  private aiPanel?: AiPanel;
   // Multi-select delete: when on, file rows show a checkbox and a selection bar
   // offers "Delete (n)". Tracks which file ids are ticked.
   private selectMode = false;
@@ -63,6 +67,11 @@ export class AppShell {
 
   constructor(private root: HTMLElement, private store: FileStore) {
     this.render();
+    this.aiPanel = new AiPanel({
+      isAuthed: () => this.meState.authenticated,
+      onSignIn: () => openSignInModal(),
+      resolve: () => this.resolveAiTarget(),
+    });
     this.wireUpload();
     this.wirePalette();
     this.wireKeyboard();
@@ -84,7 +93,7 @@ export class AppShell {
       <div class="app-shell">
         <header class="app-ribbon">
           <div class="ribbon-brand">
-            <button class="hamburger" aria-label="Toggle files">☰</button>
+            <button class="hamburger" aria-label="Toggle files">${icon('menu')}</button>
             <h1 class="brand-name">
               <span class="brand-mark">Gz</span>
               <span class="brand-text">GenZ<span class="brand-accent"> Editor</span></span>
@@ -97,27 +106,30 @@ export class AppShell {
             </div>
           </div>
           <div class="ribbon-global">
-            <button type="button" class="icon-btn" data-role="fullscreen-btn" aria-label="Full screen editing" title="Full screen (Esc to exit)">⛶</button>
-            <button type="button" class="icon-btn" data-role="theme-btn" aria-label="Change theme" title="Theme">🎨</button>
-            <button type="button" class="header-btn" data-role="compare-btn">⇄ Compare</button>
+            <button type="button" class="icon-btn" data-role="fullscreen-btn" aria-label="Full screen editing" title="Full screen (Esc to exit)">${icon('maximize', 18)}</button>
+            <button type="button" class="icon-btn" data-role="theme-btn" aria-label="Change theme" title="Theme">${icon('palette', 18)}</button>
+            <button type="button" class="header-btn" data-role="compare-btn">${icon('compare', 16)}<span>Compare</span></button>
             <div data-role="auth-bar" class="auth-bar"></div>
           </div>
         </header>
         <div class="app-body">
           <nav class="rail" aria-label="Primary">
             <button type="button" class="rail-btn" data-role="rail-files" aria-label="Toggle files panel" title="Files">
-              <span class="rail-icon">📁</span><span class="rail-label">Files</span>
+              <span class="rail-icon">${icon('folder')}</span><span class="rail-label">Files</span>
             </button>
             <button type="button" class="rail-btn" data-role="new-btn" aria-label="Create new file" title="New file">
-              <span class="rail-icon">＋</span><span class="rail-label">New</span>
+              <span class="rail-icon">${icon('filePlus')}</span><span class="rail-label">New</span>
             </button>
             <label class="rail-btn" data-role="rail-upload" aria-label="Upload file" title="Upload">
               <input type="file">
-              <span class="rail-icon">⬆</span><span class="rail-label">Upload</span>
+              <span class="rail-icon">${icon('upload')}</span><span class="rail-label">Upload</span>
             </label>
+            <button type="button" class="rail-btn" data-role="rail-ai" aria-label="AI edit" title="AI edit">
+              <span class="rail-icon">${icon('sparkles')}</span><span class="rail-label">AI</span>
+            </button>
             <span class="rail-spacer"></span>
             <button type="button" class="rail-btn" data-role="rail-inspector" aria-label="Toggle inspector" title="Details">
-              <span class="rail-icon">ℹ︎</span><span class="rail-label">Details</span>
+              <span class="rail-icon">${icon('info')}</span><span class="rail-label">Details</span>
             </button>
           </nav>
           <aside class="panel files-panel" data-role="files-panel">
@@ -138,7 +150,7 @@ export class AppShell {
             </div>
             <ul data-role="file-drawer"></ul>
             <div class="storage-hint" data-role="storage-hint">
-              <span>💾</span><span>Stored locally in your browser</span>
+              <span class="storage-hint-icon">${icon('hardDrive', 16)}</span><span>Stored locally in your browser</span>
             </div>
           </aside>
           <div class="sidebar-resizer" data-role="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"></div>
@@ -148,7 +160,7 @@ export class AppShell {
           <aside class="panel inspector" data-role="inspector">
             <div class="panel-head">
               <span class="panel-title">Inspector</span>
-              <button type="button" class="panel-collapse" data-role="inspector-collapse" aria-label="Collapse inspector" title="Collapse">✕</button>
+              <button type="button" class="panel-collapse" data-role="inspector-collapse" aria-label="Collapse inspector" title="Collapse">${icon('x', 16)}</button>
             </div>
             <section class="file-actions" data-role="file-actions" aria-label="Actions for the open file" hidden></section>
             <div class="inspector-empty" data-role="inspector-empty">
@@ -199,6 +211,7 @@ export class AppShell {
     };
     this.root.querySelector('[data-role="rail-inspector"]')?.addEventListener('click', toggleInspector);
     this.root.querySelector('[data-role="inspector-collapse"]')?.addEventListener('click', toggleInspector);
+    this.root.querySelector('[data-role="rail-ai"]')?.addEventListener('click', () => this.aiPanel?.toggle());
 
     // Live filter of the file list.
     const search = this.root.querySelector('[data-role="file-search"]') as HTMLInputElement | null;
@@ -333,6 +346,84 @@ export class AppShell {
     });
   }
 
+  // Normalize the model's JSON ops: accept a bare array, {key:[...]}, or — when
+  // the model mangles the key — the first array-valued property anywhere.
+  private aiArray(ops: unknown, key: string): any[] {
+    if (Array.isArray(ops)) return ops;
+    const o = ops as Record<string, unknown> | null;
+    if (!o || typeof o !== 'object') return [];
+    if (Array.isArray(o[key])) return o[key] as any[];
+    for (const v of Object.values(o)) if (Array.isArray(v)) return v as any[];
+    return [];
+  }
+  private aiObject(ops: unknown, key: string): Record<string, unknown> {
+    const o = ops as Record<string, unknown> | null;
+    if (!o || typeof o !== 'object') return {};
+    const v = o[key];
+    if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>;
+    // Mangled key: if there's exactly one nested object, use it; else use o.
+    const nested = Object.values(o).filter((x) => x && typeof x === 'object' && !Array.isArray(x));
+    if (nested.length === 1) return nested[0] as Record<string, unknown>;
+    return o;
+  }
+
+  /** Describe the current editor to the AI panel, or null if its kind is unsupported. */
+  private resolveAiTarget(): AiTarget | null {
+    const kind = this.currentFileKind as FileKind | undefined;
+    if (!kind) return null;
+    const save = () => this.scheduleSaveDoc();
+
+    if (this.currentEditor instanceof TextEditor) {
+      const ed = this.currentEditor;
+      return {
+        kind: kind === 'json' ? 'form' : 'text',
+        label: kind === 'json' ? 'JSON' : kind === 'code' ? 'code' : 'text',
+        meta: { language: kind },
+        getText: () => ed.getValue(),
+        apply: (r: AiEditResult) => { if (r.text != null) ed.setValue(r.text); return 'updated'; },
+        onChanged: () => this.scheduleAutosave(),
+      };
+    }
+    if (this.currentDoc instanceof ImageEditor) {
+      const ed = this.currentDoc;
+      return { kind: 'image', label: 'image', apply: (r) => ed.applyAiOps(this.aiArray(r.ops, 'ops')), onChanged: save };
+    }
+    if (this.currentDoc instanceof VideoEditor) {
+      const ed = this.currentDoc;
+      // Non-destructive video edits persist on explicit export, not autosave.
+      return { kind: 'video', label: 'video', apply: (r) => ed.applyAiPatch(this.aiObject(r.ops, 'patch')) };
+    }
+    if (this.currentDoc instanceof AudioEditor) {
+      const ed = this.currentDoc;
+      return { kind: 'audio', label: 'audio', apply: (r) => ed.applyAiOps(this.aiArray(r.ops, 'ops')), onChanged: save };
+    }
+    if (this.currentDoc instanceof DocxEditor) {
+      const ed = this.currentDoc;
+      return { kind: 'docx', label: 'document', getText: () => ed.getHtml(), apply: (r) => (r.text != null ? ed.setHtml(r.text) : 'no changes'), onChanged: save };
+    }
+    if (this.currentDoc instanceof SpreadsheetEditor) {
+      const ed = this.currentDoc;
+      return { kind: 'spreadsheet', label: 'spreadsheet', getText: () => ed.getCsv(), apply: (r) => (r.text != null ? ed.setCsv(r.text) : 'no changes'), onChanged: save };
+    }
+    if (this.currentDoc instanceof PdfEditor) {
+      const ed = this.currentDoc;
+      return { kind: 'pdf', label: 'PDF', apply: (r) => ed.applyAiAnnotations(this.aiArray(r.ops, 'annotations')), onChanged: save };
+    }
+    if (this.currentDoc instanceof GameEditor) {
+      const ed = this.currentDoc;
+      return { kind: 'game', label: 'game', meta: { doc: ed.aiDoc() }, apply: (r) => ed.applyAiOps(this.aiArray(r.ops, 'ops')), onChanged: save };
+    }
+    if (this.currentDoc instanceof FloorPlanEditor) {
+      const ed = this.currentDoc;
+      return { kind: 'floorplan', label: 'floor plan', getText: () => ed.getPlanJson(), apply: (r) => (r.text != null ? ed.applyAiPlan(r.text) : 'no changes'), onChanged: save };
+    }
+    if (this.currentDoc instanceof SketchEditor) {
+      const ed = this.currentDoc;
+      return { kind: 'sketch', label: 'sketch', getText: () => ed.getSceneJson(), apply: (r) => ed.applyAiScene(JSON.stringify(r.ops ?? {})), onChanged: save };
+    }
+    return null;
+  }
+
   /** Lightweight, auto-dismissing toast — replaces alert() for non-blocking feedback. */
   private toast(message: string, kind: 'success' | 'error' | 'info' = 'info', ms = 3800) {
     // Cap concurrent toasts to 3: remove oldest if we're at the limit
@@ -430,7 +521,7 @@ export class AppShell {
       b.className = 'new-file-type' + (t === selected ? ' selected' : '');
       b.setAttribute('role', 'option');
       b.innerHTML = `<span class="nf-icon"></span><span class="nf-label"></span>`;
-      (b.querySelector('.nf-icon') as HTMLElement).textContent = t.icon;
+      (b.querySelector('.nf-icon') as HTMLElement).innerHTML = this.iconForKind(t.kind);
       (b.querySelector('.nf-label') as HTMLElement).textContent = t.label;
       b.addEventListener('click', () => {
         selected = t;
@@ -1096,21 +1187,7 @@ export class AppShell {
   }
 
   private iconForKind(kind: string): string {
-    switch (kind) {
-      case 'image': return '🖼';
-      case 'pdf': return '📕';
-      case 'spreadsheet': return '📊';
-      case 'presentation': return '📽';
-      case 'json': return '{ }';
-      case 'markdown': return '📝';
-      case 'mermaid': return '📊';
-      case 'html': case 'xml': return '</>';
-      case 'javascript': case 'typescript': case 'css': case 'python': return '⌘';
-      case 'sketch': return '✏️';
-      case 'floorplan': return '🏠';
-      case 'game': return '🎮';
-      default: return '📄';
-    }
+    return icon(iconNameForKind(kind), 18);
   }
 
   // Toggle multi-select mode. `on` omitted flips the current state.
@@ -1277,7 +1354,7 @@ export class AppShell {
       const btn = document.createElement('button');
       btn.className = 'file-item';
       btn.innerHTML = `<span class="file-icon"></span><span class="file-name"></span>`;
-      (btn.querySelector('.file-icon') as HTMLElement).textContent = this.iconForKind(file.kind);
+      (btn.querySelector('.file-icon') as HTMLElement).innerHTML = this.iconForKind(file.kind);
       (btn.querySelector('.file-name') as HTMLElement).textContent = file.name;
       btn.addEventListener('click', () => {
         if (this.selectMode && checkbox) { checkbox.checked = !checkbox.checked; checkbox.dispatchEvent(new Event('change')); return; }
@@ -1603,6 +1680,9 @@ export class AppShell {
       this.currentDoc = doc;
       this.addToolbarActions(toolbar, record);
     }
+
+    // Keep the AI assistant's suggestions in sync with the newly-opened editor.
+    if (this.aiPanel?.isOpen) this.aiPanel.refresh();
   }
 
   // Re-render the library so the currently-open file's row shows as active

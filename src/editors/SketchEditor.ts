@@ -34,7 +34,22 @@ export class SketchEditor implements DocEditor {
     getSceneElements?: () => readonly unknown[];
     getAppState?: () => Record<string, unknown>;
     getFiles?: () => Record<string, unknown>;
+    updateScene?: (scene: { elements?: readonly unknown[] }) => void;
   } | null = null;
+
+  /** Current scene elements as JSON (for AI context). */
+  getSceneJson(): string {
+    return JSON.stringify({ elements: this.api?.getSceneElements?.() ?? this.elements });
+  }
+
+  /** Replace the scene from AI-generated JSON (elements array or {elements}). */
+  applyAiScene(json: string): string {
+    const data = JSON.parse(json) as { elements?: unknown[] } | unknown[];
+    const elements = Array.isArray(data) ? data : (data.elements ?? []);
+    this.api?.updateScene?.({ elements });
+    this.elements = elements;
+    return `set ${elements.length} element(s)`;
+  }
 
   private constructor(host: HTMLElement) {
     this.host = host;

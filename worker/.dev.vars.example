@@ -8,3 +8,7 @@ GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
+# Optional AI-edit fallback providers. Workers AI (the AI binding) is primary and
+# needs no key; these are only used if a Workers AI call errors. Set at most one.
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=

@@ -14,6 +14,9 @@ export function computeRotatedSize(w: number, h: number, deg: 90 | 180 | 270): {
   return deg === 180 ? { w, h } : { w: h, h: w };
 }
 
+// AI op shape emitted by the backend (see worker/src/ai.ts image system prompt).
+export interface AiImageOp { op: string; args?: Record<string, unknown> }
+
 // ---- Model ----------------------------------------------------------------
 
 // Live, non-destructive adjustments. Most map to CSS canvas filters; a few
@@ -577,22 +580,88 @@ export class ImageEditor {
     this.rebuildPanel();
   }
 
+  // ---- AI-driven ops (public command API) ----
+
+  private applyPresetByName(name: string): void {
+    const p = PRESETS.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    if (!p) return;
+    this.commit();
+    this.state.adjustments = { ...neutralAdjustments(), ...p.adj };
+  }
+
+  private applyAdjust(a: Record<string, number>): void {
+    this.commit();
+    const adj = this.state.adjustments;
+    if (a.brightness != null) adj.brightness = 100 + a.brightness;
+    if (a.contrast != null) adj.contrast = 100 + a.contrast;
+    if (a.saturation != null) adj.saturation = 100 + a.saturation;
+    if (a.exposure != null) adj.exposure = a.exposure;
+    if (a.hue != null) adj.hue = a.hue;
+    if (a.temperature != null) adj.temperature = a.temperature;
+    if (a.vignette != null) adj.vignette = a.vignette;
+    if (a.sharpen != null) adj.sharpness = a.sharpen;
+    if (a.grayscale != null) adj.grayscale = a.grayscale;
+    if (a.sepia != null) adj.sepia = a.sepia;
+    if (a.invert != null) adj.invert = a.invert;
+  }
+
+  /** Apply a batch of AI-generated image ops. Returns a human summary. */
+  async applyAiOps(ops: AiImageOp[]): Promise<string> {
+    const done: string[] = [];
+    for (const op of ops) {
+      const args = (op.args ?? {}) as Record<string, number & string>;
+      switch (op.op) {
+        case 'removeBackground':
+          await this.removeBackground(document.createElement('div'));
+          done.push('removed background');
+          break;
+        case 'rotate':
+          if (args.deg === 90 || args.deg === 180 || args.deg === 270) {
+            this.rotate90(args.deg); done.push(`rotated ${args.deg}°`);
+          }
+          break;
+        case 'flip':
+          if (args.axis === 'h' || args.axis === 'v') { this.flip(args.axis); done.push(`flipped ${args.axis}`); }
+          break;
+        case 'resize':
+          if (typeof args.maxDim === 'number') { this.resizeBase(args.maxDim); done.push(`resized to ${args.maxDim}px`); }
+          break;
+        case 'crop': {
+          const b = this.state.base;
+          this.crop = { x: args.x * b.width, y: args.y * b.height, w: args.w * b.width, h: args.h * b.height };
+          this.applyCrop(); done.push('cropped');
+          break;
+        }
+        case 'filter':
+          if (args.name) { this.applyPresetByName(args.name); done.push(`filter: ${args.name}`); }
+          break;
+        case 'adjust':
+          this.applyAdjust(args); done.push('adjusted');
+          break;
+      }
+    }
+    this.render();
+    this.rebuildPanel();
+    return done.join(', ') || 'no changes';
+  }
+
   // ---- Background removal (lazy, on demand) ----
 
   private async removeBackground(noteEl: HTMLElement): Promise<void> {
     noteEl.textContent = 'Removing background… (downloading model)';
     noteEl.className = 'img-note';
     try {
-      // CSP: needs esm.sh + its wasm/model hosts in connect-src/script-src
-      // URL held in a variable so TS/Vite don't try to statically resolve it.
-      const cdn = 'https://esm.sh/@imgly/background-removal';
-      const mod = await import(/* @vite-ignore */ cdn);
-      const removeBackground = (mod as { removeBackground: (src: Blob) => Promise<Blob> }).removeBackground;
+      // Run the model inside a sandboxed iframe (see bgRemovalClient): it needs
+      // onnxruntime's 'unsafe-eval', which we keep OFF the main document by
+      // confining it to the frame's own CSP. The library is a vendored dep
+      // (bundled into the frame) pinned to 1.4.5 (newest with published data);
+      // the heavy model/wasm assets load at runtime from staticimgly.
+      const { removeBackgroundViaFrame } = await import('./bgRemovalClient');
       const flat = document.createElement('canvas');
       this.composite(flat);
       const srcBlob: Blob = await new Promise((res, rej) =>
         flat.toBlob((b) => (b ? res(b) : rej(new Error('encode failed'))), 'image/png'));
-      const result = await removeBackground(srcBlob);
+      const result = await removeBackgroundViaFrame(srcBlob);
       const bmp = await createImageBitmap(result);
       const out = document.createElement('canvas');
       out.width = bmp.width; out.height = bmp.height;

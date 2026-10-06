@@ -108,6 +108,29 @@ export class PdfEditor implements DocEditor {
 
   private changed() { this.onChange?.(); }
 
+  /** Add AI-generated text notes as annotations. Cannot edit original page text. */
+  applyAiAnnotations(
+    anns: { text: string; page?: number; x?: number; y?: number; size?: number }[],
+  ): string {
+    this.pushHistory();
+    let n = 0;
+    for (const a of anns) {
+      if (!a.text) continue;
+      const pageId = (a.page && this.pages[a.page - 1]?.id) || this.activePageId || this.pages[0]?.id;
+      if (!pageId) continue;
+      this.annotations.push({
+        id: uid(), pageId, type: 'text',
+        xR: Math.min(0.95, Math.max(0, a.x ?? 0.1)),
+        yR: Math.min(0.95, Math.max(0, a.y ?? 0.1)),
+        wR: 0.8, hR: 0.08, text: a.text, fontSize: a.size ?? 14,
+      });
+      n++;
+    }
+    this.changed();
+    void this.render();
+    return `added ${n} note(s)`;
+  }
+
   private async loadSource(idx: number): Promise<pdfjsLib.PDFDocumentProxy> {
     const existing = this.pdfDocs.get(idx);
     if (existing) return existing;

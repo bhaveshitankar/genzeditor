@@ -5,6 +5,31 @@ import type { DocEditor } from './registry';
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 type Grid = string[][];
+
+// CSV helpers for AI import/export of the active sheet.
+function csvCell(v: string): string {
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+function parseCsv(text: string): Grid {
+  const rows: Grid = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+  const t = text.replace(/\r\n?/g, '\n');
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i]!;
+    if (quoted) {
+      if (ch === '"') {
+        if (t[i + 1] === '"') { cell += '"'; i++; } else quoted = false;
+      } else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += ch;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
 type Scalar = number | string;
 type Val = Scalar | Scalar[];
 
@@ -165,6 +190,26 @@ export class SpreadsheetEditor implements DocEditor {
   }
 
   private aoa(): Grid { return this.sheets.get(this.active)!; }
+
+  // ---- AI editing: read/write the active sheet as CSV ----
+
+  /** Active sheet as CSV text (for AI editing). */
+  getCsv(): string {
+    return this.aoa().map((row) => row.map(csvCell).join(',')).join('\n');
+  }
+
+  /** Replace the active sheet from CSV text; keeps undo history. */
+  setCsv(text: string): string {
+    const rows = parseCsv(text);
+    if (!rows.length) return 'no changes';
+    this.undoStack.push(this.serialize());
+    this.redoStack = [];
+    this.sheets.set(this.active, rows);
+    this.sel = { r: 0, c: 0 };
+    this.renderGrid();
+    this.onChange?.();
+    return `updated ${rows.length} row(s)`;
+  }
   private boldSet(): Set<string> { return this.bold.get(this.active)!; }
 
   private cellValue(r: number, c: number): string { return this.aoa()[r]?.[c] ?? ''; }

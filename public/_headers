@@ -1,11 +1,25 @@
+# NOTE: the main app's Content-Security-Policy is delivered via a <meta> tag in
+# index.html (NOT here). Cloudflare Pages _headers APPENDS same-named headers
+# across matching rules rather than overriding, so a global `/*` CSP would leak
+# into the isolated frames and intersect with their (looser) policy. Keeping the
+# main CSP in index.html's <meta> lets each frame below own its CSP cleanly.
 /*
-  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; script-src 'self' blob: 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://esm.sh https://challenges.cloudflare.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; font-src 'self' data:; frame-src 'self' blob: https://challenges.cloudflare.com; worker-src 'self' blob:; connect-src 'self' https://api.genzeditor.com wss://api.genzeditor.com https://anyedits-api.skillmesh.workers.dev wss://anyedits-api.skillmesh.workers.dev https://s3.filebase.io https://cdn.jsdelivr.net https://esm.sh https://staticimgly.com https://challenges.cloudflare.com https://static.cloudflareinsights.com; object-src 'none'; base-uri 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
 
-# The isolated mermaid frame (sandbox="allow-scripts", NO allow-same-origin)
-# runs in an opaque origin, so it fetches these bundled module scripts as a
-# cross-origin request. Allow same-site assets to be read by it. These are
-# public, non-credentialed static assets, so CORS-allowing them is safe.
+# Isolated mermaid frame: strict policy (no eval of any kind).
+/mermaid-frame.html
+  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; script-src 'self' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'
+
+# The background-removal model (onnxruntime) requires 'unsafe-eval'. Confine that
+# to this isolated frame's document instead of the whole app. Served same-origin
+# so its bundled script loads under script-src 'self'.
+/bg-removal-frame.html
+  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; script-src 'self' blob: 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; connect-src 'self' blob: https://staticimgly.com; object-src 'none'; base-uri 'none'
+
+# The isolated frames (sandbox="allow-scripts", NO allow-same-origin) run in an
+# opaque origin, so they fetch these bundled module scripts as a cross-origin
+# request. Allow same-site assets to be read by them. These are public,
+# non-credentialed static assets, so CORS-allowing them is safe.
 /assets/*
   Access-Control-Allow-Origin: *

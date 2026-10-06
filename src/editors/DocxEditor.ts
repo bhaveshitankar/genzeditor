@@ -76,6 +76,16 @@ export class DocxEditor implements DocEditor {
     return new ImageRun({ type, data: bytes, transformation: { width: w, height: h } });
   }
 
+  /** Current document body as HTML (for AI editing). */
+  getHtml(): string { return this.editable.innerHTML; }
+
+  /** Replace the document body with new HTML and trigger autosave. */
+  setHtml(html: string): string {
+    this.editable.innerHTML = html;
+    this.onChange();
+    return 'document updated';
+  }
+
   async export(): Promise<{ blob: Blob; contentType: string } | null> {
     const docx = await import('docx');
     const { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, WidthType, ExternalHyperlink, ShadingType } = docx;
