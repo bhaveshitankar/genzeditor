@@ -221,7 +221,7 @@ export class DocxEditor implements DocEditor {
   // Headings get larger/bold type; inline bold/italic is preserved by swapping
   // between the four Helvetica variants during word-wrapping.
   private async exportPdf(btn?: HTMLButtonElement): Promise<void> {
-    const label = btn?.textContent ?? '';
+    const label = btn?.textContent ?? '⤓ PDF';
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     try {
       const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
@@ -314,6 +314,10 @@ export class DocxEditor implements DocEditor {
       const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
       const outName = this.name.replace(/\.[^.]+$/, '') + '.pdf';
       this.download(new Blob([ab], { type: 'application/pdf' }), outName);
+      showClipboardFeedback('PDF downloaded');
+    } catch (err) {
+      console.error('PDF export failed:', err);
+      showClipboardFeedback('PDF export failed');
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = label; }
     }
