@@ -239,14 +239,17 @@ export class DocxEditor implements DocEditor {
       let y = PAGE_H - MARGIN;
 
       interface Word { t: string; b: boolean; i: boolean }
-      // Remove emoji and special Unicode characters that WinAnsi cannot encode
+      // Remove all characters that WinAnsi (used by pdf-lib) cannot encode
+      // WinAnsi only supports ASCII (0x00-0x7F) and Latin-1 supplement (0x80-0xFF)
       const sanitizeForPdf = (text: string): string => {
         return text
-          .replace(/[\u{1F300}-\u{1F9FF}]/gu, '') // Emoji
-          .replace(/[\u{2600}-\u{27BF}]/gu, '') // Miscellaneous symbols
-          .replace(/[\u{2300}-\u{23FF}]/gu, '') // Miscellaneous technical
-          .replace(/[\u{2B50}]/gu, '') // Star
-          .replace(/[\u{2714}]/gu, '') // Check mark
+          .split('')
+          .filter(c => {
+            const code = c.charCodeAt(0);
+            // Keep ASCII (0-127) and Latin-1 (128-255)
+            return code <= 255;
+          })
+          .join('')
           .trim();
       };
       // Flatten a block element into whitespace-split styled words.
@@ -285,13 +288,21 @@ export class DocxEditor implements DocEditor {
         };
         if (words.length === 0) { newline(); return; }
         for (const w of words) {
+          // Double-check sanitization before rendering
+          const safText = sanitizeForPdf(w.t);
+          if (!safText) continue; // Skip if becomes empty after sanitization
           const f = fontFor(w.b, w.i);
-          const ww = f.widthOfTextAtSize(w.t, size);
-          if (x + ww > maxX && x > MARGIN + indent) newline();
-          // A leading space at the start of a line is dropped.
-          if (!(w.t === ' ' && x === MARGIN + indent)) {
-            page.drawText(w.t, { x, y: y - size, size, font: f, color: rgb(0, 0, 0) });
-            x += ww;
+          try {
+            const ww = f.widthOfTextAtSize(safText, size);
+            if (x + ww > maxX && x > MARGIN + indent) newline();
+            // A leading space at the start of a line is dropped.
+            if (!(safText === ' ' && x === MARGIN + indent)) {
+              page.drawText(safText, { x, y: y - size, size, font: f, color: rgb(0, 0, 0) });
+              x += ww;
+            }
+          } catch (err) {
+            // If there's an encoding error, skip this word
+            console.warn(`Skipping unencodable text: "${w.t}"`, err);
           }
         }
         newline();
