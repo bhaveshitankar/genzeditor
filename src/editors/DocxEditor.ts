@@ -1,4 +1,5 @@
 import type { DocEditor } from './registry';
+import { copyText, pasteText, showClipboardFeedback } from '../utils/clipboard';
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -332,6 +333,8 @@ export class DocxEditor implements DocEditor {
         <div class="docx-toolbar" data-role="fmt">
           <button type="button" data-cmd="undo" title="Undo (Ctrl+Z)">↶</button>
           <button type="button" data-cmd="redo" title="Redo (Ctrl+Y)">↷</button>
+          <button type="button" data-clipboard="copy" title="Copy (Cmd+C)" class="docx-mobile-only">📋 Copy</button>
+          <button type="button" data-clipboard="paste" title="Paste (Cmd+V)" class="docx-mobile-only">📌 Paste</button>
           <span class="docx-sep"></span>
           <button type="button" data-cmd="bold" title="Bold"><b>B</b></button>
           <button type="button" data-cmd="italic" title="Italic"><i>I</i></button>
@@ -423,6 +426,9 @@ export class DocxEditor implements DocEditor {
       bar.querySelectorAll('.docx-menu').forEach(m => (m as HTMLElement).style.display = 'none');
 
       if (btn.getAttribute('data-role') === 'save-pdf') { void this.exportPdf(btn as HTMLButtonElement); return; }
+      const clipboard = btn.getAttribute('data-clipboard');
+      if (clipboard === 'copy') { void this.copyContent(); return; }
+      if (clipboard === 'paste') { void this.pasteContent(); return; }
       const ins = btn.getAttribute('data-ins');
       if (ins) { void this.insertAction(ins); return; }
       const cmd = btn.getAttribute('data-cmd');
@@ -438,6 +444,8 @@ export class DocxEditor implements DocEditor {
       if (!this.editable.contains(document.activeElement)) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); document.execCommand('undo', false); this.onChange(); }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); document.execCommand('redo', false); this.onChange(); }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') { e.preventDefault(); void this.copyContent(); }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') { e.preventDefault(); void this.pasteContent(); }
     });
 
     // Color pickers (text + highlight): apply on input, keep selection.
@@ -519,6 +527,41 @@ export class DocxEditor implements DocEditor {
     if (!sel) return;
     sel.removeAllRanges();
     sel.addRange(this.savedRange);
+  }
+
+  private async copyContent(): Promise<void> {
+    try {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) {
+        // No selection, copy entire content
+        const html = this.editable.innerHTML;
+        await copyText(html);
+        showClipboardFeedback('Document copied');
+      } else {
+        // Copy selection (browser handles this natively with Cmd+C)
+        document.execCommand('copy');
+        showClipboardFeedback('Selection copied');
+      }
+    } catch (err) {
+      showClipboardFeedback('Copy failed');
+    }
+  }
+
+  private async pasteContent(): Promise<void> {
+    try {
+      const text = await pasteText();
+      if (!text) {
+        showClipboardFeedback('Nothing to paste');
+        return;
+      }
+      this.editable.focus();
+      this.saveSelection();
+      document.execCommand('insertHTML', false, text);
+      this.onChange();
+      showClipboardFeedback('Pasted');
+    } catch (err) {
+      showClipboardFeedback('Paste failed');
+    }
   }
 
   // Insert actions: link, image, table, horizontal rule, signature, find/replace.

@@ -1337,7 +1337,23 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   font-weight: 500;
 }
 
+/* Copy/Paste buttons - mobile only */
+.docx-mobile-only {
+  display: none !important;
+}
+
+/* Toast notification for copy/paste feedback */
+@keyframes slideIn {
+  from { transform: translateX(120%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes slideOut {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(120%); opacity: 0; }
+}
+
 @media (max-width: 768px) {
+  .docx-mobile-only { display: inline-flex !important; }
   .docx-menu-btn::after { content: ' ▼'; }
   .docx-dropdown { display: inline-block; }
   .docx-menu { min-width: 160px; }
