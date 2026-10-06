@@ -64,6 +64,7 @@ export class AudioEditor implements DocEditor {
   private fmtChosen = false;
   private mixT = 0;
   private mtZoom = 1;
+  private snapOn = true;
   private mtPps = 50;
   private mtDrag: MtDrag | null = null;
   private mixSources: AudioBufferSourceNode[] = [];
@@ -253,6 +254,7 @@ export class AudioEditor implements DocEditor {
             <button type="button" class="aud-btn" data-mt="zout" title="Zoom out timeline">−</button>
             <button type="button" class="aud-btn" data-mt="zin" title="Zoom in timeline">+</button>
             <button type="button" class="aud-btn" data-mt="zfit">Fit</button>
+            <button type="button" class="aud-btn active" data-mt="snap" title="Snap clips to the playhead and other clip edges">Snap</button>
             <input type="file" accept="audio/*,video/*" multiple data-role="mtAppend" hidden>
             <input type="file" accept="audio/*,video/*" multiple data-role="mtTrack" hidden>
           </div>
@@ -341,6 +343,7 @@ export class AudioEditor implements DocEditor {
     this.unbindKeys = bindUndoKeys({
       undo: () => this.undo(),
       redo: () => this.redo(),
+      isActive: () => this.isActive(),
     });
   }
 
@@ -937,16 +940,19 @@ export class AudioEditor implements DocEditor {
         if (c.start + c.dur <= from) continue;
         const skip = Math.max(0, from - c.start);
         const when = t0 + Math.max(0, c.start - from);
+        // Overlapping fades are clamped so in + out never exceed the clip length.
+        const fi = Math.min(c.fadeIn, c.dur);
+        const fOut = Math.min(c.fadeOut, c.dur - fi);
         const env = (u: number): number => c.gain * Math.max(0, Math.min(1,
-          c.fadeIn > 0 ? u / c.fadeIn : 1, c.fadeOut > 0 ? (c.dur - u) / c.fadeOut : 1));
+          fi > 0 ? u / fi : 1, fOut > 0 ? (c.dur - u) / fOut : 1));
         const src = ac.createBufferSource();
         src.buffer = c.buffer;
         const g = ac.createGain();
         src.connect(g).connect(tg);
         g.gain.setValueAtTime(env(skip), when);
-        if (c.fadeIn > skip) g.gain.linearRampToValueAtTime(env(c.fadeIn), when + (c.fadeIn - skip));
-        if (c.fadeOut > 0) {
-          const fo = Math.max(skip, c.dur - c.fadeOut);
+        if (fi > skip) g.gain.linearRampToValueAtTime(env(fi), when + (fi - skip));
+        if (fOut > 0) {
+          const fo = Math.max(skip, c.dur - fOut);
           g.gain.setValueAtTime(env(fo), when + (fo - skip));
           g.gain.linearRampToValueAtTime(0, when + (c.dur - skip));
         }
@@ -1115,6 +1121,7 @@ export class AudioEditor implements DocEditor {
         case 'zin': this.mtZoom = Math.min(40, this.mtZoom * 1.5); this.renderTimeline(); break;
         case 'zout': this.mtZoom = Math.max(1, this.mtZoom / 1.5); this.renderTimeline(); break;
         case 'zfit': this.mtZoom = 1; this.renderTimeline(); break;
+        case 'snap': this.snapOn = !this.snapOn; this.host.querySelector('[data-mt="snap"]')?.classList.toggle('active', this.snapOn); break;
       }
     });
     this.mtInner.addEventListener('pointerdown', this.onMtDown);
@@ -1171,7 +1178,9 @@ export class AudioEditor implements DocEditor {
     const dt = (x - d.x0) / this.mtPps;
     const c = f.clip;
     if (d.kind === 'move') {
-      c.start = Math.max(0, d.start0 + dt);
+      const raw = Math.max(0, d.start0 + dt);
+      const s1 = this.snapT(raw, c.id), e1 = this.snapT(raw + c.dur, c.id) - c.dur;
+      c.start = Math.max(0, Math.abs(s1 - raw) <= Math.abs(e1 - raw) ? s1 : e1);
       // Drop onto another track lane under the pointer.
       const lane = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>('.amt-lane');
       const to = this.tracks.find((t) => t.id === lane?.dataset.track);
@@ -1180,13 +1189,29 @@ export class AudioEditor implements DocEditor {
         to.clips.push(c);
       }
     } else if (d.side === 'l') {
-      const k = Math.min(Math.max(dt, -d.offset0, -d.start0), d.dur0 - 0.05);
+      let k = Math.min(Math.max(dt, -d.offset0, -d.start0), d.dur0 - 0.05);
+      k = Math.min(Math.max(this.snapT(d.start0 + k, c.id) - d.start0, -d.offset0, -d.start0), d.dur0 - 0.05);
       c.offset = d.offset0 + k; c.start = d.start0 + k; c.dur = d.dur0 - k;
     } else {
-      c.dur = Math.max(0.05, Math.min(d.dur0 + dt, c.buffer.duration - c.offset));
+      const end = this.snapT(c.start + d.dur0 + dt, c.id);
+      c.dur = Math.max(0.05, Math.min(end - c.start, c.buffer.duration - c.offset));
     }
     this.renderTimeline();
   };
+
+  // Snap a timeline time to 0, the playhead, or another clip's edge within 8px.
+  private snapT(t: number, exclude: string): number {
+    if (!this.snapOn) return t;
+    const tol = 8 / this.mtPps;
+    let best = t, bestD = tol;
+    const consider = (v: number): void => { const dd = Math.abs(v - t); if (dd < bestD) { bestD = dd; best = v; } };
+    consider(0);
+    consider(this.mixT);
+    for (const k of this.allClips()) if (k.id !== exclude) { consider(k.start); consider(k.start + k.dur); }
+    return best;
+  }
+
+  private isActive(): boolean { return this.host.isConnected && this.host.offsetParent !== null; }
 
   private onMtUp = () => {
     const d = this.mtDrag;
@@ -1199,8 +1224,8 @@ export class AudioEditor implements DocEditor {
   };
 
   private onKey = (e: KeyboardEvent) => {
-    if (!this.host.isConnected || e.metaKey || e.ctrlKey || e.altKey) return;
-    if ((e.target as HTMLElement).closest('input, textarea, select, button, [contenteditable="true"]')) return;
+    if (!this.isActive() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if ((e.target as HTMLElement).closest('input, textarea, select, button, [contenteditable]:not([contenteditable="false"])')) return;
     if (e.key === ' ') { e.preventDefault(); this.playMix(); }
     else if (e.key === 's' || e.key === 'S') { e.preventDefault(); this.splitMix(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') {
