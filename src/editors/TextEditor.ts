@@ -131,6 +131,20 @@ export class TextEditor {
   setValue(v: string) { this.view.dispatch({ changes: { from: 0, to: this.view.state.doc.length, insert: v } }); }
   openSearch() { this.view.focus(); openSearchPanel(this.view); }
 
+  /** Execute JavaScript code (E.2) */
+  async runCode(): Promise<string> {
+    const code = this.getValue();
+    try {
+      // Safe execution via Function constructor (similar to eval but slightly safer)
+      // eslint-disable-next-line no-new-func
+      const fn = new Function(code);
+      const result = fn();
+      return `Result: ${JSON.stringify(result, null, 2)}`;
+    } catch (err) {
+      return `Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   /** Format the code using Prettier (best-effort). */
   async format(): Promise<string> {
     try {

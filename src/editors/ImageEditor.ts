@@ -48,10 +48,10 @@ function neutralAdjustments(): Adjustments {
 type Point = { x: number; y: number };
 type Tool = 'select' | 'crop' | 'brush' | 'eraser' | 'text' | 'rect' | 'ellipse' | 'arrow';
 
-interface StrokeLayer { id: string; kind: 'brush' | 'eraser'; points: Point[]; color: string; size: number; }
-interface TextLayer { id: string; kind: 'text'; x: number; y: number; text: string; size: number; color: string; bold: boolean; }
-interface ShapeLayer { id: string; kind: 'rect' | 'ellipse' | 'arrow'; x: number; y: number; w: number; h: number; color: string; strokeWidth: number; fill: boolean; }
-interface StickerLayer { id: string; kind: 'sticker'; x: number; y: number; size: number; emoji: string; }
+interface StrokeLayer { id: string; kind: 'brush' | 'eraser'; points: Point[]; color: string; size: number; opacity?: number; }
+interface TextLayer { id: string; kind: 'text'; x: number; y: number; text: string; size: number; color: string; bold: boolean; opacity?: number; }
+interface ShapeLayer { id: string; kind: 'rect' | 'ellipse' | 'arrow'; x: number; y: number; w: number; h: number; color: string; strokeWidth: number; fill: boolean; opacity?: number; }
+interface StickerLayer { id: string; kind: 'sticker'; x: number; y: number; size: number; emoji: string; opacity?: number; }
 type Layer = StrokeLayer | TextLayer | ShapeLayer | StickerLayer;
 
 interface EditorState {
@@ -297,6 +297,10 @@ export class ImageEditor {
 
   private drawLayer(ctx: CanvasRenderingContext2D, l: Layer): void {
     ctx.save();
+    // Apply opacity if set
+    if (l.opacity !== undefined) {
+      ctx.globalAlpha = Math.max(0, Math.min(1, l.opacity));
+    }
     if (l.kind === 'brush' || l.kind === 'eraser') {
       ctx.globalCompositeOperation = l.kind === 'eraser' ? 'destination-out' : 'source-over';
       ctx.strokeStyle = l.color;
@@ -1179,6 +1183,31 @@ export class ImageEditor {
       list.appendChild(li);
     });
     host.appendChild(list);
+
+    // Opacity control for selected layer
+    const selected = this.selected();
+    if (selected) {
+      host.appendChild(title('Layer settings'));
+      const field = el('div', 'img-field');
+      const lab = document.createElement('label');
+      const val = document.createElement('span');
+      const opacity = selected.opacity ?? 1;
+      val.textContent = String(Math.round(opacity * 100));
+      lab.append(document.createTextNode('Opacity'), val);
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = '0'; input.max = '100'; input.step = '1';
+      input.value = String(Math.round(opacity * 100));
+      input.oninput = (): void => {
+        selected.opacity = Number(input.value) / 100;
+        val.textContent = input.value;
+        this.render();
+      };
+      input.onchange = (): void => { this.commit(); };
+      field.append(lab, input);
+      host.appendChild(field);
+    }
+
     if (this.state.layers.length === 0) host.appendChild(note('No overlay layers yet. Add text, shapes, brush strokes or stickers.'));
   }
 

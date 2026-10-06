@@ -206,12 +206,29 @@ export class AppShell {
       this.syncRailState();
     });
     const toggleInspector = () => {
+      const isCollapsed = shellEl.classList.contains('inspector-collapsed');
       shellEl.classList.toggle('inspector-collapsed');
+      // If opening inspector, close AI panel
+      if (isCollapsed && this.aiPanel) {
+        this.aiPanel.close?.();
+      }
       this.syncRailState();
     };
     this.root.querySelector('[data-role="rail-inspector"]')?.addEventListener('click', toggleInspector);
     this.root.querySelector('[data-role="inspector-collapse"]')?.addEventListener('click', toggleInspector);
-    this.root.querySelector('[data-role="rail-ai"]')?.addEventListener('click', () => this.aiPanel?.toggle());
+
+    // AI panel toggle with mutual exclusivity
+    this.root.querySelector('[data-role="rail-ai"]')?.addEventListener('click', () => {
+      if (this.aiPanel?.toggle) {
+        this.aiPanel.toggle();
+        // If AI panel is open, collapse inspector
+        const isInspectorOpen = !shellEl.classList.contains('inspector-collapsed');
+        if (isInspectorOpen) {
+          shellEl.classList.add('inspector-collapsed');
+          this.syncRailState();
+        }
+      }
+    });
 
     // Live filter of the file list.
     const search = this.root.querySelector('[data-role="file-search"]') as HTMLInputElement | null;

@@ -65,6 +65,10 @@ export class VideoEditor implements DocEditor {
   private outFmt: Fmt = 'mp4';
   private resPreset: ResPreset = 'original';
 
+  // Timeline/layer operations
+  private currentTime = 0;
+  private selectedSegmentIndex = -1;
+
   private cropDrag: { x: number; y: number } | null = null;
 
   private constructor(host: HTMLElement, blob: Blob, name: string) {
@@ -90,6 +94,32 @@ export class VideoEditor implements DocEditor {
   }
 
   private duration(): number { return isFinite(this.video?.duration) ? this.video.duration : 0; }
+
+  /** Split video at current time (F.1) */
+  splitAtTime(timeSeconds: number): string {
+    if (timeSeconds <= 0 || timeSeconds >= this.duration()) return 'Invalid split time';
+    this.segments.push({ start: timeSeconds, end: this.duration() });
+    this.segments.sort((a, b) => a.start - b.start);
+    this.render();
+    return `Split at ${timeSeconds.toFixed(2)}s`;
+  }
+
+  /** Create segment/layer (F.2) */
+  addSegment(startTime: number, endTime: number): string {
+    if (startTime < 0 || endTime > this.duration() || startTime >= endTime) return 'Invalid segment';
+    this.segments.push({ start: startTime, end: endTime });
+    this.segments.sort((a, b) => a.start - b.start);
+    this.render();
+    return `Added segment ${startTime.toFixed(2)}s-${endTime.toFixed(2)}s`;
+  }
+
+  /** Add audio track (F.3) */
+  addAudioTrack(audioBlob: Blob, replace = false): string {
+    this.extraAudio = audioBlob;
+    this.replaceAudio = replace;
+    this.render();
+    return `${replace ? 'Replaced' : 'Mixed'} audio track`;
+  }
 
   /** Apply an AI-generated non-destructive patch, then re-render. Returns a summary. */
   applyAiPatch(patch: Record<string, unknown>): string {
