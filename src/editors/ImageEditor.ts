@@ -127,9 +127,17 @@ export class ImageEditor {
   // Pixel selection (wand / lasso): alpha mask the size of the base image.
   private selMask: HTMLCanvasElement | null = null;
   private selTint: HTMLCanvasElement | null = null;
+  private selBounds: { x: number; y: number; w: number; h: number } | null = null;
+  private selTarget: string | null = null; // image layer id the selection applies to; null = whole composite
   private lassoPts: Point[] = [];
   private wandTol = 32;
+  private wandMode: 'color' | 'edge' = 'color';
+  private edgeSens = 60;
   private feather = 0;
+  private antsEl: HTMLCanvasElement | null = null;
+  private antsFrames: [HTMLCanvasElement, HTMLCanvasElement] | null = null;
+  private antsPhase = 0;
+  private antsTimer = 0;
 
   private drag: { mode: 'draw' | 'move' | 'resize' | 'shape' | 'crop-move' | 'crop-resize' | 'lasso';
     corner?: string; start: Point; orig?: Layer; origCrop?: { x: number; y: number; w: number; h: number } } | null = null;
@@ -583,7 +591,7 @@ export class ImageEditor {
     this.state.adjustments = neutralAdjustments();
     this.state.layers = [];
     this.selectedId = null;
-    this.selMask = null;
+    this.clearSelectionState();
     return flat;
   }
 
@@ -759,6 +767,9 @@ export class ImageEditor {
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'img-canvas';
     this.wrap.appendChild(this.canvas);
+    this.antsEl = document.createElement('canvas');
+    this.antsEl.className = 'img-ants';
+    this.wrap.appendChild(this.antsEl);
     stage.appendChild(this.wrap);
     body.appendChild(stage);
 
@@ -1363,7 +1374,9 @@ export class ImageEditor {
     }
   }
 
-  // ---- Pixel selection (magic wand / lasso) ----
+  // ---- Pixel selection (magic wand / edge-aware / lasso) ----
+  // The mask lives in base-image coordinates. When an image layer is selected,
+  // the selection samples and edits that layer instead of the whole composite.
 
   private newMask(): HTMLCanvasElement {
     const m = document.createElement('canvas');
@@ -1372,21 +1385,125 @@ export class ImageEditor {
     return m;
   }
 
+  private targetLayer(): ImageLayer | null {
+    const id = this.selTarget;
+    const l = id ? this.state.layers.find((x) => x.id === id) : null;
+    return l && l.kind === 'image' ? l : null;
+  }
+
+  private pickTarget(add: boolean): void {
+    if (add && this.selMask) return; // keep the target of the selection being extended
+    const s = this.selected();
+    this.selTarget = s && s.kind === 'image' ? s.id : null;
+  }
+
+  // Pixels the selection reads from: the target layer alone, or the full composite.
+  private selectionSource(): HTMLCanvasElement {
+    const out = document.createElement('canvas');
+    const l = this.targetLayer();
+    if (!l) { this.composite(out); return out; }
+    out.width = this.state.base.width;
+    out.height = this.state.base.height;
+    out.getContext('2d')!.drawImage(l.canvas, l.x, l.y, l.w, l.h);
+    return out;
+  }
+
+  private clearSelectionState(): void {
+    this.selMask = null;
+    this.selTint = null;
+    this.selBounds = null;
+    this.antsFrames = null;
+    clearInterval(this.antsTimer);
+    this.antsTimer = 0;
+    this.drawAnts();
+  }
+
   private setMask(mask: HTMLCanvasElement | null): void {
+    clearInterval(this.antsTimer);
+    this.antsTimer = 0;
     this.selMask = mask;
     this.selTint = null;
+    this.selBounds = null;
+    this.antsFrames = null;
     if (mask) {
-      const t = document.createElement('canvas');
-      t.width = mask.width; t.height = mask.height;
-      const c = t.getContext('2d')!;
-      c.fillStyle = 'rgba(255, 59, 107, 0.45)';
-      c.fillRect(0, 0, t.width, t.height);
-      c.globalCompositeOperation = 'destination-in';
-      c.drawImage(mask, 0, 0);
-      this.selTint = t;
+      this.buildAnts(mask);
+      if (!this.selBounds) {
+        this.selMask = null; // empty selection
+      } else {
+        const t = document.createElement('canvas');
+        t.width = mask.width; t.height = mask.height;
+        const c = t.getContext('2d')!;
+        c.fillStyle = 'rgba(255, 59, 107, 0.35)';
+        c.fillRect(0, 0, t.width, t.height);
+        c.globalCompositeOperation = 'destination-in';
+        c.drawImage(mask, 0, 0);
+        this.selTint = t;
+        this.antsTimer = window.setInterval(() => { this.antsPhase ^= 1; this.drawAnts(); }, 280);
+      }
     }
     this.render();
     if (this.activePanel === 'select') this.rebuildPanel();
+  }
+
+  // Precompute two marching-ants frames (alternating black/white dashes) along
+  // the mask's edge pixels; a timer flips between them on an overlay canvas.
+  private buildAnts(mask: HTMLCanvasElement): void {
+    const w = mask.width, h = mask.height;
+    const a = mask.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, w, h).data;
+    const inside = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < w && y < h && a[(y * w + x) * 4 + 3]! > 127;
+    const edges: number[] = [];
+    let x1 = w, y1 = h, x2 = -1, y2 = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!inside(x, y)) continue;
+        if (x < x1) x1 = x; if (x > x2) x2 = x;
+        if (y < y1) y1 = y; if (y > y2) y2 = y;
+        if (!inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1)) edges.push(y * w + x);
+      }
+    }
+    if (x2 < 0) return;
+    this.selBounds = { x: x1, y: y1, w: x2 - x1 + 1, h: y2 - y1 + 1 };
+    const shown = this.canvas.clientWidth || w;
+    const lw = Math.max(1, Math.round(w / shown));
+    const dash = 4 * lw;
+    const pad = lw;
+    const step = Math.max(1, Math.floor(edges.length / 300000));
+    const mk = (phase: number): HTMLCanvasElement => {
+      const f = document.createElement('canvas');
+      f.width = this.selBounds!.w + pad * 2;
+      f.height = this.selBounds!.h + pad * 2;
+      const c = f.getContext('2d')!;
+      for (const color of [0, 1]) {
+        c.fillStyle = color ? '#fff' : '#000';
+        c.beginPath();
+        for (let i = 0; i < edges.length; i += step) {
+          const k = edges[i]!;
+          const x = k % w, y = (k - x) / w;
+          if (((Math.floor((x + y) / dash) & 1) ^ phase) !== color) continue;
+          c.rect(x - x1 + pad - (lw >> 1), y - y1 + pad - (lw >> 1), lw, lw);
+        }
+        c.fill();
+      }
+      return f;
+    };
+    this.antsFrames = [mk(0), mk(1)];
+  }
+
+  private drawAnts(): void {
+    const el = this.antsEl;
+    if (!el) return;
+    const cw = this.canvas.clientWidth, ch = this.canvas.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    const W = Math.max(1, Math.round(cw * dpr)), H = Math.max(1, Math.round(ch * dpr));
+    if (el.width !== W || el.height !== H) { el.width = W; el.height = H; }
+    const c = el.getContext('2d')!;
+    c.clearRect(0, 0, W, H);
+    const b = this.selBounds, f = this.antsFrames?.[this.antsPhase];
+    if (!b || !f) return;
+    const sx = W / this.canvas.width, sy = H / this.canvas.height;
+    const pad = (f.width - b.w) / 2;
+    c.imageSmoothingEnabled = false;
+    c.drawImage(f, (b.x - pad) * sx, (b.y - pad) * sy, f.width * sx, f.height * sy);
   }
 
   private mergeMask(next: HTMLCanvasElement, add: boolean): HTMLCanvasElement {
@@ -1396,44 +1513,89 @@ export class ImageEditor {
     return next;
   }
 
-  // Contiguous flood fill on the composited image; stops at colour edges.
+  private maskFromBits(bits: Uint8Array, w: number, h: number): HTMLCanvasElement {
+    const mask = this.newMask();
+    const mctx = mask.getContext('2d')!;
+    const out = mctx.createImageData(w, h);
+    for (let k = 0; k < bits.length; k++) if (bits[k]) out.data[k * 4 + 3] = 255;
+    mctx.putImageData(out, 0, 0);
+    return mask;
+  }
+
+  // Flood fill from p. Colour mode: similar colours within tolerance. Edge mode
+  // ("select subject"): Sobel edge map, flood stops at strong edges, then the
+  // region is grown 1px so the boundary pixels are included.
   private magicWand(p: Point, add: boolean): void {
-    const flat = document.createElement('canvas');
-    this.composite(flat);
+    this.pickTarget(add);
+    const flat = this.selectionSource();
     const w = flat.width, h = flat.height;
     const x0 = Math.floor(p.x), y0 = Math.floor(p.y);
     if (x0 < 0 || y0 < 0 || x0 >= w || y0 >= h) return;
     const src = flat.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, w, h).data;
-    const i0 = (y0 * w + x0) * 4;
-    const r0 = src[i0], g0 = src[i0 + 1], b0 = src[i0 + 2], a0 = src[i0 + 3];
-    const tol = this.wandTol * 2.55;
+    const seed = y0 * w + x0;
+    const a0 = src[seed * 4 + 3]!;
+    let pass: (k: number) => boolean;
+    if (this.wandMode === 'edge') {
+      const gray = new Float32Array(w * h);
+      for (let k = 0; k < w * h; k++) {
+        const j = k * 4;
+        gray[k] = (src[j]! * 0.299 + src[j + 1]! * 0.587 + src[j + 2]! * 0.114) * (src[j + 3]! / 255);
+      }
+      const mag = new Float32Array(w * h);
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          const k = y * w + x;
+          const tl = gray[k - w - 1]!, t = gray[k - w]!, tr = gray[k - w + 1]!;
+          const l = gray[k - 1]!, r = gray[k + 1]!;
+          const bl = gray[k + w - 1]!, b = gray[k + w]!, br = gray[k + w + 1]!;
+          const gx = tr + 2 * r + br - tl - 2 * l - bl;
+          const gy = bl + 2 * b + br - tl - 2 * t - tr;
+          mag[k] = Math.hypot(gx, gy);
+        }
+      }
+      const thr = (101 - this.edgeSens) * 6;
+      pass = (k) => mag[k]! < thr && Math.abs(src[k * 4 + 3]! - a0) < 128;
+    } else {
+      const r0 = src[seed * 4]!, g0 = src[seed * 4 + 1]!, b0 = src[seed * 4 + 2]!;
+      const tol = this.wandTol * 2.55;
+      pass = (k) => {
+        const j = k * 4;
+        return Math.max(Math.abs(src[j]! - r0), Math.abs(src[j + 1]! - g0), Math.abs(src[j + 2]! - b0), Math.abs(src[j + 3]! - a0)) <= tol;
+      };
+    }
+    const bits = new Uint8Array(w * h);
     const seen = new Uint8Array(w * h);
-    const stack = [y0 * w + x0];
-    const mask = this.newMask();
-    const mctx = mask.getContext('2d')!;
-    const out = mctx.createImageData(w, h);
-    const d = out.data;
+    const stack = [seed];
+    seen[seed] = 1;
     while (stack.length) {
       const k = stack.pop()!;
-      if (seen[k]) continue;
-      seen[k] = 1;
-      const j = k * 4;
-      if (Math.max(Math.abs(src[j] - r0), Math.abs(src[j + 1] - g0), Math.abs(src[j + 2] - b0), Math.abs(src[j + 3] - a0)) > tol) continue;
-      d[j + 3] = 255;
-      const x = k % w, y = (k - x) / w;
-      if (x > 0) stack.push(k - 1);
-      if (x < w - 1) stack.push(k + 1);
-      if (y > 0) stack.push(k - w);
-      if (y < h - 1) stack.push(k + w);
+      if (k !== seed && !pass(k)) continue;
+      bits[k] = 1;
+      const x = k % w;
+      const push = (n: number): void => { if (!seen[n]) { seen[n] = 1; stack.push(n); } };
+      if (x > 0) push(k - 1);
+      if (x < w - 1) push(k + 1);
+      if (k >= w) push(k - w);
+      if (k < w * (h - 1)) push(k + w);
     }
-    mctx.putImageData(out, 0, 0);
-    this.setMask(this.mergeMask(mask, add));
+    if (this.wandMode === 'edge') {
+      const grown = bits.slice();
+      for (let k = 0; k < w * h; k++) {
+        if (bits[k]) continue;
+        const x = k % w;
+        if ((x > 0 && bits[k - 1]) || (x < w - 1 && bits[k + 1]) || (k >= w && bits[k - w]) || (k < w * (h - 1) && bits[k + w])) grown[k] = 1;
+      }
+      this.setMask(this.mergeMask(this.maskFromBits(grown, w, h), add));
+      return;
+    }
+    this.setMask(this.mergeMask(this.maskFromBits(bits, w, h), add));
   }
 
   private finishLasso(add: boolean): void {
     const pts = this.lassoPts;
     this.lassoPts = [];
     if (pts.length < 3) { this.render(); return; }
+    this.pickTarget(add);
     const mask = this.newMask();
     const c = mask.getContext('2d')!;
     c.fillStyle = '#fff';
@@ -1446,24 +1608,13 @@ export class ImageEditor {
 
   private drawSelectionOverlay(): void {
     if (this.selMask && (this.selMask.width !== this.canvas.width || this.selMask.height !== this.canvas.height)) {
-      this.selMask = null; this.selTint = null; // base size changed (crop/rotate/undo)
+      this.clearSelectionState(); // base size changed (crop/rotate/resize/undo)
     }
     const ctx = this.ctx;
     if (this.selTint) ctx.drawImage(this.selTint, 0, 0);
-    const b = this.selMask ? this.maskBounds(this.selMask) : null;
-    const lw = Math.max(1, this.canvas.width / 600);
-    if (b) {
-      ctx.save();
-      ctx.lineWidth = lw;
-      ctx.setLineDash([lw * 5, lw * 4]);
-      ctx.strokeStyle = '#fff';
-      ctx.strokeRect(b.x, b.y, b.w, b.h);
-      ctx.lineDashOffset = lw * 5;
-      ctx.strokeStyle = '#000';
-      ctx.strokeRect(b.x, b.y, b.w, b.h);
-      ctx.restore();
-    }
+    this.drawAnts();
     if (this.lassoPts.length > 1) {
+      const lw = Math.max(1, this.canvas.width / 600);
       ctx.save();
       ctx.lineWidth = lw * 1.5;
       ctx.strokeStyle = '#ff3b6b';
@@ -1473,21 +1624,6 @@ export class ImageEditor {
       ctx.stroke();
       ctx.restore();
     }
-  }
-
-  private maskBounds(mask: HTMLCanvasElement): { x: number; y: number; w: number; h: number } | null {
-    const w = mask.width, h = mask.height;
-    const d = mask.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, w, h).data;
-    let x1 = w, y1 = h, x2 = -1, y2 = -1;
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        if (d[(y * w + x) * 4 + 3] > 8) {
-          if (x < x1) x1 = x; if (x > x2) x2 = x;
-          if (y < y1) y1 = y; if (y > y2) y2 = y;
-        }
-      }
-    }
-    return x2 < 0 ? null : { x: x1, y: y1, w: x2 - x1 + 1, h: y2 - y1 + 1 };
   }
 
   // Selection mask with optional feathered edge.
@@ -1503,10 +1639,13 @@ export class ImageEditor {
 
   private extractSelection(cut: boolean): void {
     const mask = this.effectiveMask();
-    const b = mask ? this.maskBounds(mask) : null;
-    if (!mask || !b) return;
-    const flat = document.createElement('canvas');
-    this.composite(flat);
+    const sb = this.selBounds;
+    if (!mask || !sb) return;
+    const pad = Math.ceil(this.feather * 2);
+    const W = this.state.base.width, H = this.state.base.height;
+    const x = Math.max(0, sb.x - pad), y = Math.max(0, sb.y - pad);
+    const b = { x, y, w: Math.min(W, sb.x + sb.w + pad) - x, h: Math.min(H, sb.y + sb.h + pad) - y };
+    const flat = this.selectionSource();
     const piece = document.createElement('canvas');
     piece.width = b.w; piece.height = b.h;
     const pc = piece.getContext('2d')!;
@@ -1514,11 +1653,13 @@ export class ImageEditor {
     pc.globalCompositeOperation = 'destination-in';
     pc.drawImage(mask, b.x, b.y, b.w, b.h, 0, 0, b.w, b.h);
     this.commit();
-    if (cut) this.clearBasePixels(mask);
+    if (cut) this.clearPixels(mask);
+    const target = this.targetLayer();
     const layer: ImageLayer = { id: uid(), kind: 'image', canvas: piece, x: b.x, y: b.y, w: b.w, h: b.h };
-    this.state.layers.push(layer);
+    const at = target ? this.state.layers.indexOf(target) + 1 : this.state.layers.length;
+    this.state.layers.splice(at, 0, layer);
     this.selectedId = layer.id;
-    this.selMask = null; this.selTint = null;
+    this.clearSelectionState();
     this.setTool('select');
     this.activePanel = 'layers';
     this.render();
@@ -1526,7 +1667,21 @@ export class ImageEditor {
     this.syncToolbar();
   }
 
-  private clearBasePixels(mask: HTMLCanvasElement): void {
+  // Erase masked pixels from the selection target (an image layer or the base).
+  private clearPixels(mask: HTMLCanvasElement): void {
+    const l = this.targetLayer();
+    if (l) {
+      const out = document.createElement('canvas');
+      out.width = l.canvas.width; out.height = l.canvas.height;
+      const c = out.getContext('2d')!;
+      c.drawImage(l.canvas, 0, 0);
+      c.globalCompositeOperation = 'destination-out';
+      // Map the layer's on-image rectangle of the mask onto the layer's own pixels.
+      c.drawImage(mask, l.x, l.y, l.w, l.h, 0, 0, out.width, out.height);
+      const i = this.state.layers.indexOf(l);
+      this.state.layers[i] = { ...l, canvas: out }; // new object: undo snapshots keep the old canvas
+      return;
+    }
     const b = this.state.base;
     const out = document.createElement('canvas');
     out.width = b.width; out.height = b.height;
@@ -1542,11 +1697,13 @@ export class ImageEditor {
     const mask = this.effectiveMask();
     if (!mask) return;
     this.commit();
-    this.clearBasePixels(mask);
+    this.clearPixels(mask);
     this.render();
+    this.onChange?.();
   }
 
   private invertSelection(): void {
+    if (!this.selMask) this.pickTarget(false);
     const inv = this.newMask();
     const c = inv.getContext('2d')!;
     c.fillStyle = '#fff';
@@ -1560,7 +1717,19 @@ export class ImageEditor {
 
   private buildSelectPanel(host: HTMLElement): void {
     host.appendChild(title('Smart selection'));
-    host.appendChild(note('Wand: click a region to select similar connected colours (edge-aware). Lasso: drag around an area. Hold Shift to add to the selection.'));
+    host.appendChild(note('Wand: click a region. Lasso: drag around an area. Shift adds to the selection. With an image layer selected, the selection works on that layer.'));
+    const modeRow = el('div', 'img-chips');
+    const modes: { label: string; v: 'color' | 'edge' }[] = [
+      { label: 'Similar colour', v: 'color' },
+      { label: 'Select subject (edge detect)', v: 'edge' },
+    ];
+    for (const m of modes) {
+      const chip = button(m.label, 'img-chip');
+      chip.setAttribute('aria-pressed', String(this.wandMode === m.v));
+      chip.onclick = (): void => { this.wandMode = m.v; if (this.tool !== 'wand') this.setTool('wand'); else this.rebuildPanel(); };
+      modeRow.appendChild(chip);
+    }
+    host.appendChild(modeRow);
     const mk = (label: string, min: number, max: number, val: number, set: (v: number) => void): void => {
       const field = el('div', 'img-field');
       const lab = document.createElement('label');
@@ -1572,9 +1741,12 @@ export class ImageEditor {
       field.append(lab, input);
       host.appendChild(field);
     };
-    mk('Wand tolerance', 0, 100, this.wandTol, (v) => { this.wandTol = v; });
+    if (this.wandMode === 'edge') mk('Edge sensitivity', 1, 100, this.edgeSens, (v) => { this.edgeSens = v; });
+    else mk('Wand tolerance', 0, 100, this.wandTol, (v) => { this.wandTol = v; });
     mk('Feather (px)', 0, 10, this.feather, (v) => { this.feather = v; });
     const has = !!this.selMask;
+    const tgt = has ? this.targetLayer() : (() => { const s = this.selected(); return s && s.kind === 'image' ? s : null; })();
+    host.appendChild(note(`Working on: ${tgt ? 'selected image layer' : 'whole image'}`));
     const row1 = el('div', 'img-row');
     const ext = button('Extract to layer', 'img-btn primary'); ext.disabled = !has; ext.onclick = (): void => this.extractSelection(false);
     const cut = button('Cut to layer', 'img-btn'); cut.disabled = !has; cut.onclick = (): void => this.extractSelection(true);
@@ -1639,6 +1811,8 @@ export class ImageEditor {
   }
 
   destroy(): void {
+    clearInterval(this.antsTimer);
+    this.antsTimer = 0;
     this.unbindKeys?.();
     this.unbindKeys = null;
     // `this.canvas` is only created in buildUi(); the decode-failure stub skips it.

@@ -269,3 +269,6 @@
   .img-panel { flex: 0 0 auto; width: 100%; border-left: none; border-top: 1px solid var(--border); max-height: 44%; }
   .img-canvas { max-height: 46vh; }
 }
+
+/* Marching-ants selection outline (drawn over the canvas, never intercepts input) */
+.img-ants { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; }
