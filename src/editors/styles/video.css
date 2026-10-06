@@ -1,17 +1,16 @@
-/* Video editor — Picsart-inspired. All classes prefixed `vid-`, using the
-   app design tokens (--surface, --brand-*, --r-*, --shadow-*, --ease). */
+/* Video editor — Multi-clip timeline editor */
 
 .vid-editor {
   display: flex;
   flex-direction: column;
   gap: 12px;
   width: 100%;
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
   color: var(--text);
 }
 
-/* Stage: video + crop overlay */
+/* Stage: canvas preview */
 .vid-stage {
   position: relative;
   display: flex;
@@ -19,345 +18,242 @@
   justify-content: center;
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: var(--r-md, 12px);
+  border-radius: 8px;
   overflow: hidden;
-  min-height: 220px;
+  min-height: 400px;
 }
-.vid-video {
-  display: block;
+
+.vid-canvas {
   max-width: 100%;
-  max-height: 60vh;
-  border-radius: var(--r-md, 12px);
+  max-height: 100%;
+  display: block;
 }
-/* Crop overlay */
-.vid-crop-layer {
-  position: absolute;
-  inset: 0;
-  cursor: crosshair;
-  display: none;
+
+/* Transport controls */
+.vid-transport {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  flex-wrap: wrap;
 }
-.vid-crop-layer.active { display: block; }
-.vid-crop-box {
-  position: absolute;
-  border: 2px solid var(--brand-500);
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
-  box-sizing: border-box;
-  pointer-events: none;
+
+.vid-btn {
+  padding: 8px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.vid-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--brand-500);
+}
+
+.vid-btn:active {
+  background: var(--brand-500);
+  color: white;
+  border-color: var(--brand-500);
+}
+
+.vid-btn.primary {
+  background: var(--brand-gradient);
+  color: white;
+  border-color: transparent;
+}
+
+.vid-time {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 500;
+  min-width: 100px;
 }
 
 /* Timeline */
-.vid-timeline {
+.vid-timeline-container {
   position: relative;
   border: 1px solid var(--border);
-  border-radius: var(--r-sm, 8px);
+  border-radius: 8px;
   background: var(--surface-2);
-  padding: 6px;
-  overflow: hidden;
-}
-.vid-thumbs {
+  min-height: 150px;
+  overflow-y: auto;
   display: flex;
-  height: 54px;
-  gap: 1px;
-  border-radius: var(--r-sm, 8px);
-  overflow: hidden;
+  flex-direction: column;
+}
+
+.vid-timeline-ruler {
+  display: flex;
+  border-bottom: 1px solid var(--border);
   background: var(--surface);
+  height: 30px;
+  padding: 0 12px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-muted);
 }
-.vid-thumbs img,
-.vid-thumbs canvas {
-  height: 54px;
-  flex: 1 1 0;
-  object-fit: cover;
-  min-width: 0;
-  display: block;
+
+.vid-ruler-labels {
+  display: flex;
+  gap: 40px;
+  width: 100%;
 }
-/* Kept-region shading + playhead sit above thumbs */
-.vid-track {
+
+.vid-clips-area {
+  position: relative;
+  flex: 1;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  padding: 8px 12px;
+  min-height: 100px;
+}
+
+/* Clip elements */
+.vid-clip-item {
   position: absolute;
-  inset: 6px;
-  pointer-events: none;
+  top: 8px;
+  height: 40px;
+  background: var(--brand-500);
+  border: 1px solid var(--brand-600);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: white;
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  user-select: none;
 }
-.vid-seg {
+
+.vid-clip-item:hover {
+  background: var(--brand-600);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.vid-clip-item.selected {
+  outline: 2px solid white;
+  outline-offset: 1px;
+}
+
+.vid-clip-handle {
   position: absolute;
+  width: 8px;
+  height: 100%;
+  background: var(--brand-700);
+  cursor: ew-resize;
   top: 0;
-  bottom: 0;
-  background: color-mix(in srgb, var(--brand-500) 22%, transparent);
-  border-left: 2px solid var(--brand-500);
-  border-right: 2px solid var(--brand-500);
 }
-.vid-playhead {
+
+.vid-clip-handle.left {
+  left: 0;
+}
+
+.vid-clip-handle.right {
+  right: 0;
+}
+
+.vid-clip-handle:hover {
+  background: white;
+  opacity: 0.8;
+}
+
+.vid-playhead-line {
   position: absolute;
-  top: 0;
-  bottom: 0;
   width: 2px;
-  background: var(--text);
-  box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+  height: 100%;
+  background: var(--brand-500);
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 10;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
 }
-.vid-scrub {
-  position: absolute;
-  inset: 6px;
+
+/* Clip properties panel */
+.vid-clip-properties {
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-height: 100px;
+}
+
+.vid-clip-properties h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.vid-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.vid-field input[type="range"] {
+  width: 100%;
   cursor: pointer;
 }
 
-/* Toolbar — horizontally scrollable tab row */
+/* Tabs */
 .vid-tabs {
   display: flex;
   gap: 6px;
   overflow-x: auto;
   flex-wrap: nowrap;
-  -webkit-overflow-scrolling: touch;
-  padding-bottom: 2px;
   scrollbar-width: thin;
 }
+
 .vid-tab {
   flex: 0 0 auto;
   padding: 8px 14px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 6px;
   background: var(--surface);
   color: var(--text-muted);
   font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.14s var(--ease);
-}
-.vid-tab:hover { border-color: var(--brand-500); color: var(--text); }
-.vid-tab.active {
-  background: var(--brand-gradient);
-  color: #fff;
-  border-color: transparent;
-  box-shadow: var(--shadow-sm);
+  transition: all 0.2s;
 }
 
-/* Panel */
+.vid-tab:hover {
+  border-color: var(--brand-500);
+  color: var(--text);
+}
+
+.vid-tab.active {
+  background: var(--brand-gradient);
+  color: white;
+  border-color: transparent;
+}
+
+/* Panels */
 .vid-panel {
   display: none;
   flex-wrap: wrap;
-  gap: 10px 14px;
-  align-items: center;
+  gap: 14px;
   padding: 12px;
   border: 1px solid var(--border);
-  border-radius: var(--r-md, 12px);
+  border-radius: 8px;
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-.vid-panel.active { display: flex; }
-.vid-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--text-muted);
-  min-width: 120px;
-}
-.vid-field.row {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-}
-.vid-field input[type="range"] { width: 150px; accent-color: var(--brand-500); }
-.vid-field input[type="text"],
-.vid-field select {
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm, 8px);
-  background: var(--surface-2);
-  color: var(--text);
-  font-size: 13px;
-}
-.vid-field input[type="color"] { width: 36px; height: 28px; border: none; background: none; padding: 0; }
-
-/* Buttons */
-.vid-btn {
-  flex: 0 0 auto;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm, 8px);
-  background: var(--surface-2);
-  color: var(--text);
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.14s var(--ease);
-  white-space: nowrap;
-}
-.vid-btn:hover { border-color: var(--brand-500); background: var(--surface-hover); }
-.vid-btn.active {
-  background: var(--brand-gradient);
-  color: #fff;
-  border-color: transparent;
-}
-.vid-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-/* Status + progress */
-.vid-statusbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
-  color: var(--text-muted);
-  min-height: 20px;
-}
-.vid-progress {
-  flex: 1 1 auto;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  overflow: hidden;
-  display: none;
-}
-.vid-progress.active { display: block; }
-.vid-progress > span {
-  display: block;
-  height: 100%;
-  width: 0%;
-  background: var(--brand-gradient);
-  transition: width 0.2s var(--ease);
 }
 
-.vid-transport {
+.vid-panel.active {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
-}
-.vid-time { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--text-muted); }
-
-.vid-seglist {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  width: 100%;
-}
-.vid-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-.vid-chip button {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-}
-.vid-chip button:hover { color: var(--brand-500); }
-
-/* Unplayable video state */
-.vid-unplayable {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 60px 24px;
-  text-align: center;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md, 12px);
-  max-width: 500px;
-  margin: 0 auto;
-}
-.vid-unplayable-icon {
-  font-size: 48px;
-  opacity: 0.6;
-}
-.vid-unplayable-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text);
-  margin: 0;
-}
-.vid-unplayable-message {
-  font-size: 14px;
-  color: var(--text-muted);
-  margin: 0;
-  line-height: 1.5;
-}
-.vid-unplayable-info {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 12px 16px;
-  background: var(--surface-2);
-  border-radius: var(--r-sm, 8px);
-  border: 1px solid var(--border);
-}
-.vid-unplayable-info strong {
-  color: var(--text);
-}
-
-/* Multi-track timeline */
-.vid-timeline-header {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-.vid-timeline-labels {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 70px;
-}
-.vid-track-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  padding: 4px 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.vid-timeline-tracks {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.vid-track-group {
-  position: relative;
-  background: var(--surface-2);
-  border-radius: var(--r-sm, 8px);
-  overflow: hidden;
-  padding: 4px;
-}
-.vid-video-track {
-  position: relative;
-  height: 54px;
-  margin: 0;
-  padding: 0;
-}
-.vid-audio-track-container {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.vid-audio-track {
-  position: relative;
-  height: 32px;
-  background: var(--surface-2);
-  border-radius: var(--r-sm, 8px);
-  padding: 4px;
-  border-left: 2px solid var(--brand-400);
-  font-size: 11px;
-  color: var(--text-muted);
-  padding-left: 8px;
-  display: flex;
-  align-items: center;
-}
-.vid-seglist-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-top: 8px;
 }
 
 /* Zoom control */
@@ -367,28 +263,46 @@
   gap: 8px;
   padding: 8px 12px;
   background: var(--surface);
-  border-top: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   font-size: 12px;
   color: var(--text-muted);
-  flex: 0 0 auto;
 }
+
 .vid-zoom button {
   padding: 4px 8px !important;
-  font-size: 12px;
   min-width: 30px;
 }
+
 .vid-zoom input[type="range"] {
   width: 100px;
   cursor: pointer;
-  flex: 0 0 auto;
 }
+
 .vid-zoom span {
   min-width: 35px;
   text-align: center;
   font-weight: 500;
-  flex: 0 0 auto;
 }
 
-@media (max-width: 640px) {
-  .vid-field input[type="range"] { width: 120px; }
+/* Delete button styling */
+.delete-clip {
+  background: #dc2626 !important;
+  border-color: #991b1b !important;
+  color: white;
+}
+
+.delete-clip:hover {
+  background: #b91c1c !important;
+}
+
+@media (max-width: 768px) {
+  .vid-timeline-container {
+    min-height: 120px;
+  }
+
+  .vid-clip-item {
+    height: 32px;
+    font-size: 11px;
+  }
 }
