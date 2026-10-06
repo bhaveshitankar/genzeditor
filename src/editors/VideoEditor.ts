@@ -24,6 +24,8 @@ interface Clip {
   in: number;
   out: number;
   crop: Rect | null;
+  speed: number;  // per-clip playback speed (main track only)
+  volume: number; // 0..2
 }
 
 interface Overlay extends Clip {
@@ -33,7 +35,21 @@ interface Overlay extends Clip {
   audio: boolean;
 }
 
-type Track = 'main' | 'ov';
+interface AudioClip {
+  id: string;
+  blob: Blob;
+  name: string;
+  srcDur: number;
+  in: number;
+  out: number;
+  start: number;
+  volume: number;
+  fadeIn: number;
+  fadeOut: number;
+}
+
+type Track = 'main' | 'ov' | 'au';
+type Timed = Overlay | AudioClip;
 type Fit = 'contain' | 'cover';
 type Look = 'none' | 'grayscale' | 'sepia';
 type Fmt = 'mp4' | 'webm';
@@ -41,7 +57,7 @@ type ResPreset = 'original' | '1080p' | '720p' | '480p' | 'square' | 'vertical';
 type TextPos = 'top' | 'center' | 'bottom';
 type Layout = 'full' | 'side' | 'stack' | 'pip';
 type Sel = { track: Track; id: string } | null;
-interface Snapshot { main: Clip[]; overlays: Overlay[]; mainBox: Rect; mainFit: Fit; }
+interface Snapshot { main: Clip[]; overlays: Overlay[]; audios: AudioClip[]; mainBox: Rect; mainFit: Fit; }
 type Drag =
   | { kind: 'scrub' }
   | { kind: 'trim'; id: string; side: 'l' | 'r'; x0: number; in0: number; out0: number; start0: number; hist: boolean }
@@ -61,7 +77,8 @@ const AFMT = 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo';
 
 let idSeq = 0;
 const uid = (): string => `c${Date.now().toString(36)}${(++idSeq).toString(36)}`;
-const len = (c: Clip): number => c.out - c.in;
+// Timeline length: source range divided by the clip's speed.
+const len = (c: { in: number; out: number; speed?: number }): number => (c.out - c.in) / (c.speed ?? 1);
 
 export class VideoEditor implements DocEditor {
   private host: HTMLElement;
@@ -111,10 +128,9 @@ export class VideoEditor implements DocEditor {
   private textSize = 36;
   private mute = false;
   private volume = 1;
-  private extraAudio: Blob | null = null;
-  private extraAudioName = '';
-  private bgEl: HTMLAudioElement | null = null;
-  private replaceAudio = false;
+  private muteOriginal = false;            // drop the video clips' own sound
+  private audios: AudioClip[] = [];
+  private audioEls = new Map<string, HTMLAudioElement>();
   private outFmt: Fmt = 'mp4';
   private resPreset: ResPreset = 'original';
 
@@ -133,6 +149,7 @@ export class VideoEditor implements DocEditor {
   private propsEl!: HTMLElement;
   private clipFile!: HTMLInputElement;
   private ovFile!: HTMLInputElement;
+  private auFile!: HTMLInputElement;
   private resizeObs: ResizeObserver | null = null;
   private unbindUndo: (() => void) | null = null;
 
@@ -167,7 +184,8 @@ export class VideoEditor implements DocEditor {
       if (el instanceof HTMLVideoElement) { el.pause(); el.removeAttribute('src'); el.load(); }
     }
     this.media.clear();
-    this.bgEl?.pause();
+    for (const a of this.audioEls.values()) { a.pause(); a.removeAttribute('src'); }
+    this.audioEls.clear();
     if (this.thumbVid) this.thumbVid.removeAttribute('src');
     for (const u of this.urls.values()) URL.revokeObjectURL(u);
     this.urls.clear();
@@ -186,7 +204,7 @@ export class VideoEditor implements DocEditor {
     return {
       id: uid(), blob, name: name.replace(/\.[^.]+$/, '') || name, kind: p.kind,
       srcDur: p.dur, natW: p.w, natH: p.h, in: 0,
-      out: p.kind === 'image' ? IMAGE_DEFAULT_DUR : p.dur, crop: null,
+      out: p.kind === 'image' ? IMAGE_DEFAULT_DUR : p.dur, crop: null, speed: 1, volume: 1,
     };
   }
 
@@ -214,14 +232,37 @@ export class VideoEditor implements DocEditor {
     return null;
   }
 
-  private find(id: string): { item: Clip; track: 'main' } | { item: Overlay; track: 'ov' } | null {
+  private find(id: string): { item: Clip; track: 'main' } | { item: Overlay; track: 'ov' } | { item: AudioClip; track: 'au' } | null {
     const m = this.main.find((c) => c.id === id);
     if (m) return { item: m, track: 'main' };
     const o = this.overlays.find((c) => c.id === id);
-    return o ? { item: o, track: 'ov' } : null;
+    if (o) return { item: o, track: 'ov' };
+    const a = this.audios.find((c) => c.id === id);
+    return a ? { item: a, track: 'au' } : null;
   }
 
-  private ovActive(o: Overlay): boolean { return this.t >= o.start && this.t < o.start + len(o); }
+  private listOf(track: 'ov' | 'au'): Timed[] { return track === 'ov' ? this.overlays : this.audios; }
+
+  private ovActive(o: Timed): boolean { return this.t >= o.start && this.t < o.start + len(o); }
+
+  // Times (seconds) that dragged overlay/audio edges snap to.
+  private snapTargets(exceptId: string): number[] {
+    const pts = [0, this.t, this.total()];
+    let s = 0;
+    for (const c of this.main) { s += len(c); pts.push(s); }
+    for (const o of [...this.overlays, ...this.audios]) {
+      if (o.id === exceptId) continue;
+      pts.push(o.start, o.start + len(o));
+    }
+    return pts;
+  }
+
+  private snapTo(v: number, pts: number[]): number {
+    const tol = 8 / this.pps;
+    let best = v, bd = tol;
+    for (const p of pts) { const d = Math.abs(p - v); if (d < bd) { bd = d; best = p; } }
+    return best;
+  }
 
   private frameSize(): { W: number; H: number } {
     const b = this.main[0];
@@ -243,6 +284,7 @@ export class VideoEditor implements DocEditor {
     return {
       main: this.main.map((c) => ({ ...c, crop: c.crop && { ...c.crop } })),
       overlays: this.overlays.map((o) => ({ ...o, crop: o.crop && { ...o.crop }, box: { ...o.box } })),
+      audios: this.audios.map((a) => ({ ...a })),
       mainBox: { ...this.mainBox },
       mainFit: this.mainFit,
     };
@@ -258,6 +300,7 @@ export class VideoEditor implements DocEditor {
   private restore(s: Snapshot): void {
     this.main = s.main;
     this.overlays = s.overlays;
+    this.audios = s.audios;
     this.mainBox = s.mainBox;
     this.mainFit = s.mainFit;
     this.structureChanged();
@@ -299,24 +342,29 @@ export class VideoEditor implements DocEditor {
   // ---- Editing operations ---------------------------------------------------
 
   private split(): void {
-    if (this.sel?.track === 'ov') {
-      const idx = this.overlays.findIndex((o) => o.id === this.sel!.id);
-      const o = this.overlays[idx];
+    const tr = this.sel?.track;
+    if (tr === 'ov' || tr === 'au') {
+      const list = this.listOf(tr);
+      const idx = list.findIndex((o) => o.id === this.sel!.id);
+      const o = list[idx];
       if (o && this.t > o.start + MIN_LEN && this.t < o.start + len(o) - MIN_LEN) {
         this.pushHistory();
         const cut = o.in + (this.t - o.start);
-        const b: Overlay = { ...o, id: uid(), in: cut, start: this.t, box: { ...o.box }, crop: o.crop && { ...o.crop } };
+        const b = cloneTimed(o, uid());
+        b.in = cut;
+        b.start = this.t;
         o.out = cut;
-        this.overlays.splice(idx + 1, 0, b);
-        this.sel = { track: 'ov', id: b.id };
-        this.setStatus(`Split overlay at ${fmtT(this.t)}`);
+        list.splice(idx + 1, 0, b);
+        this.sel = { track: tr, id: b.id };
+        this.setStatus(`Split at ${fmtT(this.t)}`);
         this.structureChanged();
         return;
       }
+      if (tr === 'au') { this.setStatus('Move the playhead inside the selected audio clip to split it.'); return; }
     }
     const cur = this.mainAt(this.t, false);
     if (!cur) { this.setStatus('Move the playhead inside a clip to split it.'); return; }
-    const local = cur.clip.in + (this.t - cur.start);
+    const local = cur.clip.in + (this.t - cur.start) * cur.clip.speed;
     if (local - cur.clip.in < MIN_LEN || cur.clip.out - local < MIN_LEN) {
       this.setStatus('Move the playhead inside a clip (not on its edge) to split it.');
       return;
@@ -330,6 +378,30 @@ export class VideoEditor implements DocEditor {
     this.structureChanged();
   }
 
+  private duplicateSelected(): void {
+    const f = this.sel ? this.find(this.sel.id) : null;
+    if (!f) { this.setStatus('Select a clip to duplicate.'); return; }
+    this.pushHistory();
+    if (f.track === 'main') {
+      const i = this.main.indexOf(f.item);
+      const c: Clip = { ...f.item, id: uid(), crop: f.item.crop && { ...f.item.crop } };
+      this.main.splice(i + 1, 0, c);
+      this.sel = { track: 'main', id: c.id };
+      this.t = this.startOf(c);
+    } else {
+      const list = this.listOf(f.track);
+      const c = cloneTimed(f.item, uid());
+      const T = this.total();
+      const after = f.item.start + len(f.item);
+      c.start = after + len(c) <= T ? after : f.item.start;
+      list.splice(list.indexOf(f.item) + 1, 0, c);
+      this.sel = { track: f.track, id: c.id };
+      this.t = c.start;
+    }
+    this.setStatus('Duplicated.');
+    this.structureChanged();
+  }
+
   private deleteSelected(): void {
     if (!this.sel) { this.setStatus('Select a clip first.'); return; }
     const f = this.find(this.sel.id);
@@ -340,8 +412,32 @@ export class VideoEditor implements DocEditor {
     }
     this.pushHistory();
     if (f.track === 'main') this.main = this.main.filter((c) => c.id !== f.item.id);
-    else this.overlays = this.overlays.filter((c) => c.id !== f.item.id);
+    else if (f.track === 'ov') this.overlays = this.overlays.filter((c) => c.id !== f.item.id);
+    else this.audios = this.audios.filter((c) => c.id !== f.item.id);
     this.sel = null;
+    this.structureChanged();
+  }
+
+  private async addAudioClips(files: File[]): Promise<void> {
+    const added: AudioClip[] = [];
+    const T = this.total();
+    for (const f of files) {
+      try {
+        const dur = await probeAudioDuration(this.urlFor(f));
+        const start = this.t >= T - 0.5 ? 0 : this.t;
+        added.push({
+          id: uid(), blob: f, name: f.name.replace(/\.[^.]+$/, '') || f.name, srcDur: dur,
+          in: 0, out: Math.min(dur, Math.max(MIN_LEN, T - start)), start, volume: 1, fadeIn: 0, fadeOut: 0,
+        });
+      } catch {
+        this.setStatus(`Couldn't open "${f.name}" — unsupported audio format.`);
+      }
+    }
+    if (!added.length) return;
+    this.pushHistory();
+    this.audios.push(...added);
+    this.sel = { track: 'au', id: added[added.length - 1]!.id };
+    this.setStatus(`Added ${added.length} audio clip${added.length > 1 ? 's' : ''}. Drag to move, drag edges to trim; overlapping clips are mixed.`);
     this.structureChanged();
   }
 
@@ -462,16 +558,18 @@ export class VideoEditor implements DocEditor {
     for (const c of this.main) {
       const e = s + len(c);
       const lo = Math.max(a, s), hi = Math.min(b, e);
-      if (hi - lo > 0.01) out.push({ ...c, id: uid(), in: c.in + (lo - s), out: c.in + (hi - s) });
+      if (hi - lo > 0.01) out.push({ ...c, id: uid(), in: c.in + (lo - s) * c.speed, out: c.in + (hi - s) * c.speed });
       s = e;
     }
     if (out.length) this.main = out;
-    this.overlays = this.overlays.flatMap((o) => {
+    const cut = <X extends Timed>(o: X): X[] => {
       const os = o.start, oe = o.start + len(o);
       const lo = Math.max(a, os), hi = Math.min(b, oe);
       if (hi - lo <= 0.01) return [];
       return [{ ...o, in: o.in + (lo - os), out: o.in + (hi - os), start: lo - a }];
-    });
+    };
+    this.overlays = this.overlays.flatMap(cut);
+    this.audios = this.audios.flatMap(cut);
   }
 
   /** Apply an AI-generated non-destructive patch. Returns a summary. */
@@ -506,11 +604,12 @@ export class VideoEditor implements DocEditor {
   private hasEdits(): boolean {
     const c = this.main[0];
     const untouched = this.main.length === 1 && !!c && c.kind === 'video' && c.blob === this.blob &&
-      c.in < 0.01 && c.out > c.srcDur - 0.01 && !c.crop && this.overlays.length === 0 &&
+      c.in < 0.01 && c.out > c.srcDur - 0.01 && !c.crop && c.speed === 1 && c.volume === 1 &&
+      this.overlays.length === 0 && this.audios.length === 0 && !this.muteOriginal &&
       isFull(this.mainBox) && this.mainFit === 'contain';
     return !untouched || this.rotate !== 0 || this.flipH || this.flipV || this.speed !== 1 ||
       this.brightness !== 0 || this.contrast !== 1 || this.saturation !== 1 || this.look !== 'none' ||
-      !!this.text || this.mute || this.volume !== 1 || !!this.extraAudio ||
+      !!this.text || this.mute || this.volume !== 1 ||
       this.resPreset !== 'original' || this.outFmt !== this.currentFmt();
   }
 
@@ -533,9 +632,9 @@ export class VideoEditor implements DocEditor {
       const { fetchFile } = await import('@ffmpeg/util');
       const fileOf = new Map<Blob, string>();
       const sources: Clip[] = [...this.main, ...this.overlays];
-      for (const c of sources) {
+      for (const c of [...sources, ...(this.mute ? [] : this.audios)]) {
         if (fileOf.has(c.blob)) continue;
-        const f = `src${fileOf.size}${extFor(c)}`;
+        const f = `src${fileOf.size}${'kind' in c ? extFor(c) : extOf(c.blob instanceof File ? c.blob.name : '', '.m4a')}`;
         await ff.writeFile(f, await fetchFile(c.blob));
         fileOf.set(c.blob, f);
         written.push(f);
@@ -547,13 +646,6 @@ export class VideoEditor implements DocEditor {
           const f = fileOf.get(c.blob)!;
           if (c.kind === 'video' && !hasAudio.has(f)) hasAudio.set(f, await probeAudio(ff, f));
         }
-      }
-
-      let bgName = '';
-      if (this.extraAudio && !this.mute) {
-        bgName = 'bg' + extOf(this.extraAudioName, '.m4a');
-        await ff.writeFile(bgName, await fetchFile(this.extraAudio));
-        written.push(bgName);
       }
 
       let fontReady = false;
@@ -568,7 +660,7 @@ export class VideoEditor implements DocEditor {
       }
 
       this.setStatus('Rendering…');
-      const code = await ff.exec(this.buildArgs(fileOf, hasAudio, fontReady, bgName, outName));
+      const code = await ff.exec(this.buildArgs(fileOf, hasAudio, fontReady, outName));
       written.push(outName);
       const data = await ff.readFile(outName).catch(() => null);
       if (!(data instanceof Uint8Array) || data.length === 0) {
@@ -597,7 +689,7 @@ export class VideoEditor implements DocEditor {
   // decoded twice), main clips are fitted into the main box and concatenated,
   // overlays are cropped/fitted into their boxes and laid on top at their start
   // times, then global effects (rotate, speed, colour, caption) apply to the result.
-  private buildArgs(fileOf: Map<Blob, string>, hasAudio: Map<string, boolean>, fontReady: boolean, bgName: string, outName: string): string[] {
+  private buildArgs(fileOf: Map<Blob, string>, hasAudio: Map<string, boolean>, fontReady: boolean, outName: string): string[] {
     const { W, H } = this.frameSize();
     const T = this.total();
     const wantAudio = !this.mute;
@@ -607,7 +699,7 @@ export class VideoEditor implements DocEditor {
     const addInput = (c: Clip): number => {
       const f = fileOf.get(c.blob)!;
       if (c.kind === 'image') inputs.push('-loop', '1', '-framerate', String(FPS), '-t', f3(len(c)), '-i', f);
-      else inputs.push('-ss', f3(c.in), '-t', f3(len(c)), '-i', f);
+      else inputs.push('-ss', f3(c.in), '-t', f3(c.out - c.in), '-i', f);
       return idx++;
     };
     const audioOf = (c: Clip): boolean => c.kind === 'video' && !!hasAudio.get(fileOf.get(c.blob)!);
@@ -616,10 +708,15 @@ export class VideoEditor implements DocEditor {
     const segs: string[] = [];
     this.main.forEach((c, i) => {
       const k = addInput(c);
-      parts.push(`[${k}:v]setpts=PTS-STARTPTS,${cropFilter(c)}${fitFilter(this.mainFit, mb.w, mb.h)},setsar=1,fps=${FPS},format=yuv420p[v${i}]`);
+      const sp = c.kind === 'video' && c.speed !== 1 ? `,setpts=PTS/${f3(c.speed)}` : '';
+      parts.push(`[${k}:v]setpts=PTS-STARTPTS${sp},${cropFilter(c)}${fitFilter(this.mainFit, mb.w, mb.h)},setsar=1,fps=${FPS},format=yuv420p[v${i}]`);
       segs.push(`[v${i}]`);
       if (wantAudio) {
-        if (audioOf(c)) parts.push(`[${k}:a]asetpts=PTS-STARTPTS,${AFMT},apad,atrim=duration=${f3(len(c))}[a${i}]`);
+        if (audioOf(c) && !this.muteOriginal) {
+          const tempo = c.speed !== 1 ? `,${atempoChain(c.speed).join(',')}` : '';
+          const vol = c.volume !== 1 ? `,volume=${f3(c.volume)}` : '';
+          parts.push(`[${k}:a]asetpts=PTS-STARTPTS,${AFMT}${tempo}${vol},apad,atrim=duration=${f3(len(c))}[a${i}]`);
+        }
         else parts.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${f3(len(c))}[a${i}]`);
         segs.push(`[a${i}]`);
       }
@@ -642,10 +739,25 @@ export class VideoEditor implements DocEditor {
       base = `[b${j}]`;
       if (wantAudio && o.audio && audioOf(o)) {
         const ms = Math.round(o.start * 1000);
-        parts.push(`[${k}:a]asetpts=PTS-STARTPTS,${AFMT},adelay=${ms}|${ms}[oa${j}]`);
+        parts.push(`[${k}:a]asetpts=PTS-STARTPTS,${AFMT},volume=${f3(o.volume)},adelay=${ms}|${ms}[oa${j}]`);
         ovAudio.push(`[oa${j}]`);
       }
     });
+
+    if (wantAudio) {
+      this.audios.forEach((a, j) => {
+        const k = idx++;
+        inputs.push('-ss', f3(a.in), '-t', f3(a.out - a.in), '-i', fileOf.get(a.blob)!);
+        const d = len(a);
+        const ms = Math.round(a.start * 1000);
+        const fx = [`asetpts=PTS-STARTPTS`, AFMT, `volume=${f3(a.volume)}`];
+        if (a.fadeIn > 0) fx.push(`afade=t=in:st=0:d=${f3(a.fadeIn)}`);
+        if (a.fadeOut > 0) fx.push(`afade=t=out:st=${f3(Math.max(0, d - a.fadeOut))}:d=${f3(a.fadeOut)}`);
+        fx.push(`adelay=${ms}|${ms}`);
+        parts.push(`[${k}:a]${fx.join(',')}[ac${j}]`);
+        ovAudio.push(`[ac${j}]`);
+      });
+    }
 
     const vf: string[] = [`trim=duration=${f3(T)}`, 'setpts=PTS-STARTPTS'];
     if (this.rotate === 90) vf.push('transpose=1');
@@ -677,19 +789,7 @@ export class VideoEditor implements DocEditor {
       if (this.volume !== 1) af.push(`volume=${f3(this.volume)}`);
       af.push('aresample=async=1');
       parts.push(`${a}${af.join(',')}[amain]`);
-      if (bgName) {
-        const bi = idx++;
-        inputs.push('-i', bgName);
-        if (this.replaceAudio) {
-          parts.push(`[${bi}:a]${AFMT}[aout]`);
-        } else {
-          parts.push(`[${bi}:a]${AFMT},volume=0.5[abg]`);
-          parts.push('[amain][abg]amix=inputs=2:duration=first:dropout_transition=0,volume=2[aout]');
-        }
-        maps.push('-map', '[aout]');
-      } else {
-        maps.push('-map', '[amain]');
-      }
+      maps.push('-map', '[amain]');
     }
 
     return [...inputs, '-filter_complex', parts.join(';'), ...maps, ...this.codecArgs(), outName];
@@ -754,17 +854,20 @@ export class VideoEditor implements DocEditor {
           <span class="vid-time" data-role="time">0:00.0 / 0:00.0</span>
           <span class="vid-sep"></span>
           <button type="button" class="vid-btn" data-act="split" title="Split at playhead (S)">✂ Split</button>
+          <button type="button" class="vid-btn" data-act="duplicate" title="Duplicate selected clip (D)">Duplicate</button>
           <button type="button" class="vid-btn" data-act="delete" title="Delete selected clip (Del)">Delete</button>
           <button type="button" class="vid-btn" data-act="left" title="Move selected clip earlier">◀ Move</button>
           <button type="button" class="vid-btn" data-act="right" title="Move selected clip later">Move ▶</button>
           <span class="vid-sep"></span>
           <button type="button" class="vid-btn" data-act="addClip" title="Append videos or images to the main track">+ Add video/image</button>
           <button type="button" class="vid-btn" data-act="addOverlay" title="Place another video or image on top">+ Add overlay</button>
+          <button type="button" class="vid-btn" data-act="addAudio" title="Add music / voice-over clips (overlapping clips are mixed)">+ Add audio</button>
           <span class="vid-sep"></span>
           <button type="button" class="vid-btn" data-act="undo" title="Undo (Ctrl/Cmd+Z)" disabled>↶</button>
           <button type="button" class="vid-btn" data-act="redo" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>↷</button>
           <input type="file" accept="video/*,image/*" multiple data-role="clipFile" hidden>
           <input type="file" accept="video/*,image/*" data-role="ovFile" hidden>
+          <input type="file" accept="audio/*" multiple data-role="auFile" hidden>
         </div>
 
         <div class="vt">
@@ -847,15 +950,13 @@ export class VideoEditor implements DocEditor {
         </div>
 
         <div class="vid-panel" data-panel="audio">
-          <button type="button" class="vid-btn" data-role="mute">Mute audio</button>
-          <label class="vid-field">Volume <span data-role="volVal">100%</span>
+          <button type="button" class="vid-btn" data-role="mute">Mute all audio</button>
+          <button type="button" class="vid-btn" data-role="muteOriginal">Mute original video sound</button>
+          <label class="vid-field">Master volume <span data-role="volVal">100%</span>
             <input type="range" data-role="volume" min="0" max="2" step="0.05" value="1"></label>
+          <button type="button" class="vid-btn" data-role="pickAudio">+ Add audio clip…</button>
           <button type="button" class="vid-btn" data-role="extractAudio">Extract audio (.m4a)</button>
-          <button type="button" class="vid-btn" data-role="pickAudio">Add background audio…</button>
-          <button type="button" class="vid-btn" data-role="replaceMode">Mix under</button>
-          <button type="button" class="vid-btn" data-role="removeAudio" hidden>Remove background audio</button>
-          <span class="vid-time" data-role="audioName"></span>
-          <input type="file" accept="audio/*" data-role="audioFile" hidden>
+          <span class="vid-hint">Audio clips live on their own rows; overlapping clips are mixed. Select one for volume and fades.</span>
         </div>
 
         <div class="vid-panel" data-panel="export">
@@ -908,6 +1009,12 @@ export class VideoEditor implements DocEditor {
     this.propsEl = this.q('props');
     this.clipFile = this.q('clipFile');
     this.ovFile = this.q('ovFile');
+    this.auFile = this.q('auFile');
+    this.auFile.addEventListener('change', () => {
+      const files = Array.from(this.auFile.files ?? []);
+      this.auFile.value = '';
+      if (files.length) void this.addAudioClips(files);
+    });
 
     // Toolbar actions.
     this.host.querySelector('.vid-transport')!.addEventListener('click', (e) => {
@@ -915,6 +1022,8 @@ export class VideoEditor implements DocEditor {
       if (act === 'play') this.setPlaying(!this.playing);
       else if (act === 'split') this.split();
       else if (act === 'delete') this.deleteSelected();
+      else if (act === 'duplicate') this.duplicateSelected();
+      else if (act === 'addAudio') this.auFile.click();
       else if (act === 'left') this.moveMain(-1);
       else if (act === 'right') this.moveMain(1);
       else if (act === 'addClip') this.clipFile.click();
@@ -995,16 +1104,8 @@ export class VideoEditor implements DocEditor {
     const vol = this.q<HTMLInputElement>('volume');
     vol.addEventListener('input', () => { this.volume = Number(vol.value); this.syncControls(); });
     this.q('extractAudio').addEventListener('click', () => void this.extractAudio());
-    const audFile = this.q<HTMLInputElement>('audioFile');
-    this.q('pickAudio').addEventListener('click', () => audFile.click());
-    audFile.addEventListener('change', () => {
-      const f = audFile.files?.[0];
-      audFile.value = '';
-      if (!f) return;
-      this.setBgAudio(f, f.name);
-    });
-    this.q('removeAudio').addEventListener('click', () => this.setBgAudio(null, ''));
-    this.q('replaceMode').addEventListener('click', () => { this.replaceAudio = !this.replaceAudio; this.syncControls(); });
+    this.q('pickAudio').addEventListener('click', () => this.auFile.click());
+    this.q('muteOriginal').addEventListener('click', () => { this.muteOriginal = !this.muteOriginal; this.syncControls(); });
 
     // Export format.
     const fs = this.q<HTMLSelectElement>('fmt');
@@ -1032,19 +1133,6 @@ export class VideoEditor implements DocEditor {
     this.host.querySelectorAll<HTMLElement>('.vid-panel').forEach((x) => x.classList.toggle('active', x.dataset.panel === tab));
   }
 
-  private setBgAudio(blob: Blob | null, name: string): void {
-    this.bgEl?.pause();
-    this.bgEl = null;
-    this.extraAudio = blob;
-    this.extraAudioName = name;
-    if (blob) {
-      this.bgEl = new Audio(this.urlFor(blob));
-      this.bgEl.preload = 'auto';
-    }
-    this.syncControls();
-    this.tlDirty = true;
-  }
-
   // Reflect global state into the panel controls.
   private syncControls(): void {
     const set = (role: string, v: string): void => { const el = this.q<HTMLInputElement>(role); if (el) el.value = v; };
@@ -1059,12 +1147,10 @@ export class VideoEditor implements DocEditor {
     on('lookNone', this.look === 'none'); on('lookGray', this.look === 'grayscale'); on('lookSepia', this.look === 'sepia');
     set('text', this.text); set('textPos', this.textPos); set('textColor', this.textColor);
     set('textSize', String(this.textSize)); txt('tsVal', String(this.textSize));
-    on('mute', this.mute); txt('mute', this.mute ? 'Muted ✓' : 'Mute audio');
+    on('mute', this.mute); txt('mute', this.mute ? 'All audio muted ✓' : 'Mute all audio');
+    on('muteOriginal', this.muteOriginal);
+    txt('muteOriginal', this.muteOriginal ? 'Original sound muted ✓' : 'Mute original video sound');
     set('volume', String(this.volume)); txt('volVal', `${Math.round(this.volume * 100)}%`);
-    on('replaceMode', this.replaceAudio); txt('replaceMode', this.replaceAudio ? 'Replace original' : 'Mix under');
-    txt('audioName', this.extraAudioName);
-    const rm = this.q('removeAudio');
-    if (rm) rm.hidden = !this.extraAudio;
     set('fmt', this.outFmt);
   }
 
@@ -1111,7 +1197,33 @@ export class VideoEditor implements DocEditor {
     host.innerHTML = '';
     const f = this.sel ? this.find(this.sel.id) : null;
     if (!f) {
-      host.appendChild(hint('Click a clip on the timeline (or on the preview) to edit it. Space = play, S = split at playhead, Del = delete.'));
+      host.appendChild(hint('Click a clip on the timeline (or on the preview) to edit it. Space = play, S = split, D = duplicate, Del = delete.'));
+      return;
+    }
+    const pct = (v: number): string => `${Math.round(v * 100)}%`;
+    const secs = (v: number): string => `${v.toFixed(1)}s`;
+    const actions = el('div', 'vid-props-actions');
+    actions.append(
+      button('✂ Split at playhead', () => this.split()),
+      button('Duplicate', () => this.duplicateSelected()),
+      button('Delete clip', () => this.deleteSelected()),
+    );
+    if (f.track === 'au') {
+      const a = f.item;
+      const head = el('div', 'vid-props-head');
+      const title = el('strong');
+      title.textContent = `♪ ${a.name}`;
+      const meta = el('span', 'vid-hint');
+      meta.textContent = `Audio · ${fmtT(a.start)} – ${fmtT(a.start + len(a))} · source ${fmtT(a.in)} – ${fmtT(a.out)}`;
+      head.append(title, meta);
+      const g = el('div', 'vid-props-group');
+      const half = Math.max(0, len(a) / 2);
+      g.append(
+        this.slider('Volume', 0, 2, 0.05, a.volume, pct, (v) => { a.volume = v; }),
+        this.slider('Fade in', 0, Math.min(10, half), 0.1, Math.min(a.fadeIn, half), secs, (v) => { a.fadeIn = v; }),
+        this.slider('Fade out', 0, Math.min(10, half), 0.1, Math.min(a.fadeOut, half), secs, (v) => { a.fadeOut = v; }),
+      );
+      host.append(head, g, actions);
       return;
     }
     const c = f.item;
@@ -1138,11 +1250,25 @@ export class VideoEditor implements DocEditor {
       inp.addEventListener('change', () => {
         const v = clamp(Number(inp.value) || IMAGE_DEFAULT_DUR, 0.5, IMAGE_MAX_DUR);
         this.pushHistory();
-        c.out = c.in + v;
+        c.out = c.in + v * c.speed;
         this.structureChanged();
       });
       lab.appendChild(inp);
       row.appendChild(lab);
+    }
+
+    if (f.track === 'main') {
+      const g = el('div', 'vid-props-group');
+      const gt = el('span', 'vid-group-title');
+      gt.textContent = 'Clip speed & sound';
+      g.appendChild(gt);
+      if (c.kind === 'video') {
+        g.appendChild(this.slider('Speed', 0.25, 4, 0.05, c.speed, (v) => `${v.toFixed(2)}x`, (v) => { c.speed = v; this.tlDirty = true; }));
+        g.appendChild(this.slider('Volume', 0, 2, 0.05, c.volume, pct, (v) => { c.volume = v; }));
+      } else {
+        g.appendChild(hint('Images are silent; set how long they show with Duration.'));
+      }
+      row.appendChild(g);
     }
 
     // Crop (per clip): edges in percent of the source frame.
@@ -1162,7 +1288,6 @@ export class VideoEditor implements DocEditor {
     const cropTitle = el('span', 'vid-group-title');
     cropTitle.textContent = 'Crop';
     cropBox.appendChild(cropTitle);
-    const pct = (v: number): string => `${Math.round(v * 100)}%`;
     cropBox.append(
       this.slider('Left', 0, 0.9, 0.01, edges.l, pct, (v) => setEdge('l', v)),
       this.slider('Right', 0, 0.9, 0.01, edges.r, pct, (v) => setEdge('r', v)),
@@ -1193,6 +1318,7 @@ export class VideoEditor implements DocEditor {
         cb.addEventListener('change', () => { this.pushHistory(); o.audio = cb.checked; });
         lab.append(cb, document.createTextNode(' Include this overlay’s sound'));
         pos.appendChild(lab);
+        pos.appendChild(this.slider('Sound volume', 0, 2, 0.05, o.volume, pct, (v) => { o.volume = v; }));
       }
       const idx = this.overlays.indexOf(o);
       pos.append(
@@ -1203,8 +1329,6 @@ export class VideoEditor implements DocEditor {
       if (!this.ovActive(o)) host.appendChild(hint('Move the playhead inside this overlay’s time range to see it on the preview.'));
     }
 
-    const actions = el('div', 'vid-props-actions');
-    actions.append(button('✂ Split at playhead', () => this.split()), button('Delete clip', () => this.deleteSelected()));
     host.appendChild(actions);
   }
 
@@ -1279,15 +1403,12 @@ export class VideoEditor implements DocEditor {
       labels.push({ cls: 'ov', text: `Overlay ${i + 1}` });
     });
 
-    if (this.extraAudio) {
+    this.audios.forEach((a, i) => {
       const row = el('div', 'vt-row audio');
-      const bar = el('div', 'vt-audio');
-      bar.style.width = `${T * pps}px`;
-      bar.textContent = `♪ ${this.extraAudioName} · ${this.replaceAudio ? 'replaces original' : 'mixed under'}`;
-      row.appendChild(bar);
+      row.appendChild(this.clipEl(a, a.start, 'au'));
       inner.appendChild(row);
-      labels.push({ cls: 'audio', text: 'Audio' });
-    }
+      labels.push({ cls: 'audio', text: `Audio ${i + 1}` });
+    });
 
     this.playheadEl = el('div', 'vt-playhead');
     inner.appendChild(this.playheadEl);
@@ -1301,15 +1422,17 @@ export class VideoEditor implements DocEditor {
     this.updatePlayhead();
   }
 
-  private clipEl(c: Clip, start: number, track: Track): HTMLElement {
-    const node = el('div', `vt-clip ${track}${c.kind === 'image' ? ' img' : ''}${this.sel?.id === c.id ? ' sel' : ''}`);
+  private clipEl(c: Clip | AudioClip, start: number, track: Track): HTMLElement {
+    const isImg = 'kind' in c && c.kind === 'image';
+    const node = el('div', `vt-clip ${track}${isImg ? ' img' : ''}${this.sel?.id === c.id ? ' sel' : ''}`);
     node.dataset.id = c.id;
     node.style.left = `${start * this.pps}px`;
     node.style.width = `${Math.max(6, len(c) * this.pps)}px`;
-    const th = this.thumbFor(c);
+    const th = 'kind' in c ? this.thumbFor(c) : null;
     if (th) node.style.backgroundImage = `url("${th}")`;
     const name = el('span', 'vt-clip-name');
-    name.textContent = `${c.name} · ${fmtT(len(c))}`;
+    const sp = 'speed' in c && c.speed !== 1 ? ` · ${c.speed.toFixed(2)}x` : '';
+    name.textContent = `${track === 'au' ? '♪ ' : ''}${c.name} · ${fmtT(len(c))}${sp}`;
     const l = el('div', 'vt-handle l'); l.dataset.side = 'l'; l.title = 'Drag to trim start';
     const r = el('div', 'vt-handle r'); r.dataset.side = 'r'; r.title = 'Drag to trim end';
     node.append(name, l, r);
@@ -1352,9 +1475,9 @@ export class VideoEditor implements DocEditor {
     if (side) {
       this.drag = {
         kind: 'trim', id: f.item.id, side, x0: x, in0: f.item.in, out0: f.item.out,
-        start0: f.track === 'ov' ? f.item.start : 0, hist: false,
+        start0: f.track === 'main' ? 0 : f.item.start, hist: false,
       };
-    } else if (f.track === 'ov') {
+    } else if (f.track !== 'main') {
       this.drag = { kind: 'moveOv', id: f.item.id, x0: x, start0: f.item.start, hist: false };
       this.seek(x / this.pps);
     } else {
@@ -1378,26 +1501,35 @@ export class VideoEditor implements DocEditor {
     const f = this.find(d.id);
     if (!f) return;
     if (!d.hist) { this.pushHistory(); d.hist = true; }
-    if (d.kind === 'moveOv' && f.track === 'ov') {
+    if (d.kind === 'moveOv' && f.track !== 'main') {
       const o = f.item;
-      o.start = clamp(d.start0 + dt, 0, Math.max(0, this.total() - len(o)));
+      const L = len(o);
+      const pts = this.snapTargets(o.id);
+      let st = d.start0 + dt;
+      const sStart = this.snapTo(st, pts);
+      st = sStart !== st ? sStart : this.snapTo(st + L, pts) - L;
+      o.start = clamp(st, 0, Math.max(0, this.total() - L));
       this.seek(o.start);
     } else if (d.kind === 'trim') {
       if (f.track === 'main') {
         const c = f.item;
-        if (d.side === 'l') { c.in = clamp(d.in0 + dt, 0, d.out0 - MIN_LEN); this.seek(this.startOf(c)); }
-        else { c.out = clamp(d.out0 + dt, d.in0 + MIN_LEN, c.srcDur); this.seek(this.startOf(c) + len(c) - 0.001); }
+        const ds = dt * c.speed;
+        if (d.side === 'l') { c.in = clamp(d.in0 + ds, 0, d.out0 - MIN_LEN); this.seek(this.startOf(c)); }
+        else { c.out = clamp(d.out0 + ds, d.in0 + MIN_LEN, c.srcDur); this.seek(this.startOf(c) + len(c) - 0.001); }
       } else {
         const o = f.item;
+        const pts = this.snapTargets(o.id);
         if (d.side === 'l') {
-          let k = Math.max(dt, -d.in0, -d.start0);
+          const want = this.snapTo(d.start0 + dt, pts) - d.start0;
+          let k = Math.max(want, -d.in0, -d.start0);
           k = Math.min(k, d.out0 - d.in0 - MIN_LEN);
           o.in = d.in0 + k;
           o.start = d.start0 + k;
           this.seek(o.start);
         } else {
           const maxOut = Math.max(d.in0 + MIN_LEN, Math.min(o.srcDur, d.in0 + this.total() - d.start0));
-          o.out = clamp(d.out0 + dt, d.in0 + MIN_LEN, maxOut);
+          const endT = this.snapTo(d.start0 + (d.out0 - d.in0) + dt, pts);
+          o.out = clamp(d.in0 + (endT - d.start0), d.in0 + MIN_LEN, maxOut);
           this.seek(o.start + len(o) - 0.001);
         }
       }
@@ -1489,6 +1621,7 @@ export class VideoEditor implements DocEditor {
     if (tgt.closest('input, textarea, select, button, [contenteditable="true"]')) return;
     if (e.key === ' ') { e.preventDefault(); this.setPlaying(!this.playing); }
     else if (e.key === 's' || e.key === 'S') { e.preventDefault(); this.split(); }
+    else if (e.key === 'd' || e.key === 'D') { e.preventDefault(); this.duplicateSelected(); }
     else if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel) { e.preventDefault(); this.deleteSelected(); }
   };
 
@@ -1531,6 +1664,23 @@ export class VideoEditor implements DocEditor {
       m.remove();
       this.media.delete(id);
     }
+    const liveAu = new Set(this.audios.map((a) => a.id));
+    for (const [id, a] of this.audioEls) {
+      if (liveAu.has(id)) continue;
+      a.pause();
+      a.removeAttribute('src');
+      this.audioEls.delete(id);
+    }
+  }
+
+  private audioFor(a: AudioClip): HTMLAudioElement {
+    let m = this.audioEls.get(a.id);
+    if (!m) {
+      m = new Audio(this.urlFor(a.blob));
+      m.preload = 'auto';
+      this.audioEls.set(a.id, m);
+    }
+    return m;
   }
 
   private tick = (ts: number): void => {
@@ -1548,7 +1698,7 @@ export class VideoEditor implements DocEditor {
           if (v.currentTime >= cur.clip.out - 0.03 || v.ended) {
             this.t = cur.start + len(cur.clip) + 1e-4;
           } else {
-            const derived = cur.start + (v.currentTime - cur.clip.in);
+            const derived = cur.start + (v.currentTime - cur.clip.in) / cur.clip.speed;
             if (derived >= this.t - 0.3) this.t = Math.max(this.t, derived);
           }
         } else {
@@ -1576,18 +1726,19 @@ export class VideoEditor implements DocEditor {
     const cur = this.mainAt(this.t);
     const next = cur ? this.main[cur.index + 1] : undefined;
     const rate = this.speed;
-    const mainMuted = this.mute || (!!this.extraAudio && this.replaceAudio);
+    const mainMuted = this.mute || this.muteOriginal;
     let s = 0;
     for (const c of this.main) {
       const m = this.mediaFor(c);
       const start = s;
       s += len(c);
       if (!(m instanceof HTMLVideoElement)) continue;
-      if (m.playbackRate !== rate) m.playbackRate = rate;
+      const r = clamp(rate * c.speed, 0.0625, 16);
+      if (m.playbackRate !== r) m.playbackRate = r;
       m.muted = mainMuted;
-      m.volume = Math.min(1, this.volume);
+      m.volume = Math.min(1, this.volume * c.volume);
       if (cur && c === cur.clip) {
-        const local = Math.min(c.in + (this.t - start), c.out - 0.04);
+        const local = Math.min(c.in + (this.t - start) * c.speed, c.out - 0.04);
         this.syncVideo(m, local, this.playing, false);
       } else {
         if (!m.paused) m.pause();
@@ -1599,19 +1750,28 @@ export class VideoEditor implements DocEditor {
       if (!(m instanceof HTMLVideoElement)) continue;
       if (m.playbackRate !== rate) m.playbackRate = rate;
       m.muted = this.mute || !o.audio;
+      m.volume = Math.min(1, this.volume * o.volume);
       if (this.ovActive(o)) this.syncVideo(m, o.in + (this.t - o.start), this.playing, true);
       else if (!m.paused) m.pause();
     }
-    const bg = this.bgEl;
-    if (bg) {
-      bg.muted = this.mute;
-      bg.volume = this.replaceAudio ? 1 : 0.5;
-      const local = this.t / this.speed;
-      const has = isFinite(bg.duration) ? local < bg.duration : true;
-      if (this.playing && has) {
-        if (bg.paused) { bg.currentTime = local; void bg.play().catch(() => {}); }
-        else if (Math.abs(bg.currentTime - local) > 0.3) bg.currentTime = local;
-      } else if (!bg.paused) bg.pause();
+    for (const a of this.audios) {
+      const m = this.audioFor(a);
+      if (m.playbackRate !== rate) m.playbackRate = rate;
+      m.muted = this.mute;
+      const into = this.t - a.start;
+      const d = len(a);
+      let g = a.volume;
+      if (a.fadeIn > 0 && into < a.fadeIn) g *= Math.max(0, into / a.fadeIn);
+      if (a.fadeOut > 0 && d - into < a.fadeOut) g *= Math.max(0, (d - into) / a.fadeOut);
+      m.volume = clamp(g * this.volume, 0, 1);
+      if (this.ovActive(a)) {
+        const local = a.in + into;
+        if (m.readyState < 1) continue;
+        if (this.playing) {
+          if (m.paused) { m.currentTime = local; void m.play().catch(() => {}); }
+          else if (Math.abs(m.currentTime - local) > 0.3) m.currentTime = local;
+        } else if (!m.paused) m.pause();
+      } else if (!m.paused) m.pause();
     }
   }
 
@@ -1926,5 +2086,21 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const id = setTimeout(() => reject(new Error('timeout')), ms);
     p.then((v) => { clearTimeout(id); resolve(v); }, (e) => { clearTimeout(id); reject(e); });
+  });
+}
+
+function cloneTimed<X extends Timed>(o: X, id: string): X {
+  return 'box' in o
+    ? { ...o, id, box: { ...o.box }, crop: o.crop && { ...o.crop } }
+    : { ...o, id };
+}
+
+function probeAudioDuration(url: string): Promise<number> {
+  const a = new Audio();
+  a.preload = 'metadata';
+  a.src = url;
+  return withTimeout(once(a, 'loadedmetadata'), 10000).then(() => {
+    if (!isFinite(a.duration) || a.duration <= 0) throw new Error('bad audio');
+    return a.duration;
   });
 }

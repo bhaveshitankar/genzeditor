@@ -84,7 +84,7 @@
 .vt-label.ruler, .vt-ruler { height: 22px; }
 .vt-label.main, .vt-row.main { height: 58px; }
 .vt-label.ov, .vt-row.ov { height: 44px; }
-.vt-label.audio, .vt-row.audio { height: 30px; }
+.vt-label.audio, .vt-row.audio { height: 34px; }
 
 .vt-ruler {
   position: relative;
@@ -120,6 +120,11 @@
   cursor: grab;
 }
 .vt-clip.ov { background-color: color-mix(in srgb, #3b82f6 60%, #000); }
+.vt-clip.au {
+  background-color: color-mix(in srgb, #10b981 60%, #000);
+  background-image: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0 2px, transparent 2px 5px);
+}
+.vt-clip.au .vt-clip-name { bottom: 3px; }
 .vt-clip.img { background-size: auto 100%; }
 .vt-clip.sel { border-color: #fff; box-shadow: 0 0 0 2px var(--brand-500); z-index: 2; }
 .vt-clip.dragging { opacity: 0.75; cursor: grabbing; z-index: 3; }
@@ -149,22 +154,6 @@
 .vt-handle.r { right: 0; }
 .vt-handle:hover, .vt-clip.sel .vt-handle { background: rgba(255, 255, 255, 0.85); }
 
-.vt-audio {
-  position: absolute;
-  top: 4px;
-  bottom: 4px;
-  left: 0;
-  box-sizing: border-box;
-  border-radius: 6px;
-  padding: 0 8px;
-  font-size: 11px;
-  line-height: 22px;
-  color: #fff;
-  background: color-mix(in srgb, #10b981 60%, #000);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .vt-playhead {
   position: absolute;
   top: 0;
