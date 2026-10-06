@@ -178,12 +178,21 @@ export class DocxEditor implements DocEditor {
       if (tag in headingMap) {
         blocks.push(new Paragraph({ heading: headingMap[tag], alignment: alignOf(el), children: runsFrom(el) }));
       } else if (tag === 'ul' || tag === 'ol') {
-        el.querySelectorAll(':scope > li').forEach((li) => {
-          blocks.push(new Paragraph({
-            children: runsFrom(li), alignment: alignOf(li as HTMLElement),
-            ...(tag === 'ul' ? { bullet: { level: 0 } } : { numbering: { reference: 'num', level: 0 } }),
-          }));
-        });
+        const walkList = (listEl: Element, level: number) => {
+          listEl.querySelectorAll(':scope > li').forEach((li) => {
+            const level0 = level === 0;
+            const children = runsFrom(li);
+            blocks.push(new Paragraph({
+              children, alignment: alignOf(li as HTMLElement),
+              ...(tag === 'ul' ? { bullet: { level } } : { numbering: { reference: 'num', level } }),
+            }));
+            // Handle nested lists
+            li.querySelectorAll(':scope > ul, :scope > ol').forEach((sublist) => {
+              walkList(sublist as Element, level + 1);
+            });
+          });
+        };
+        walkList(el, 0);
       } else {
         blocks.push(new Paragraph({ alignment: alignOf(el), children: runsFrom(el) }));
       }
