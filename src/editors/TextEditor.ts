@@ -10,6 +10,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import { autocompletion, type CompletionSource } from '@codemirror/autocomplete';
 import type { FileKind } from '../store/types';
+import { copyText, pasteText, showClipboardFeedback } from '../utils/clipboard';
 
 // A fast synchronous guess so the editor is highlighted immediately; the exact
 // grammar (by filename) is loaded asynchronously and swapped in via a compartment.
@@ -130,6 +131,37 @@ export class TextEditor {
   getValue() { return this.view.state.doc.toString(); }
   setValue(v: string) { this.view.dispatch({ changes: { from: 0, to: this.view.state.doc.length, insert: v } }); }
   openSearch() { this.view.focus(); openSearchPanel(this.view); }
+
+  async copyCode(): Promise<void> {
+    try {
+      const sel = this.view.state.selection.main;
+      const text = sel.empty
+        ? this.view.state.doc.toString()
+        : this.view.state.doc.sliceString(sel.from, sel.to);
+      await copyText(text);
+      showClipboardFeedback('Code copied');
+    } catch (err) {
+      showClipboardFeedback('Copy failed');
+    }
+  }
+
+  async pasteCode(): Promise<void> {
+    try {
+      const text = await pasteText();
+      if (!text) {
+        showClipboardFeedback('Nothing to paste');
+        return;
+      }
+      const sel = this.view.state.selection.main;
+      this.view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert: text },
+        selection: { anchor: sel.from + text.length },
+      });
+      showClipboardFeedback('Pasted');
+    } catch (err) {
+      showClipboardFeedback('Paste failed');
+    }
+  }
 
   /** Execute JavaScript code (E.2) */
   async runCode(): Promise<string> {

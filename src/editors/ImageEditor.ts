@@ -1,5 +1,6 @@
 import './styles/image.css';
 import { bindUndoKeys } from './undoKeys';
+import { copyBlob, pasteBlob, showClipboardFeedback } from '../utils/clipboard';
 
 // Picsart-inspired, fully client-side image editor (vanilla TS, no framework).
 // open() builds the entire UI inside a container; export() flattens all layers
@@ -1330,6 +1331,34 @@ export class ImageEditor {
   }
 
   // ---- Public API ----
+
+  async copyImage(): Promise<void> {
+    try {
+      const blob = await this.export();
+      if (!blob) {
+        showClipboardFeedback('Export failed');
+        return;
+      }
+      await copyBlob(blob.blob);
+      showClipboardFeedback('Image copied');
+    } catch (err) {
+      showClipboardFeedback('Copy failed');
+    }
+  }
+
+  async pasteImage(): Promise<void> {
+    try {
+      const blob = await pasteBlob();
+      if (!blob) {
+        showClipboardFeedback('No image in clipboard');
+        return;
+      }
+      await this.addImageLayer(blob);
+      showClipboardFeedback('Image pasted as layer');
+    } catch (err) {
+      showClipboardFeedback('Paste failed');
+    }
+  }
 
   async export(): Promise<{ blob: Blob; contentType: string } | null> {
     const flat = document.createElement('canvas');
