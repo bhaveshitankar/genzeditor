@@ -52,7 +52,8 @@ interface StrokeLayer { id: string; kind: 'brush' | 'eraser'; points: Point[]; c
 interface TextLayer { id: string; kind: 'text'; x: number; y: number; text: string; size: number; color: string; bold: boolean; opacity?: number; }
 interface ShapeLayer { id: string; kind: 'rect' | 'ellipse' | 'arrow'; x: number; y: number; w: number; h: number; color: string; strokeWidth: number; fill: boolean; opacity?: number; }
 interface StickerLayer { id: string; kind: 'sticker'; x: number; y: number; size: number; emoji: string; opacity?: number; }
-type Layer = StrokeLayer | TextLayer | ShapeLayer | StickerLayer;
+interface ImageLayer { id: string; kind: 'image'; canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number; opacity?: number; }
+type Layer = StrokeLayer | TextLayer | ShapeLayer | StickerLayer | ImageLayer;
 
 interface EditorState {
   base: HTMLCanvasElement; // current base pixels (post crop/rotate/resize/flip)
@@ -170,7 +171,16 @@ export class ImageEditor {
     return {
       base,
       adjustments: { ...this.state.adjustments },
-      layers: this.state.layers.map((l) => structuredClone(l)),
+      layers: this.state.layers.map((l) => {
+        if (l.kind === 'image') {
+          const canvas = document.createElement('canvas');
+          canvas.width = l.canvas.width;
+          canvas.height = l.canvas.height;
+          canvas.getContext('2d')!.drawImage(l.canvas, 0, 0);
+          return { ...l, canvas };
+        }
+        return structuredClone(l);
+      }),
     };
   }
 
@@ -320,6 +330,8 @@ export class ImageEditor {
       ctx.textBaseline = 'top';
       ctx.font = `${l.size}px system-ui, sans-serif`;
       ctx.fillText(l.emoji, l.x, l.y);
+    } else if (l.kind === 'image') {
+      ctx.drawImage(l.canvas, l.x, l.y, l.w, l.h);
     } else if (l.kind === 'rect' || l.kind === 'ellipse' || l.kind === 'arrow') {
       ctx.strokeStyle = l.color;
       ctx.fillStyle = l.color;
@@ -370,6 +382,7 @@ export class ImageEditor {
     }
     if (l.kind === 'text') { const m = this.measure(this.canvas.getContext('2d')!, l); return { x: l.x, y: l.y, w: m.w, h: m.h }; }
     if (l.kind === 'sticker') return { x: l.x, y: l.y, w: l.size, h: l.size };
+    if (l.kind === 'image') return { x: l.x, y: l.y, w: l.w, h: l.h };
     if (l.kind === 'rect' || l.kind === 'ellipse' || l.kind === 'arrow') {
       const x = Math.min(l.x, l.x + l.w), y = Math.min(l.y, l.y + l.h);
       return { x, y, w: Math.abs(l.w), h: Math.abs(l.h) };
@@ -1165,6 +1178,21 @@ export class ImageEditor {
 
   private buildLayersPanel(host: HTMLElement): void {
     host.appendChild(title('Layers'));
+    const row = el('div', 'img-row');
+    const addImgBtn = button('Add image', 'img-btn');
+    addImgBtn.onclick = (): void => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async (): Promise<void> => {
+        const f = input.files?.[0];
+        if (f) await this.addImageLayer(f);
+      };
+      input.click();
+    };
+    row.appendChild(addImgBtn);
+    host.appendChild(row);
+
     const list = el('ul', 'img-layers');
     // Top-most first for a natural stacking view.
     [...this.state.layers].reverse().forEach((l) => {
@@ -1208,7 +1236,7 @@ export class ImageEditor {
       host.appendChild(field);
     }
 
-    if (this.state.layers.length === 0) host.appendChild(note('No overlay layers yet. Add text, shapes, brush strokes or stickers.'));
+    if (this.state.layers.length === 0) host.appendChild(note('No overlay layers yet. Add text, shapes, brush strokes, stickers or images.'));
   }
 
   private layerName(l: Layer): string {
@@ -1216,6 +1244,7 @@ export class ImageEditor {
     if (l.kind === 'sticker') return `Sticker ${l.emoji}`;
     if (l.kind === 'brush') return 'Brush stroke';
     if (l.kind === 'eraser') return 'Eraser stroke';
+    if (l.kind === 'image') return 'Image layer';
     return l.kind[0].toUpperCase() + l.kind.slice(1);
   }
 
@@ -1227,6 +1256,36 @@ export class ImageEditor {
     this.state.layers.splice(j, 0, item);
     this.render();
     this.rebuildPanel();
+  }
+
+  private async addImageLayer(file: File): Promise<void> {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      canvas.getContext('2d')!.drawImage(bitmap, 0, 0);
+      bitmap.close();
+
+      this.commit();
+      const sz = Math.min(this.state.base.width * 0.5, this.state.base.height * 0.5);
+      const layer: ImageLayer = {
+        id: uid(),
+        kind: 'image',
+        canvas,
+        x: (this.state.base.width - sz) / 2,
+        y: (this.state.base.height - sz) / 2,
+        w: sz,
+        h: sz,
+      };
+      this.state.layers.push(layer);
+      this.selectedId = layer.id;
+      this.setTool('select');
+      this.render();
+      this.rebuildPanel();
+    } catch (err) {
+      console.error('Failed to add image layer:', err);
+    }
   }
 
   private buildBgPanel(host: HTMLElement): void {

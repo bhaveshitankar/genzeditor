@@ -374,10 +374,22 @@ export class VideoEditor implements DocEditor {
         </div>
 
         <div class="vid-timeline">
-          <div class="vid-thumbs" data-role="thumbs"></div>
-          <div class="vid-track" data-role="track"><div class="vid-playhead" data-role="playhead"></div></div>
+          <div class="vid-timeline-header">
+            <div class="vid-timeline-labels">
+              <div class="vid-track-label">Video</div>
+              <div class="vid-track-label">Audio</div>
+            </div>
+            <div class="vid-timeline-tracks">
+              <div class="vid-track-group">
+                <div class="vid-thumbs" data-role="thumbs"></div>
+                <div class="vid-track vid-video-track" data-role="track"><div class="vid-playhead" data-role="playhead"></div></div>
+              </div>
+              <div class="vid-audio-track-container" data-role="audioTracks"></div>
+            </div>
+          </div>
           <div class="vid-scrub" data-role="scrub"></div>
         </div>
+        <div class="vid-seglist-label">Keep segments</div>
         <div class="vid-seglist" data-role="seglist"></div>
 
         <div class="vid-tabs" data-role="tabs">
@@ -665,6 +677,26 @@ export class VideoEditor implements DocEditor {
       el.style.left = `${(s.start / d) * 100}%`;
       el.style.width = `${((s.end - s.start) / d) * 100}%`;
       this.trackEl.insertBefore(el, this.playheadEl);
+    }
+    this.renderAudioTracks();
+  }
+
+  private renderAudioTracks() {
+    const container = this.q('audioTracks') as HTMLElement;
+    container.innerHTML = '';
+    if (this.extraAudio) {
+      const track = document.createElement('div');
+      track.className = 'vid-audio-track';
+      const mode = this.replaceAudio ? 'Replace' : 'Mix under';
+      track.textContent = `🔊 ${mode}: ${this.extraAudioName || 'audio.m4a'}`;
+      container.appendChild(track);
+    } else {
+      const empty = document.createElement('div');
+      empty.style.padding = '8px';
+      empty.style.fontSize = '12px';
+      empty.style.color = 'var(--text-muted)';
+      empty.textContent = 'No audio track';
+      container.appendChild(empty);
     }
   }
 
