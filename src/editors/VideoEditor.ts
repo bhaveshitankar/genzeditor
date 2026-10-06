@@ -48,26 +48,46 @@ interface AudioClip {
   fadeOut: number;
 }
 
-type Track = 'main' | 'ov' | 'au';
-type Timed = Overlay | AudioClip;
+interface TextClip {
+  id: string;
+  text: string;
+  srcDur: number;
+  in: number;
+  out: number;
+  start: number;
+  x: number;        // normalized centre of the text in the frame
+  y: number;
+  size: number;     // font size in output-frame pixels
+  color: string;
+  bold: boolean;
+  bg: boolean;
+  bgOpacity: number;
+}
+
+type Track = 'main' | 'ov' | 'au' | 'tx';
+type Timed = Overlay | AudioClip | TextClip;
 type Fit = 'contain' | 'cover';
 type Look = 'none' | 'grayscale' | 'sepia';
 type Fmt = 'mp4' | 'webm';
 type ResPreset = 'original' | '1080p' | '720p' | '480p' | 'square' | 'vertical';
-type TextPos = 'top' | 'center' | 'bottom';
 type Layout = 'full' | 'side' | 'stack' | 'pip';
 type Sel = { track: Track; id: string } | null;
-interface Snapshot { main: Clip[]; overlays: Overlay[]; audios: AudioClip[]; mainBox: Rect; mainFit: Fit; }
+interface Snapshot { main: Clip[]; overlays: Overlay[]; audios: AudioClip[]; texts: TextClip[]; mainBox: Rect; mainFit: Fit; }
 type Drag =
   | { kind: 'scrub' }
   | { kind: 'trim'; id: string; side: 'l' | 'r'; x0: number; in0: number; out0: number; start0: number; hist: boolean }
   | { kind: 'moveOv'; id: string; x0: number; start0: number; hist: boolean }
   | { kind: 'reorder'; id: string; x0: number; el: HTMLElement; moved: boolean }
-  | { kind: 'box'; id: string; mode: 'move' | 'resize'; px0: number; py0: number; box0: Rect; hist: boolean };
+  | { kind: 'box'; id: string; mode: 'move' | 'resize'; px0: number; py0: number; box0: Rect; hist: boolean }
+  | { kind: 'text'; id: string; px0: number; py0: number; x0: number; y0: number; hist: boolean };
 
 // drawtext needs a real font file inside the ffmpeg FS; the wasm core ships none.
 const FONT_URL = 'https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/DejaVuSans.ttf';
 const FONT_FILE = 'font.ttf';
+const FONT_BOLD_URL = 'https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/DejaVuSans-Bold.ttf';
+const FONT_BOLD_FILE = 'font-bold.ttf';
+const TEXT_DEFAULT_DUR = 3;
+const TEXT_MAX_DUR = 3600;
 const FPS = 30;
 const MIN_LEN = 0.1;
 const IMAGE_DEFAULT_DUR = 3;
@@ -122,14 +142,12 @@ export class VideoEditor implements DocEditor {
   private contrast = 1;
   private saturation = 1;
   private look: Look = 'none';
-  private text = '';
-  private textPos: TextPos = 'bottom';
-  private textColor = '#ffffff';
-  private textSize = 36;
   private mute = false;
   private volume = 1;
   private muteOriginal = false;            // drop the video clips' own sound
   private audios: AudioClip[] = [];
+  private texts: TextClip[] = [];
+  private textBoxes = new Map<string, Rect>(); // last drawn text bounds (normalized), for hit-testing
   private audioEls = new Map<string, HTMLAudioElement>();
   private outFmt: Fmt = 'mp4';
   private resPreset: ResPreset = 'original';
@@ -232,16 +250,20 @@ export class VideoEditor implements DocEditor {
     return null;
   }
 
-  private find(id: string): { item: Clip; track: 'main' } | { item: Overlay; track: 'ov' } | { item: AudioClip; track: 'au' } | null {
+  private find(id: string): { item: Clip; track: 'main' } | { item: Overlay; track: 'ov' } | { item: AudioClip; track: 'au' } | { item: TextClip; track: 'tx' } | null {
     const m = this.main.find((c) => c.id === id);
     if (m) return { item: m, track: 'main' };
     const o = this.overlays.find((c) => c.id === id);
     if (o) return { item: o, track: 'ov' };
     const a = this.audios.find((c) => c.id === id);
-    return a ? { item: a, track: 'au' } : null;
+    if (a) return { item: a, track: 'au' };
+    const x = this.texts.find((c) => c.id === id);
+    return x ? { item: x, track: 'tx' } : null;
   }
 
-  private listOf(track: 'ov' | 'au'): Timed[] { return track === 'ov' ? this.overlays : this.audios; }
+  private listOf(track: 'ov' | 'au' | 'tx'): Timed[] {
+    return track === 'ov' ? this.overlays : track === 'au' ? this.audios : this.texts;
+  }
 
   private ovActive(o: Timed): boolean { return this.t >= o.start && this.t < o.start + len(o); }
 
@@ -250,7 +272,7 @@ export class VideoEditor implements DocEditor {
     const pts = [0, this.t, this.total()];
     let s = 0;
     for (const c of this.main) { s += len(c); pts.push(s); }
-    for (const o of [...this.overlays, ...this.audios]) {
+    for (const o of [...this.overlays, ...this.audios, ...this.texts]) {
       if (o.id === exceptId) continue;
       pts.push(o.start, o.start + len(o));
     }
@@ -285,6 +307,7 @@ export class VideoEditor implements DocEditor {
       main: this.main.map((c) => ({ ...c, crop: c.crop && { ...c.crop } })),
       overlays: this.overlays.map((o) => ({ ...o, crop: o.crop && { ...o.crop }, box: { ...o.box } })),
       audios: this.audios.map((a) => ({ ...a })),
+      texts: this.texts.map((x) => ({ ...x })),
       mainBox: { ...this.mainBox },
       mainFit: this.mainFit,
     };
@@ -301,6 +324,7 @@ export class VideoEditor implements DocEditor {
     this.main = s.main;
     this.overlays = s.overlays;
     this.audios = s.audios;
+    this.texts = s.texts;
     this.mainBox = s.mainBox;
     this.mainFit = s.mainFit;
     this.structureChanged();
@@ -343,7 +367,7 @@ export class VideoEditor implements DocEditor {
 
   private split(): void {
     const tr = this.sel?.track;
-    if (tr === 'ov' || tr === 'au') {
+    if (tr === 'ov' || tr === 'au' || tr === 'tx') {
       const list = this.listOf(tr);
       const idx = list.findIndex((o) => o.id === this.sel!.id);
       const o = list[idx];
@@ -360,7 +384,7 @@ export class VideoEditor implements DocEditor {
         this.structureChanged();
         return;
       }
-      if (tr === 'au') { this.setStatus('Move the playhead inside the selected audio clip to split it.'); return; }
+      if (tr !== 'ov') { this.setStatus('Move the playhead inside the selected clip to split it.'); return; }
     }
     const cur = this.mainAt(this.t, false);
     if (!cur) { this.setStatus('Move the playhead inside a clip to split it.'); return; }
@@ -413,7 +437,8 @@ export class VideoEditor implements DocEditor {
     this.pushHistory();
     if (f.track === 'main') this.main = this.main.filter((c) => c.id !== f.item.id);
     else if (f.track === 'ov') this.overlays = this.overlays.filter((c) => c.id !== f.item.id);
-    else this.audios = this.audios.filter((c) => c.id !== f.item.id);
+    else if (f.track === 'au') this.audios = this.audios.filter((c) => c.id !== f.item.id);
+    else this.texts = this.texts.filter((c) => c.id !== f.item.id);
     this.sel = null;
     this.structureChanged();
   }
@@ -439,6 +464,26 @@ export class VideoEditor implements DocEditor {
     this.sel = { track: 'au', id: added[added.length - 1]!.id };
     this.setStatus(`Added ${added.length} audio clip${added.length > 1 ? 's' : ''}. Drag to move, drag edges to trim; overlapping clips are mixed.`);
     this.structureChanged();
+  }
+
+  private addText(text = 'Your text', full = false): TextClip {
+    const T = this.total();
+    const start = full || this.t >= T - 0.5 ? 0 : this.t;
+    const dur = full ? T : Math.min(TEXT_DEFAULT_DUR, Math.max(MIN_LEN, T - start));
+    const { H } = this.frameSize();
+    const x: TextClip = {
+      id: uid(), text, srcDur: TEXT_MAX_DUR, in: 0, out: dur, start,
+      x: 0.5, y: 0.85, size: Math.max(16, Math.round(H * 0.06)), color: '#ffffff',
+      bold: true, bg: true, bgOpacity: 0.4,
+    };
+    this.pushHistory();
+    this.texts.push(x);
+    this.sel = { track: 'tx', id: x.id };
+    this.t = Math.min(start + 0.01, T);
+    this.showTab('clip');
+    this.structureChanged();
+    this.setStatus('Text added. Edit it in the Clip tab, drag it on the preview, drag its edges on the timeline to time it.');
+    return x;
   }
 
   private moveMain(dir: -1 | 1): void {
@@ -570,6 +615,7 @@ export class VideoEditor implements DocEditor {
     };
     this.overlays = this.overlays.flatMap(cut);
     this.audios = this.audios.flatMap(cut);
+    this.texts = this.texts.flatMap(cut);
   }
 
   /** Apply an AI-generated non-destructive patch. Returns a summary. */
@@ -588,7 +634,12 @@ export class VideoEditor implements DocEditor {
     const ct = num(patch.contrast); if (ct != null) { this.contrast = clamp(1 + ct / 100, 0, 2); done.push('contrast'); }
     const sa = num(patch.saturation); if (sa != null) { this.saturation = clamp(1 + sa / 100, 0, 3); done.push('saturation'); }
     if (patch.outFmt === 'mp4' || patch.outFmt === 'webm') { this.outFmt = patch.outFmt; done.push(`format ${patch.outFmt}`); }
-    if (typeof patch.text === 'string' && patch.text) { this.text = patch.text; done.push('text overlay'); }
+    if (typeof patch.text === 'string' && patch.text) {
+      const x = this.addText(patch.text, true);
+      this.undoStack.pop(); // addText pushed a second snapshot; keep one undo step for the whole patch
+      x.y = 0.88;
+      done.push('text overlay');
+    }
     this.syncControls();
     this.applyPreviewCss();
     this.structureChanged();
@@ -605,11 +656,11 @@ export class VideoEditor implements DocEditor {
     const c = this.main[0];
     const untouched = this.main.length === 1 && !!c && c.kind === 'video' && c.blob === this.blob &&
       c.in < 0.01 && c.out > c.srcDur - 0.01 && !c.crop && c.speed === 1 && c.volume === 1 &&
-      this.overlays.length === 0 && this.audios.length === 0 && !this.muteOriginal &&
+      this.overlays.length === 0 && this.audios.length === 0 && this.texts.length === 0 && !this.muteOriginal &&
       isFull(this.mainBox) && this.mainFit === 'contain';
     return !untouched || this.rotate !== 0 || this.flipH || this.flipV || this.speed !== 1 ||
       this.brightness !== 0 || this.contrast !== 1 || this.saturation !== 1 || this.look !== 'none' ||
-      !!this.text || this.mute || this.volume !== 1 ||
+      this.mute || this.volume !== 1 ||
       this.resPreset !== 'original' || this.outFmt !== this.currentFmt();
   }
 
@@ -648,19 +699,22 @@ export class VideoEditor implements DocEditor {
         }
       }
 
-      let fontReady = false;
-      if (this.text) {
+      const fonts = { regular: false, bold: false };
+      const loadFont = async (url: string, file: string): Promise<boolean> => {
         try {
-          await ff.writeFile(FONT_FILE, await fetchFile(FONT_URL));
-          written.push(FONT_FILE);
-          fontReady = true;
+          await ff.writeFile(file, await fetchFile(url));
+          written.push(file);
+          return true;
         } catch {
-          this.setStatus('Text overlay skipped: font could not be loaded.');
+          return false;
         }
-      }
+      };
+      if (this.texts.some((x) => !x.bold)) fonts.regular = await loadFont(FONT_URL, FONT_FILE);
+      if (this.texts.some((x) => x.bold)) fonts.bold = await loadFont(FONT_BOLD_URL, FONT_BOLD_FILE);
+      if (this.texts.length && !fonts.regular && !fonts.bold) this.setStatus('Text skipped: font could not be loaded.');
 
       this.setStatus('Rendering…');
-      const code = await ff.exec(this.buildArgs(fileOf, hasAudio, fontReady, outName));
+      const code = await ff.exec(this.buildArgs(fileOf, hasAudio, fonts, outName));
       written.push(outName);
       const data = await ff.readFile(outName).catch(() => null);
       if (!(data instanceof Uint8Array) || data.length === 0) {
@@ -688,8 +742,8 @@ export class VideoEditor implements DocEditor {
   // One filter graph: every clip is its own input (-ss/-t seek, so nothing is
   // decoded twice), main clips are fitted into the main box and concatenated,
   // overlays are cropped/fitted into their boxes and laid on top at their start
-  // times, then global effects (rotate, speed, colour, caption) apply to the result.
-  private buildArgs(fileOf: Map<Blob, string>, hasAudio: Map<string, boolean>, fontReady: boolean, outName: string): string[] {
+  // times, text clips are drawn, then global effects (rotate, speed, colour) apply.
+  private buildArgs(fileOf: Map<Blob, string>, hasAudio: Map<string, boolean>, fonts: { regular: boolean; bold: boolean }, outName: string): string[] {
     const { W, H } = this.frameSize();
     const T = this.total();
     const wantAudio = !this.mute;
@@ -739,7 +793,7 @@ export class VideoEditor implements DocEditor {
       base = `[b${j}]`;
       if (wantAudio && o.audio && audioOf(o)) {
         const ms = Math.round(o.start * 1000);
-        parts.push(`[${k}:a]asetpts=PTS-STARTPTS,${AFMT},volume=${f3(o.volume)},adelay=${ms}|${ms}[oa${j}]`);
+        parts.push(`[${k}:a]asetpts=PTS-STARTPTS,${AFMT},volume=${f3(o.volume)},adelay=${ms}|${ms},apad[oa${j}]`);
         ovAudio.push(`[oa${j}]`);
       }
     });
@@ -753,13 +807,18 @@ export class VideoEditor implements DocEditor {
         const fx = [`asetpts=PTS-STARTPTS`, AFMT, `volume=${f3(a.volume)}`];
         if (a.fadeIn > 0) fx.push(`afade=t=in:st=0:d=${f3(a.fadeIn)}`);
         if (a.fadeOut > 0) fx.push(`afade=t=out:st=${f3(Math.max(0, d - a.fadeOut))}:d=${f3(a.fadeOut)}`);
-        fx.push(`adelay=${ms}|${ms}`);
+        fx.push(`adelay=${ms}|${ms}`, 'apad');
         parts.push(`[${k}:a]${fx.join(',')}[ac${j}]`);
         ovAudio.push(`[ac${j}]`);
       });
     }
 
     const vf: string[] = [`trim=duration=${f3(T)}`, 'setpts=PTS-STARTPTS'];
+    // Text clips are drawn in timeline time on the unrotated frame (like the preview).
+    for (const x of this.texts) {
+      const file = x.bold ? (fonts.bold ? FONT_BOLD_FILE : fonts.regular ? FONT_FILE : '') : (fonts.regular ? FONT_FILE : fonts.bold ? FONT_BOLD_FILE : '');
+      if (file && x.text.trim()) vf.push(drawTextFilter(x, file, W, H));
+    }
     if (this.rotate === 90) vf.push('transpose=1');
     else if (this.rotate === 180) vf.push('transpose=1,transpose=1');
     else if (this.rotate === 270) vf.push('transpose=2');
@@ -771,7 +830,6 @@ export class VideoEditor implements DocEditor {
     }
     if (this.look === 'grayscale') vf.push('hue=s=0');
     else if (this.look === 'sepia') vf.push('colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131');
-    if (this.text && fontReady) vf.push(this.drawTextFilter());
     vf.push('format=yuv420p');
     parts.push(`${base}${vf.join(',')}[vout]`);
 
@@ -793,15 +851,6 @@ export class VideoEditor implements DocEditor {
     }
 
     return [...inputs, '-filter_complex', parts.join(';'), ...maps, ...this.codecArgs(), outName];
-  }
-
-  private drawTextFilter(): string {
-    const txt = this.text
-      .replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, '\u2019').replace(/%/g, '\\%');
-    const y = this.textPos === 'top' ? 'h*0.06' : this.textPos === 'center' ? '(h-text_h)/2' : 'h-text_h-h*0.06';
-    const col = this.textColor.replace('#', '0x');
-    return `drawtext=fontfile=${FONT_FILE}:text='${txt}':x=(w-text_w)/2:y=${y}` +
-      `:fontsize=${this.textSize}:fontcolor=${col}:box=1:boxcolor=black@0.4:boxborderw=8`;
   }
 
   private codecArgs(): string[] {
@@ -862,6 +911,7 @@ export class VideoEditor implements DocEditor {
           <button type="button" class="vid-btn" data-act="addClip" title="Append videos or images to the main track">+ Add video/image</button>
           <button type="button" class="vid-btn" data-act="addOverlay" title="Place another video or image on top">+ Add overlay</button>
           <button type="button" class="vid-btn" data-act="addAudio" title="Add music / voice-over clips (overlapping clips are mixed)">+ Add audio</button>
+          <button type="button" class="vid-btn" data-act="addText" title="Add a timed text / title at the playhead">+ Add text</button>
           <span class="vid-sep"></span>
           <button type="button" class="vid-btn" data-act="undo" title="Undo (Ctrl/Cmd+Z)" disabled>↶</button>
           <button type="button" class="vid-btn" data-act="redo" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>↷</button>
@@ -881,7 +931,6 @@ export class VideoEditor implements DocEditor {
           <button class="vid-tab" data-tab="transform">Transform</button>
           <button class="vid-tab" data-tab="resize">Resize</button>
           <button class="vid-tab" data-tab="adjust">Adjust</button>
-          <button class="vid-tab" data-tab="text">Text</button>
           <button class="vid-tab" data-tab="audio">Audio</button>
           <button class="vid-tab" data-tab="export">Export</button>
         </div>
@@ -933,20 +982,6 @@ export class VideoEditor implements DocEditor {
           <button type="button" class="vid-btn" data-role="lookNone">Normal</button>
           <button type="button" class="vid-btn" data-role="lookGray">Grayscale</button>
           <button type="button" class="vid-btn" data-role="lookSepia">Sepia</button>
-        </div>
-
-        <div class="vid-panel" data-panel="text">
-          <label class="vid-field">Caption
-            <input type="text" data-role="text" placeholder="Add a title…"></label>
-          <label class="vid-field">Position
-            <select data-role="textPos">
-              <option value="bottom">Bottom</option>
-              <option value="center">Center</option>
-              <option value="top">Top</option>
-            </select></label>
-          <label class="vid-field row">Color <input type="color" data-role="textColor" value="#ffffff"></label>
-          <label class="vid-field">Size <span data-role="tsVal">36</span>
-            <input type="range" data-role="textSize" min="16" max="96" step="2" value="36"></label>
         </div>
 
         <div class="vid-panel" data-panel="audio">
@@ -1024,6 +1059,7 @@ export class VideoEditor implements DocEditor {
       else if (act === 'delete') this.deleteSelected();
       else if (act === 'duplicate') this.duplicateSelected();
       else if (act === 'addAudio') this.auFile.click();
+      else if (act === 'addText') this.addText();
       else if (act === 'left') this.moveMain(-1);
       else if (act === 'right') this.moveMain(1);
       else if (act === 'addClip') this.clipFile.click();
@@ -1089,16 +1125,6 @@ export class VideoEditor implements DocEditor {
     this.q('lookGray').addEventListener('click', () => { this.look = 'grayscale'; this.syncControls(); this.applyPreviewCss(); });
     this.q('lookSepia').addEventListener('click', () => { this.look = 'sepia'; this.syncControls(); this.applyPreviewCss(); });
 
-    // Text.
-    const tx = this.q<HTMLInputElement>('text');
-    tx.addEventListener('input', () => { this.text = tx.value; });
-    const tp = this.q<HTMLSelectElement>('textPos');
-    tp.addEventListener('change', () => { this.textPos = tp.value as TextPos; });
-    const tc = this.q<HTMLInputElement>('textColor');
-    tc.addEventListener('input', () => { this.textColor = tc.value; });
-    const ts = this.q<HTMLInputElement>('textSize');
-    ts.addEventListener('input', () => { this.textSize = Number(ts.value); this.syncControls(); });
-
     // Audio.
     this.q('mute').addEventListener('click', () => { this.mute = !this.mute; this.syncControls(); });
     const vol = this.q<HTMLInputElement>('volume');
@@ -1145,8 +1171,6 @@ export class VideoEditor implements DocEditor {
     set('contrast', String(this.contrast)); txt('ctVal', this.contrast.toFixed(2));
     set('saturation', String(this.saturation)); txt('saVal', this.saturation.toFixed(2));
     on('lookNone', this.look === 'none'); on('lookGray', this.look === 'grayscale'); on('lookSepia', this.look === 'sepia');
-    set('text', this.text); set('textPos', this.textPos); set('textColor', this.textColor);
-    set('textSize', String(this.textSize)); txt('tsVal', String(this.textSize));
     on('mute', this.mute); txt('mute', this.mute ? 'All audio muted ✓' : 'Mute all audio');
     on('muteOriginal', this.muteOriginal);
     txt('muteOriginal', this.muteOriginal ? 'Original sound muted ✓' : 'Mute original video sound');
@@ -1208,6 +1232,10 @@ export class VideoEditor implements DocEditor {
       button('Duplicate', () => this.duplicateSelected()),
       button('Delete clip', () => this.deleteSelected()),
     );
+    if (f.track === 'tx') {
+      this.renderTextProps(f.item, host, actions);
+      return;
+    }
     if (f.track === 'au') {
       const a = f.item;
       const head = el('div', 'vid-props-head');
@@ -1332,6 +1360,63 @@ export class VideoEditor implements DocEditor {
     host.appendChild(actions);
   }
 
+  private renderTextProps(x: TextClip, host: HTMLElement, actions: HTMLElement): void {
+    const pct = (v: number): string => `${Math.round(v * 100)}%`;
+    const head = el('div', 'vid-props-head');
+    const title = el('strong');
+    title.textContent = 'Text';
+    const meta = el('span', 'vid-hint');
+    meta.textContent = `${fmtT(x.start)} – ${fmtT(x.start + len(x))} · ${fmtT(len(x))}`;
+    head.append(title, meta);
+
+    const g = el('div', 'vid-props-group');
+    const lab = el('label', 'vid-field vid-field-wide');
+    lab.textContent = 'Text';
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.value = x.text;
+    let editing = false;
+    inp.addEventListener('input', () => {
+      if (!editing) { this.pushHistory(); editing = true; }
+      x.text = inp.value.replace(/[\r\n]+/g, ' ');
+      this.tlDirty = true;
+    });
+    inp.addEventListener('change', () => { editing = false; });
+    lab.appendChild(inp);
+    g.appendChild(lab);
+    g.append(
+      this.slider('Size', 12, 200, 1, x.size, (v) => `${Math.round(v)}px`, (v) => { x.size = v; }),
+      this.slider('X', 0, 1, 0.01, x.x, pct, (v) => { x.x = v; }),
+      this.slider('Y', 0, 1, 0.01, x.y, pct, (v) => { x.y = v; }),
+    );
+    const color = el('label', 'vid-field row');
+    color.textContent = 'Color ';
+    const ci = document.createElement('input');
+    ci.type = 'color';
+    ci.value = x.color;
+    ci.addEventListener('focus', () => this.pushHistory(), { once: true });
+    ci.addEventListener('input', () => { x.color = ci.value; });
+    color.appendChild(ci);
+    const check = (label: string, val: boolean, set: (v: boolean) => void): HTMLElement => {
+      const l = el('label', 'vid-check');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = val;
+      cb.addEventListener('change', () => { this.pushHistory(); set(cb.checked); });
+      l.append(cb, document.createTextNode(` ${label}`));
+      return l;
+    };
+    g.append(
+      color,
+      check('Bold', x.bold, (v) => { x.bold = v; }),
+      check('Background box', x.bg, (v) => { x.bg = v; }),
+      this.slider('Box opacity', 0, 1, 0.05, x.bgOpacity, pct, (v) => { x.bgOpacity = v; }),
+    );
+    host.append(head, g);
+    if (!this.ovActive(x)) host.appendChild(hint('Move the playhead inside this text’s time range to see it on the preview.'));
+    host.appendChild(actions);
+  }
+
   private reorderOverlay(i: number, dir: number): void {
     const j = i + dir;
     if (i < 0 || j < 0 || j >= this.overlays.length) return;
@@ -1410,6 +1495,13 @@ export class VideoEditor implements DocEditor {
       labels.push({ cls: 'audio', text: `Audio ${i + 1}` });
     });
 
+    this.texts.forEach((x, i) => {
+      const row = el('div', 'vt-row text');
+      row.appendChild(this.clipEl(x, x.start, 'tx'));
+      inner.appendChild(row);
+      labels.push({ cls: 'text', text: `Text ${i + 1}` });
+    });
+
     this.playheadEl = el('div', 'vt-playhead');
     inner.appendChild(this.playheadEl);
 
@@ -1422,7 +1514,7 @@ export class VideoEditor implements DocEditor {
     this.updatePlayhead();
   }
 
-  private clipEl(c: Clip | AudioClip, start: number, track: Track): HTMLElement {
+  private clipEl(c: Clip | AudioClip | TextClip, start: number, track: Track): HTMLElement {
     const isImg = 'kind' in c && c.kind === 'image';
     const node = el('div', `vt-clip ${track}${isImg ? ' img' : ''}${this.sel?.id === c.id ? ' sel' : ''}`);
     node.dataset.id = c.id;
@@ -1432,7 +1524,8 @@ export class VideoEditor implements DocEditor {
     if (th) node.style.backgroundImage = `url("${th}")`;
     const name = el('span', 'vt-clip-name');
     const sp = 'speed' in c && c.speed !== 1 ? ` · ${c.speed.toFixed(2)}x` : '';
-    name.textContent = `${track === 'au' ? '♪ ' : ''}${c.name} · ${fmtT(len(c))}${sp}`;
+    const label = 'text' in c ? `T ${c.text || '(empty)'}` : `${track === 'au' ? '♪ ' : ''}${c.name}`;
+    name.textContent = `${label} · ${fmtT(len(c))}${sp}`;
     const l = el('div', 'vt-handle l'); l.dataset.side = 'l'; l.title = 'Drag to trim start';
     const r = el('div', 'vt-handle r'); r.dataset.side = 'r'; r.title = 'Drag to trim end';
     node.append(name, l, r);
@@ -1490,6 +1583,15 @@ export class VideoEditor implements DocEditor {
     const d = this.drag;
     if (!d) return;
     if (d.kind === 'box') { this.onBoxDrag(e, d); return; }
+    if (d.kind === 'text') {
+      const x = this.texts.find((t) => t.id === d.id);
+      if (!x) return;
+      if (!d.hist) { this.pushHistory(); d.hist = true; }
+      const p = this.canvasPt(e);
+      x.x = clamp(d.x0 + p.x - d.px0, 0, 1);
+      x.y = clamp(d.y0 + p.y - d.py0, 0, 1);
+      return;
+    }
     const x = this.tlX(e);
     if (d.kind === 'scrub') { this.seek(x / this.pps); return; }
     const dt = (x - d.x0) / this.pps;
@@ -1554,7 +1656,7 @@ export class VideoEditor implements DocEditor {
         this.t = this.startOf(this.main[target]!);
       }
       this.structureChanged();
-    } else if (d.kind === 'trim' || d.kind === 'moveOv' || d.kind === 'box') {
+    } else if (d.kind === 'trim' || d.kind === 'moveOv' || d.kind === 'box' || d.kind === 'text') {
       if (d.hist) this.structureChanged();
     }
     this.tlDirty = true;
@@ -1579,9 +1681,26 @@ export class VideoEditor implements DocEditor {
     return null;
   }
 
+  private hitText(p: { x: number; y: number }): TextClip | null {
+    for (let i = this.texts.length - 1; i >= 0; i--) {
+      const x = this.texts[i]!;
+      const b = this.textBoxes.get(x.id);
+      if (!b || !this.ovActive(x)) continue;
+      if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return x;
+    }
+    return null;
+  }
+
   private onCanvasDown = (e: PointerEvent): void => {
     if (e.button !== 0) return;
     const p = this.canvasPt(e);
+    const tx = this.hitText(p);
+    if (tx) {
+      e.preventDefault();
+      this.select({ track: 'tx', id: tx.id });
+      this.drag = { kind: 'text', id: tx.id, px0: p.x, py0: p.y, x0: tx.x, y0: tx.y, hist: false };
+      return;
+    }
     const hit = this.hitOverlay(p);
     if (hit) {
       e.preventDefault();
@@ -1595,8 +1714,9 @@ export class VideoEditor implements DocEditor {
 
   private onCanvasHover = (e: PointerEvent): void => {
     if (this.drag) return;
-    const hit = this.hitOverlay(this.canvasPt(e));
-    this.canvas.style.cursor = hit ? (hit.mode === 'resize' ? 'nwse-resize' : 'move') : 'default';
+    const p = this.canvasPt(e);
+    const hit = this.hitOverlay(p);
+    this.canvas.style.cursor = this.hitText(p) ? 'move' : hit ? (hit.mode === 'resize' ? 'nwse-resize' : 'move') : 'default';
   };
 
   private onBoxDrag(e: PointerEvent, d: Extract<Drag, { kind: 'box' }>): void {
@@ -1807,7 +1927,20 @@ export class VideoEditor implements DocEditor {
       ctx.globalAlpha = 1;
     }
 
-    if (this.text) this.drawCaption(cw, ch);
+    this.textBoxes.clear();
+    for (const x of this.texts) if (this.ovActive(x) && x.text.trim()) this.drawText(x, cw, ch);
+
+    if (this.sel?.track === 'tx') {
+      const b = this.textBoxes.get(this.sel.id);
+      if (b) {
+        ctx.save();
+        ctx.strokeStyle = '#ff4d8d';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(b.x * cw, b.y * ch, b.w * cw, b.h * ch);
+        ctx.restore();
+      }
+    }
 
     if (this.sel?.track === 'ov') {
       const o = this.overlays.find((x) => x.id === this.sel!.id);
@@ -1848,23 +1981,27 @@ export class VideoEditor implements DocEditor {
     try { this.ctx.drawImage(m, sx, sy, sw, sh, dx, dy, dw, dh); } catch { /* frame not decodable yet */ }
   }
 
-  private drawCaption(cw: number, ch: number): void {
+  // Mirrors drawTextFilter(): centred on (x, y), box padding = 25% of the font size.
+  private drawText(x: TextClip, cw: number, ch: number): void {
     const { W } = this.frameSize();
     const s = cw / W;
-    const size = this.textSize * s;
-    const pad = 8 * s;
+    const size = x.size * s;
+    const pad = Math.round(x.size * 0.25) * s;
     const ctx = this.ctx;
     ctx.save();
-    ctx.font = `${size}px "DejaVu Sans", system-ui, sans-serif`;
+    ctx.font = `${x.bold ? 'bold ' : ''}${size}px "DejaVu Sans", system-ui, sans-serif`;
     ctx.textBaseline = 'top';
-    const tw = ctx.measureText(this.text).width;
-    const x = (cw - tw) / 2;
-    const y = this.textPos === 'top' ? ch * 0.06 : this.textPos === 'center' ? (ch - size) / 2 : ch - size - ch * 0.06;
-    ctx.fillStyle = 'rgba(0,0,0,0.4)';
-    ctx.fillRect(x - pad, y - pad, tw + pad * 2, size + pad * 2);
-    ctx.fillStyle = this.textColor;
-    ctx.fillText(this.text, x, y);
+    const tw = ctx.measureText(x.text).width;
+    const left = x.x * cw - tw / 2;
+    const top = x.y * ch - size / 2;
+    if (x.bg) {
+      ctx.fillStyle = `rgba(0,0,0,${x.bgOpacity})`;
+      ctx.fillRect(left - pad, top - pad, tw + pad * 2, size + pad * 2);
+    }
+    ctx.fillStyle = x.color;
+    ctx.fillText(x.text, left, top);
     ctx.restore();
+    this.textBoxes.set(x.id, { x: (left - pad) / cw, y: (top - pad) / ch, w: (tw + pad * 2) / cw, h: (size + pad * 2) / ch });
   }
 
   // ---- Thumbnails -------------------------------------------------------------
@@ -2087,6 +2224,17 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
     const id = setTimeout(() => reject(new Error('timeout')), ms);
     p.then((v) => { clearTimeout(id); resolve(v); }, (e) => { clearTimeout(id); reject(e); });
   });
+}
+
+function drawTextFilter(x: TextClip, fontFile: string, W: number, H: number): string {
+  const txt = x.text
+    .replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, '\u2019').replace(/%/g, '\\%');
+  const col = x.color.replace('#', '0x');
+  const cx = Math.round(x.x * W), cy = Math.round(x.y * H);
+  const box = x.bg ? `:box=1:boxcolor=black@${f3(x.bgOpacity)}:boxborderw=${Math.round(x.size * 0.25)}` : '';
+  const end = x.start + len(x);
+  return `drawtext=fontfile=${fontFile}:text='${txt}':fontsize=${Math.round(x.size)}:fontcolor=${col}` +
+    `:x=${cx}-text_w/2:y=${cy}-text_h/2${box}:enable='between(t,${f3(x.start)},${f3(end)})'`;
 }
 
 function cloneTimed<X extends Timed>(o: X, id: string): X {

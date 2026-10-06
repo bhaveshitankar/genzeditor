@@ -85,6 +85,7 @@
 .vt-label.main, .vt-row.main { height: 58px; }
 .vt-label.ov, .vt-row.ov { height: 44px; }
 .vt-label.audio, .vt-row.audio { height: 34px; }
+.vt-label.text, .vt-row.text { height: 30px; }
 
 .vt-ruler {
   position: relative;
@@ -120,6 +121,8 @@
   cursor: grab;
 }
 .vt-clip.ov { background-color: color-mix(in srgb, #3b82f6 60%, #000); }
+.vt-clip.tx { background-color: color-mix(in srgb, #f59e0b 60%, #000); }
+.vt-row.text .vt-clip-name { bottom: auto; top: 50%; transform: translateY(-50%); }
 .vt-clip.au {
   background-color: color-mix(in srgb, #10b981 60%, #000);
   background-image: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.18) 0 2px, transparent 2px 5px);
@@ -239,6 +242,8 @@
   font-size: 13px;
 }
 .vid-field input[type="number"] { width: 90px; }
+.vid-field-wide { flex: 1 1 240px; }
+.vid-field-wide input[type="text"] { width: 100%; box-sizing: border-box; }
 .vid-field input[type="color"] { width: 36px; height: 28px; border: none; background: none; padding: 0; }
 .vid-hint { font-size: 12px; color: var(--text-muted); margin: 0; }
 .vid-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
