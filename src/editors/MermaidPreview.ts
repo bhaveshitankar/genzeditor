@@ -29,7 +29,9 @@ export class MermaidPreview {
     // NO allow-same-origin: keep the frame in an opaque origin.
     this.frame.setAttribute('sandbox', 'allow-scripts');
     this.frame.style.width = '100%';
+    this.frame.style.height = '100%';
     this.frame.style.border = '0';
+    this.frame.style.minHeight = '400px';
     this.frame.src = MERMAID_FRAME_URL;
     window.addEventListener('message', this.onMessage);
     host.appendChild(this.frame);

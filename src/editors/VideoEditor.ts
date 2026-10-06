@@ -169,7 +169,11 @@ export class VideoEditor implements DocEditor {
 
       await ff.exec(args);
       const data = await ff.readFile(outName);
+      if (!data || (data instanceof Uint8Array && data.length === 0)) {
+        throw new Error('ffmpeg produced no output');
+      }
       const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
+      if (bytes.length === 0) throw new Error('ffmpeg output is empty');
       const part = new Uint8Array(bytes.length);
       part.set(bytes); // detach from any SharedArrayBuffer backing
       await this.cleanupFs(ff, [inName, outName, audName, this.text ? FONT_FILE : '']);

@@ -320,18 +320,24 @@ export class DocxEditor implements DocEditor {
     this.host.innerHTML = `
       <div class="docx-editor">
         <div class="docx-toolbar" data-role="fmt">
+          <button type="button" data-cmd="undo" title="Undo (Ctrl+Z)">↶ Undo</button>
+          <button type="button" data-cmd="redo" title="Redo (Ctrl+Y)">↷ Redo</button>
+          <span class="docx-sep"></span>
           <button type="button" data-cmd="bold" title="Bold"><b>B</b></button>
           <button type="button" data-cmd="italic" title="Italic"><i>I</i></button>
           <button type="button" data-cmd="underline" title="Underline"><u>U</u></button>
           <button type="button" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
           <label class="docx-color" title="Text color">A<input type="color" data-color="foreColor" value="#111111"></label>
-          <label class="docx-color docx-hilite" title="Highlight color">▌<input type="color" data-color="hiliteColor" value="#ffe600"></label>
+          <label class="docx-color docx-hilite" title="Highlight color"><span class="docx-hilite-icon">▌</span><input type="color" data-color="hiliteColor" value="#ffe600"></label>
           <select data-role="fontsize" title="Font size">
             <option value="">Size</option>
-            <option value="1">Small</option>
-            <option value="3" selected>Normal</option>
-            <option value="5">Large</option>
-            <option value="7">Huge</option>
+            <option value="1">Small (8pt)</option>
+            <option value="2">9pt</option>
+            <option value="3" selected>Normal (12pt)</option>
+            <option value="4">14pt</option>
+            <option value="5">Large (18pt)</option>
+            <option value="6">24pt</option>
+            <option value="7">Huge (36pt)</option>
           </select>
           <span class="docx-sep"></span>
           <button type="button" data-block="h1">H1</button>
@@ -349,8 +355,11 @@ export class DocxEditor implements DocEditor {
           <button type="button" data-ins="image" title="Insert image">🖼 Image</button>
           <button type="button" data-ins="table" title="Insert table">▦ Table</button>
           <button type="button" data-ins="hr" title="Insert divider">— HR</button>
+          <button type="button" data-ins="pagesetup" title="Page setup">⚙ Setup</button>
           <button type="button" data-ins="sign" title="Insert signature">✍ Sign</button>
+          <button type="button" data-cmd="unlink" title="Remove link">🔗‌ Unlink</button>
           <button type="button" data-cmd="removeFormat" title="Clear formatting">⌫ Clear</button>
+          <button type="button" data-ins="find" title="Find & Replace">🔍 Find</button>
           <span class="docx-sep"></span>
           <button type="button" data-role="save-pdf" title="Save a copy as PDF">⤓ PDF</button>
         </div>
@@ -359,6 +368,7 @@ export class DocxEditor implements DocEditor {
       </div>`;
     this.editable = this.host.querySelector('[data-role="editable"]') as HTMLElement;
     const bar = this.host.querySelector('[data-role="fmt"]') as HTMLElement;
+    const hiliteIcon = bar.querySelector('.docx-hilite-icon') as HTMLElement;
     bar.addEventListener('mousedown', (e) => e.preventDefault()); // keep selection
     bar.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest('button');
@@ -369,9 +379,16 @@ export class DocxEditor implements DocEditor {
       const cmd = btn.getAttribute('data-cmd');
       const block = btn.getAttribute('data-block');
       this.editable.focus();
-      if (cmd) document.execCommand(cmd, false);
-      else if (block) document.execCommand('formatBlock', false, block === 'p' ? 'p' : block);
-      this.onChange();
+      if (cmd === 'undo') { document.execCommand('undo', false); this.onChange(); }
+      else if (cmd === 'redo') { document.execCommand('redo', false); this.onChange(); }
+      else if (cmd) { document.execCommand(cmd, false); this.onChange(); }
+      else if (block) { document.execCommand('formatBlock', false, block === 'p' ? 'p' : block); this.onChange(); }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (!this.editable.contains(document.activeElement)) return;
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); document.execCommand('undo', false); this.onChange(); }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); document.execCommand('redo', false); this.onChange(); }
     });
 
     // Color pickers (text + highlight): apply on input, keep selection.
@@ -379,12 +396,18 @@ export class DocxEditor implements DocEditor {
       inp.addEventListener('mousedown', () => this.saveSelection());
       inp.addEventListener('input', () => {
         const cmd = inp.getAttribute('data-color')!;
+        if (cmd === 'hiliteColor' && hiliteIcon) {
+          hiliteIcon.style.color = inp.value;
+        }
         this.restoreSelection();
         this.editable.focus();
         this.restoreSelection();
         document.execCommand(cmd, false, inp.value);
         this.onChange();
       });
+      if (inp.getAttribute('data-color') === 'hiliteColor') {
+        hiliteIcon.style.color = inp.value;
+      }
     });
 
     // Font size select.
@@ -423,12 +446,15 @@ export class DocxEditor implements DocEditor {
     sel.addRange(this.savedRange);
   }
 
-  // Insert actions: link, image, table, horizontal rule, signature.
+  // Insert actions: link, image, table, horizontal rule, signature, find/replace.
   private async insertAction(kind: string): Promise<void> {
     this.editable.focus();
     this.restoreSelection();
     if (kind === 'hr') {
       document.execCommand('insertHorizontalRule', false);
+    } else if (kind === 'find') {
+      this.openFindReplace();
+      return;
     } else if (kind === 'link') {
       const url = prompt('Link URL (https://…)');
       if (url) document.execCommand('createLink', false, url);
@@ -452,6 +478,9 @@ export class DocxEditor implements DocEditor {
     } else if (kind === 'sign') {
       await this.openSignaturePad();
       return;
+    } else if (kind === 'pagesetup') {
+      this.openPageSetup();
+      return;
     }
     this.onChange();
   }
@@ -474,6 +503,120 @@ export class DocxEditor implements DocEditor {
     };
     input.addEventListener('change', onPick);
     input.click();
+  }
+
+  // Page setup dialog.
+  private openPageSetup(): void {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <h3>Page Setup</h3>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div>
+            <label>Paper Size:</label>
+            <select class="ps-size" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+              <option value="letter">Letter (8.5" × 11")</option>
+              <option value="a4" selected>A4 (210 × 297mm)</option>
+              <option value="legal">Legal (8.5" × 14")</option>
+              <option value="tabloid">Tabloid (11" × 17")</option>
+            </select>
+          </div>
+          <div>
+            <label>Orientation:</label>
+            <select class="ps-orient" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+              <option value="portrait" selected>Portrait</option>
+              <option value="landscape">Landscape</option>
+            </select>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            <div>
+              <label>Top Margin (in):</label>
+              <input type="number" class="ps-mt" value="1" min="0" max="3" step="0.1" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+            </div>
+            <div>
+              <label>Bottom Margin (in):</label>
+              <input type="number" class="ps-mb" value="1" min="0" max="3" step="0.1" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+            </div>
+            <div>
+              <label>Left Margin (in):</label>
+              <input type="number" class="ps-ml" value="1" min="0" max="3" step="0.1" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+            </div>
+            <div>
+              <label>Right Margin (in):</label>
+              <input type="number" class="ps-mr" value="1" min="0" max="3" step="0.1" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button type="button" class="btn-confirm" data-act="apply">Apply</button>
+            <button type="button" class="btn-cancel" data-act="cancel">Close</button>
+          </div>
+        </div>
+      </div>`;
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => {
+      const act = (e.target as HTMLElement).closest('button')?.getAttribute('data-act');
+      if (e.target === overlay || act === 'cancel') return close();
+      if (act === 'apply') {
+        const page = overlay.querySelector('.docx-page') as HTMLElement;
+        const mt = parseFloat((overlay.querySelector('.ps-mt') as HTMLInputElement).value) * 96;
+        const mb = parseFloat((overlay.querySelector('.ps-mb') as HTMLInputElement).value) * 96;
+        const ml = parseFloat((overlay.querySelector('.ps-ml') as HTMLInputElement).value) * 96;
+        const mr = parseFloat((overlay.querySelector('.ps-mr') as HTMLInputElement).value) * 96;
+        const orient = (overlay.querySelector('.ps-orient') as HTMLSelectElement).value;
+        const pageStyle = `padding: ${mt}px ${mr}px ${mb}px ${ml}px; ${orient === 'landscape' ? 'max-width: 11in; height: 8.5in;' : 'max-width: 8.5in; min-height: 11in;'}`;
+        this.editable.setAttribute('style', pageStyle);
+        close();
+      }
+    });
+    this.host.ownerDocument.body.appendChild(overlay);
+  }
+
+  // Find and replace dialog.
+  private openFindReplace(): void {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <h3>Find and Replace</h3>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <input type="text" placeholder="Find text" class="fr-find" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+          <input type="text" placeholder="Replace with" class="fr-replace" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
+          <div style="display: flex; gap: 8px;">
+            <button type="button" class="btn-confirm" data-act="replace">Replace</button>
+            <button type="button" class="btn-confirm" data-act="replace-all">Replace All</button>
+            <button type="button" class="btn-cancel" data-act="cancel">Close</button>
+          </div>
+        </div>
+      </div>`;
+    const findInput = overlay.querySelector('.fr-find') as HTMLInputElement;
+    const replaceInput = overlay.querySelector('.fr-replace') as HTMLInputElement;
+    const close = () => { overlay.remove(); this.editable.focus(); };
+    const doReplace = (replaceAll: boolean) => {
+      const findText = findInput.value;
+      if (!findText) return;
+      const replaceText = replaceInput.value;
+      let count = 0;
+      const regex = new RegExp(findText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+      const html = this.editable.innerHTML.replace(regex, () => { count++; return replaceText; });
+      if (count > 0) {
+        this.editable.innerHTML = html;
+        this.onChange();
+      }
+      if (replaceAll) close();
+      else findInput.focus();
+    };
+    overlay.addEventListener('click', (e) => {
+      const act = (e.target as HTMLElement).closest('button')?.getAttribute('data-act');
+      if (e.target === overlay || act === 'cancel') return close();
+      if (act === 'replace') doReplace(false);
+      if (act === 'replace-all') doReplace(true);
+    });
+    findInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doReplace(e.shiftKey);
+    });
+    this.host.ownerDocument.body.appendChild(overlay);
+    findInput.focus();
   }
 
   // A small canvas signature pad in a modal; inserts the drawing as an inline image.

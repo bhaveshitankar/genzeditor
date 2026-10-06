@@ -16,9 +16,10 @@ async function render(source: string): Promise<void> {
   try {
     const { svg } = await mermaid.render(`d${counter++}`, source);
     container.innerHTML = svg;
+    container.style.backgroundColor = 'transparent';
   } catch (err) {
-    // Fall back to escaped plain-text so a bad diagram never injects markup.
-    container.innerHTML = `<pre>${escapeHtml(String(err))}</pre>`;
+    const msg = String(err);
+    container.innerHTML = `<div style="padding: 16px; background: #fee; border: 1px solid #fcc; border-radius: 4px; color: #c00; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word;"><strong>Error:</strong> ${escapeHtml(msg)}</div>`;
   }
 }
 
