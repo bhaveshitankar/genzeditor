@@ -161,7 +161,7 @@ export class MobileChrome implements ShellChrome {
         <input type="checkbox" class="m-switch" data-act="telemetry">
       </label>
       <a class="m-menu-row" href="/privacy.html" target="_blank" rel="noopener">${icon('hardDrive', 20)}<span>Privacy</span></a>
-      // <a class="m-menu-row" href="https://genzeditor.com/?desktop=1">${icon('maximize', 20)}<span>Use desktop version</span></a>
+      <!-- <a class="m-menu-row" href="https://genzeditor.com/?desktop=1">${icon('maximize', 20)}<span>Use desktop version</span></a> -->
       <p class="m-version"></p>`;
     (menu.querySelector('.m-version') as HTMLElement).textContent = `Version ${appVersion()}`;
     const auth = root.querySelector('[data-role="auth-bar"]');
