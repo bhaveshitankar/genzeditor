@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacy — GenZ Editor</title>
+<style>body{font:16px/1.6 system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 20px;color:#1f2937}h1{font-size:1.6rem}h2{font-size:1.1rem;margin-top:1.6rem}code{background:#f3f4f6;padding:0 4px;border-radius:4px}</style>
+</head><body>
+<h1>Privacy notice</h1>
+<p>GenZ Editor works locally: files you open or create stay in your browser's storage on your device and are never uploaded unless you choose to share them.</p>
+
+<h2>What we store when you share</h2>
+<ul>
+  <li><strong>The shared file</strong> (gzip-compressed). If you set a password it is encrypted in your browser first (AES-256-GCM); we only hold ciphertext and never receive the password. Protected files are stored under a generic title.</li>
+  <li><strong>File metadata</strong>: type, size, title (unless password protected), creation and expiry time, access level.</li>
+  <li><strong>Abuse-prevention keys</strong>: a keyed hash (HMAC) of your IP address and of a random device ID kept in your browser. We never store the raw IP or device ID. These counters are deleted after at most 2 days.</li>
+  <li><strong>Account data</strong> (only if you sign in): your email address and session.</li>
+</ul>
+
+<h2>Why (legal basis)</h2>
+<p>Shared files are processed to provide the sharing feature you request (contract, Art. 6(1)(b) GDPR). Hashed IP/device counters protect the service against abuse (legitimate interest, Art. 6(1)(f)).</p>
+
+<h2>How long</h2>
+<ul>
+  <li>Shared files: 7 days for guests, 30 days for signed-in users, then deleted automatically.</li>
+  <li>Rate-limit counters: up to 2 days.</li>
+  <li>Limits: files up to 20 MB, 10 new links per day per IP and device.</li>
+</ul>
+
+<h2>Your rights</h2>
+<p>You can delete a shared file at any time with <strong>Stop sharing</strong> in the file's Inspector panel, which removes it from our storage immediately. You can request access, correction, deletion or export of account data, or object to processing, by contacting the site operator. You may also lodge a complaint with your data protection authority.</p>
+
+<h2>Processors</h2>
+<p>Hosting and database: Cloudflare. File storage: Filebase (S3-compatible). Data may be processed outside the EU under standard contractual clauses.</p>
+
+<h2>No tracking</h2>
+<p>We don't use advertising or analytics cookies. Only an essential session cookie is set when you sign in.</p>
+<p><a href="/">← Back to the editor</a></p>
+</body></html>

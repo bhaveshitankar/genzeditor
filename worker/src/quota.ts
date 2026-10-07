@@ -1,7 +1,7 @@
 // worker/src/quota.ts
 export const CAP_ANON = 500 * 1024 * 1024;
 export const CAP_USER = 700 * 1024 * 1024;
-export const MAX_FILE = 500 * 1024 * 1024;
+export const MAX_FILE = 20 * 1024 * 1024;
 
 export function capFor(isLoggedIn: boolean): number {
   return isLoggedIn ? CAP_USER : CAP_ANON;

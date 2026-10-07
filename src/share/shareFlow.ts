@@ -3,6 +3,8 @@ import * as defaultApi from '../api/client';
 import { compressBlob } from './compress';
 import { encryptBlob } from './crypto';
 
+export const MAX_SHARE_BYTES = 20 * 1024 * 1024;
+
 export interface ShareContext {
   kind: FileKind;
   text?: string;
@@ -37,6 +39,8 @@ export async function shareFile(
   if (ctx.wantRw && !ctx.isLoggedIn) return { needLogin: 'Sign in to create editable (read-write) links.' };
 
   const access: 'ro' | 'rw' = ctx.wantRw ? 'rw' : 'ro';
+  const rawSize = ctx.blob?.size ?? new TextEncoder().encode(ctx.text ?? '').length;
+  if (rawSize > MAX_SHARE_BYTES) throw new Error('file_too_large');
   let blob = await compressBlob(ctx.blob ?? new Blob([ctx.text ?? ''], { type: ctx.contentType }));
   // Protected shares keep the real name inside the ciphertext; the server only
   // gets a generic title (with the extension, so the file type still resolves).

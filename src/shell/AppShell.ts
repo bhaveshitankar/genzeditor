@@ -18,7 +18,7 @@ import { GameEditor } from '../editors/GameEditor';
 import { FloorPlanEditor } from '../editors/FloorPlanEditor';
 import { CommandPalette } from '../ui/CommandPalette';
 import { lineDiff } from '../diff/lineDiff';
-import { getMe, signOut, type MeState } from '../api/client';
+import { getMe, signOut, type MeState, deleteShare } from '../api/client';
 import { renderAuthBar, openSignInModal } from '../auth/authUi';
 import { shareFile } from '../share/shareFlow';
 import { saveBackShared } from '../share/openShared';
@@ -504,6 +504,7 @@ export class AppShell {
             <li data-f="where"></li>
             <li data-f="keep"></li>
             <li data-f="who"></li>
+            <li data-f="data"></li>
           </ul>
           <label class="share-pw-toggle"><input type="checkbox" data-role="pw-on"> Protect with a password</label>
           <div class="share-pw" hidden>
@@ -522,6 +523,7 @@ export class AppShell {
       q('.share-note').textContent = 'Sharing uploads a copy of this file to our server so it can be opened from a link.';
       q('[data-f="where"]').textContent = 'Your file leaves this device and is stored on our cloud storage.';
       q('[data-f="keep"]').textContent = `We keep it for ${days} days${this.meState.authenticated ? '' : ' (30 days when signed in)'}, then delete it automatically.`;
+      q('[data-f="data"]').innerHTML = 'Max 20 MB, 10 new links per day. We store only the file, its type/size and an anonymised (hashed) IP/device ID to prevent abuse — no tracking. Delete it anytime with “Stop sharing”. <a href="/privacy.html" target="_blank" rel="noopener">Privacy</a>';
       q('[data-f="who"]').textContent = wantRw
         ? 'Anyone with the link can open and edit it.'
         : 'Anyone with the link can open it (public).';
@@ -1055,7 +1057,10 @@ export class AppShell {
     const shareRo = mk('Share link', ICON.link, 'share-btn', () => void this.handleShare(false));
     const shareRw = mk('Share editable', ICON.edit, 'share-rw-btn', () => void this.handleShare(true), 'is-accent');
 
-    grid.append(save, download, shareRo, shareRw);
+    const stop = mk('Stop sharing', ICON.link, 'stop-share-btn', () => void this.handleStopSharing(), 'is-danger');
+    if (!record.shares || record.shares.length === 0) stop.hidden = true;
+
+    grid.append(save, download, shareRo, shareRw, stop);
     panel.append(heading, meta, grid);
   }
 
@@ -1064,6 +1069,8 @@ export class AppShell {
   private syncSaveButton(hasShares: boolean) {
     const btn = this.root.querySelector<HTMLButtonElement>('[data-role="save-shares-btn"]');
     if (btn) btn.hidden = !hasShares;
+    const stop = this.root.querySelector<HTMLButtonElement>('[data-role="stop-share-btn"]');
+    if (stop) stop.hidden = !hasShares;
   }
 
   // Serialize the current editor's content once, in the shape shareFile wants.
@@ -1198,12 +1205,36 @@ export class AppShell {
     }
   }
 
+  // Right to erasure: delete this file's uploaded copies from our server now.
+  private async handleStopSharing() {
+    const record = (await this.store.list()).find((f) => f.id === this.currentFileId);
+    if (!record?.shares?.length) return;
+    const ok = await this.confirmModal({
+      title: 'Stop sharing?',
+      message: 'This deletes the uploaded copy from our server right away. Existing links will stop working. Your local file stays.',
+      confirmLabel: 'Delete from server',
+      danger: true,
+    });
+    if (!ok) return;
+    const left: ShareLink[] = [];
+    for (const sh of record.shares) {
+      try { await deleteShare(sh.shareId, this.meState.csrfToken); }
+      catch { left.push(sh); }
+    }
+    await this.store.updateMeta(record.id, { shares: left });
+    this.syncSaveButton(left.length > 0);
+    if (left.length) this.toast('Some links could not be deleted (sign in on the device that created them) — try again.', 'error', 5000);
+    else this.toast('Share links deleted from our server', 'success');
+  }
+
   // Map known Worker error codes to human-readable text.
   private friendlyShareError(err: unknown): string {
     const code = err instanceof Error ? err.message : String(err);
     switch (code) {
       case 'quota_exceeded': return 'storage quota exceeded — sign in for more, or delete a share';
-      case 'file_too_large': return 'file is too large to share';
+      case 'file_too_large': return 'files up to 20 MB can be shared';
+      case 'share_daily_limit': return 'daily limit reached (10 new links per day) — try again tomorrow';
+      case 'rate_limited': return 'too many requests — wait a minute and try again';
       case 'invalid_size': return 'nothing to share (file is empty)';
       case 'rw_requires_login': return 'sign in to create editable links';
       case 'forbidden': return 'not permitted';

@@ -3,7 +3,8 @@ import type { Env } from './env';
 import { json, error, preflight, originAllowed, isAllowedOrigin, withCors } from './http';
 import { ownerRef, ipHash } from './identity';
 import { rateLimit } from './ratelimit';
-import { createShare, confirmShare, resolveShare, initSaveBack } from './shares';
+import { createShare, confirmShare, resolveShare, initSaveBack, deleteShare } from './shares';
+import { deleteObject } from './filebase';
 import { createAuth } from './auth';
 import { normalizeEmail, isValidSyntax, domainOf, isDisposable, hasMx } from './email/validate';
 import { checkThrottle, recordStrike, clearThrottle } from './throttle';
@@ -11,6 +12,8 @@ import { verifyTurnstile } from './turnstile';
 import { runAiEdit, type AiKind } from './ai';
 
 const WINDOW = 60_000;
+const DAY = 86_400_000;
+const SHARES_PER_DAY = 10;
 
 export async function handle(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
@@ -119,6 +122,18 @@ export async function handle(req: Request, env: Env): Promise<Response> {
   if (req.method === 'POST' && path === '/api/share') {
     if (!originAllowed(req, env)) return error('bad_origin', env, 403);
     if (!(await rateLimit(env.DB, owner, 'share', 30, WINDOW)).ok) return error('rate_limited', env, 429);
+    // Daily cap per IP AND per device. Both keys are HMAC hashes — no raw IP or
+    // device id is stored. The device key mixes a client random id with the
+    // coarse platform, so clearing storage alone doesn't reset the IP cap.
+    const ip = req.headers.get('CF-Connecting-IP') ?? '0.0.0.0';
+    const ipKey = await ipHash(ip, env.IP_HASH_SECRET);
+    const rawDev = req.headers.get('X-Device-Id') ?? '';
+    const platform = req.headers.get('Sec-CH-UA-Platform') ?? (req.headers.get('User-Agent') ?? '').slice(0, 64);
+    const devKey = /^[A-Za-z0-9_-]{16,64}$/.test(rawDev)
+      ? await ipHash(`dev:${rawDev}|${platform}`, env.IP_HASH_SECRET)
+      : `nodev:${ipKey}`;
+    if (!(await rateLimit(env.DB, `ip:${ipKey}`, 'share-day', SHARES_PER_DAY, DAY)).ok) return error('share_daily_limit', env, 429);
+    if (!(await rateLimit(env.DB, `dev:${devKey}`, 'share-day', SHARES_PER_DAY, DAY)).ok) return error('share_daily_limit', env, 429);
     const b = await req.json<{ access: 'ro'|'rw'; storageKind: 'embedded'|'filebase'; contentType: string; title: string; sizeBytes: number }>();
     const r = await createShare(env, {
       ownerRef: owner, isLoggedIn: !!userId, access: b.access, storageKind: b.storageKind,
@@ -134,6 +149,15 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     const b = await req.json<{ shareId: string }>();
     const r = await confirmShare(env, b.shareId, owner);
     if (!r.ok) return error(r.error, env, 400);
+    return json({ ok: true }, env);
+  }
+
+  if (req.method === 'POST' && path === '/api/share/delete') {
+    if (!originAllowed(req, env)) return error('bad_origin', env, 403);
+    if (!(await rateLimit(env.DB, owner, 'presign', 30, WINDOW)).ok) return error('rate_limited', env, 429);
+    const b = await req.json<{ shareId: string }>();
+    const r = await deleteShare(env, String(b.shareId ?? ''), owner, (key) => deleteObject(env, key));
+    if (!r.ok) return error(r.error, env, r.status);
     return json({ ok: true }, env);
   }
 

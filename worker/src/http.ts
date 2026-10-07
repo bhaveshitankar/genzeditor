@@ -25,7 +25,7 @@ export function corsHeaders(env: Env, req?: Request): Record<string, string> {
     'Access-Control-Allow-Origin': pickOrigin(req, env),
     'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,X-CSRF-Token,X-AI-Key,X-AI-Provider',
+    'Access-Control-Allow-Headers': 'Content-Type,X-CSRF-Token,X-AI-Key,X-AI-Provider,X-Device-Id',
     'Vary': 'Origin',
   };
 }

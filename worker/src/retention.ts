@@ -47,5 +47,9 @@ export async function sweepExpired(
   ).bind(now).run();
   deletedShares += emb.meta.changes ?? 0;
 
+  // Data minimization: rate-limit counters (hashed IP/device) only need to live
+  // for their window; drop anything older than 2 days.
+  await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 86_400_000).run();
+
   return { deletedShares, deletedLedger, deletedObjects };
 }

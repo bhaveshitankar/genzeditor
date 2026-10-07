@@ -2657,3 +2657,6 @@ button, input, select, a { transition-property: background-color, border-color, 
 .share-modal input[type="password"]:focus { outline: none; border-color: var(--brand-500); }
 .share-pw-hint { font-size: 0.78rem !important; margin: 0 !important; }
 .share-pw-error { color: #ef4444 !important; font-size: 0.8rem !important; margin: 0.25rem 0 0.5rem !important; min-height: 1em; }
+.share-pw[hidden] { display: none; }
+.share-modal .share-facts a { color: var(--brand-500); }
+.file-action.is-danger { border-color: #ef4444; color: #ef4444; }

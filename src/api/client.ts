@@ -56,7 +56,7 @@ export async function createShare(
   input: { access: 'ro' | 'rw'; storageKind: 'embedded' | 'filebase'; contentType: string; title: string; sizeBytes: number },
   csrfToken?: string,
 ): Promise<{ token: string; shareId: string; uploadUrl?: string; objectKey?: string }> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const headers: Record<string, string> = { 'content-type': 'application/json', 'X-Device-Id': deviceId() };
   if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
   const res = await fetch(`${API_BASE}/api/share`, {
     method: 'POST', credentials: 'include', headers, body: JSON.stringify(input),
@@ -143,4 +143,29 @@ export async function aiEdit(input: AiEditInput, byok?: ByoKey | null): Promise<
     throw new AiError(data.error, data.limit);
   }
   return res.json();
+}
+
+// Random per-browser id used only for abuse limits (server stores an HMAC of it).
+export function deviceId(): string {
+  const KEY = 'gz-device-id';
+  try {
+    let id = localStorage.getItem(KEY);
+    if (!id || !/^[A-Za-z0-9_-]{16,64}$/.test(id)) {
+      const b = crypto.getRandomValues(new Uint8Array(18));
+      id = btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      localStorage.setItem(KEY, id);
+    }
+    return id;
+  } catch {
+    return '';
+  }
+}
+
+export async function deleteShare(shareId: string, csrfToken?: string): Promise<void> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+  const res = await fetch(`${API_BASE}/api/share/delete`, {
+    method: 'POST', credentials: 'include', headers, body: JSON.stringify({ shareId }),
+  });
+  if (!res.ok && res.status !== 404) throw new Error((await res.json() as { error: string }).error);
 }

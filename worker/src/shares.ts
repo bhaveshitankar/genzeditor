@@ -171,3 +171,22 @@ export async function initSaveBack(
 
   return { ok: true, uploadUrl };
 }
+
+// Right to erasure: the owner deletes a share early. Removes the stored object
+// first; rows are only dropped once the object is confirmed gone.
+export async function deleteShare(
+  env: Env,
+  shareId: string,
+  ownerRef: string,
+  removeObject: (key: string) => Promise<boolean>,
+): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
+  const row = await env.DB.prepare('SELECT object_key FROM shares WHERE id = ? AND owner_ref = ?')
+    .bind(shareId, ownerRef).first<{ object_key: string | null }>();
+  if (!row) return { ok: false, error: 'not_found', status: 404 };
+  if (row.object_key) {
+    if (!(await removeObject(row.object_key))) return { ok: false, error: 'delete_failed', status: 502 };
+    await env.DB.prepare('DELETE FROM quota_ledger WHERE object_key = ?').bind(row.object_key).run();
+  }
+  await env.DB.prepare('DELETE FROM shares WHERE id = ?').bind(shareId).run();
+  return { ok: true };
+}
