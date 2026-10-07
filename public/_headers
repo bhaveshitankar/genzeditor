@@ -9,9 +9,7 @@
 
 # Hashed build output never changes under the same name: cache for a year and
 # skip revalidation, so repeat visits make no requests for these files.
-/assets/*
-  Cache-Control: public, max-age=31536000, immutable
-
+# (/assets/* is set together with its CORS header below — one block per path.)
 /excalidraw-assets/*
   Cache-Control: public, max-age=31536000, immutable
 
@@ -46,3 +44,4 @@
 # non-credentialed static assets, so CORS-allowing them is safe.
 /assets/*
   Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=31536000, immutable
