@@ -7,11 +7,230 @@
   "display": "standalone",
   "background_color": "#0E0B14",
   "theme_color": "#F3F1FA",
-  "categories": ["productivity", "utilities", "developer tools"],
+  "categories": [
+    "productivity",
+    "utilities",
+    "developer tools"
+  ],
   "icons": [
-    { "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
-    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
-    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
-    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+    {
+      "src": "/favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "maskable"
+    }
+  ],
+  "launch_handler": {
+    "client_mode": [
+      "focus-existing",
+      "auto"
+    ]
+  },
+  "file_handlers": [
+    {
+      "action": "/",
+      "name": "Text & Markdown",
+      "accept": {
+        "text/plain": [
+          ".txt",
+          ".log"
+        ],
+        "text/markdown": [
+          ".md",
+          ".markdown"
+        ],
+        "text/x-mermaid": [
+          ".mmd",
+          ".mermaid"
+        ]
+      }
+    },
+    {
+      "action": "/",
+      "name": "Code & data",
+      "accept": {
+        "application/json": [
+          ".json"
+        ],
+        "text/javascript": [
+          ".js",
+          ".jsx",
+          ".ts",
+          ".tsx"
+        ],
+        "text/x-python": [
+          ".py"
+        ],
+        "text/html": [
+          ".html"
+        ],
+        "text/css": [
+          ".css"
+        ],
+        "application/xml": [
+          ".xml"
+        ],
+        "application/yaml": [
+          ".yaml",
+          ".yml"
+        ],
+        "application/toml": [
+          ".toml"
+        ],
+        "application/sql": [
+          ".sql"
+        ],
+        "text/x-shellscript": [
+          ".sh"
+        ],
+        "text/x-go": [
+          ".go"
+        ],
+        "text/x-rust": [
+          ".rs"
+        ],
+        "text/x-java": [
+          ".java"
+        ],
+        "text/x-c": [
+          ".c",
+          ".h",
+          ".cpp"
+        ]
+      }
+    },
+    {
+      "action": "/",
+      "name": "Documents",
+      "accept": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [
+          ".docx"
+        ],
+        "application/pdf": [
+          ".pdf"
+        ],
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": [
+          ".pptx"
+        ]
+      }
+    },
+    {
+      "action": "/",
+      "name": "Spreadsheets",
+      "accept": {
+        "text/csv": [
+          ".csv"
+        ],
+        "text/tab-separated-values": [
+          ".tsv"
+        ],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
+          ".xlsx"
+        ],
+        "application/vnd.ms-excel": [
+          ".xls"
+        ]
+      }
+    },
+    {
+      "action": "/",
+      "name": "Images",
+      "accept": {
+        "image/png": [
+          ".png"
+        ],
+        "image/jpeg": [
+          ".jpg",
+          ".jpeg"
+        ],
+        "image/gif": [
+          ".gif"
+        ],
+        "image/webp": [
+          ".webp"
+        ],
+        "image/bmp": [
+          ".bmp"
+        ],
+        "image/svg+xml": [
+          ".svg"
+        ]
+      }
+    },
+    {
+      "action": "/",
+      "name": "Audio",
+      "accept": {
+        "audio/mpeg": [
+          ".mp3"
+        ],
+        "audio/wav": [
+          ".wav"
+        ],
+        "audio/ogg": [
+          ".ogg",
+          ".oga"
+        ],
+        "audio/mp4": [
+          ".m4a",
+          ".aac"
+        ],
+        "audio/flac": [
+          ".flac"
+        ]
+      }
+    },
+    {
+      "action": "/",
+      "name": "Video",
+      "accept": {
+        "video/mp4": [
+          ".mp4",
+          ".m4v"
+        ],
+        "video/webm": [
+          ".webm"
+        ],
+        "video/quicktime": [
+          ".mov"
+        ],
+        "video/ogg": [
+          ".ogv"
+        ]
+      }
+    },
+    {
+      "action": "/",
+      "name": "Sketches, plans & games",
+      "accept": {
+        "application/vnd.excalidraw+json": [
+          ".excalidraw"
+        ],
+        "application/x-genz-floorplan": [
+          ".floorplan"
+        ],
+        "application/x-genz-game": [
+          ".game"
+        ]
+      }
+    }
   ]
 }

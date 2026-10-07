@@ -345,7 +345,7 @@ export class AppShell {
     });
   }
 
-  private async ingestFile(file: File) {
+  async ingestFile(file: File) {
     const result = await handleUpload(file, this.store);
     if (result.ok) {
       await this.refreshLibrary();

@@ -96,6 +96,16 @@ export async function mount(root: HTMLElement): Promise<void> {
     await shell.restoreLastFile();
   }
 
+  // Installed app (Chrome/Edge): files opened via the OS "Open with GenZ Editor"
+  // arrive through the Launch Queue declared by manifest file_handlers.
+  const lq = (window as unknown as { launchQueue?: { setConsumer(cb: (p: { files?: FileSystemFileHandle[] }) => void): void } }).launchQueue;
+  lq?.setConsumer(async (params) => {
+    for (const handle of params.files ?? []) {
+      try { await shell.ingestFile(await handle.getFile()); }
+      catch (err) { console.error('Failed to open launched file:', err); }
+    }
+  });
+
   // Clearing the hash after opening avoids re-triggering on refresh; but we
   // still listen so a link pasted into this tab opens live.
   if (typeof window !== 'undefined') {
