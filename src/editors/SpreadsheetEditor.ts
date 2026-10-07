@@ -57,7 +57,7 @@ function refToRC(ref: string): { r: number; c: number } {
 // Tokenizer for the formula mini-language. Recognises A1 refs, function
 // names, numbers and the single-char operators / punctuation.
 function tokenize(expr: string): string[] {
-  const re = /\s*([A-Za-z]+\d+|[A-Za-z]+|\d+\.?\d*|\.\d+|[-+*/(),:])/g;
+  const re = /\s*("[^"]*"|[A-Za-z]+\d+|[A-Za-z]+|\d+\.?\d*|\.\d+|>=|<=|<>|[-+*/(),:=<>])/g;
   const out: string[] = [];
   let m: RegExpExecArray | null;
   let last = 0;
@@ -66,7 +66,7 @@ function tokenize(expr: string): string[] {
     out.push(m[1]!);
     last = re.lastIndex;
   }
-  if (last !== expr.length) throw { code: 'ERR' };
+  if (expr.slice(last).trim() !== '') throw { code: 'ERR' };
   return out;
 }
 
@@ -167,6 +167,15 @@ export class SpreadsheetEditor implements DocEditor {
   private onPointerUp = () => this.handlePointerUp();
   private onKey = (e: KeyboardEvent) => this.handleWindowKey(e);
 
+  // Touch mode (phones/tablets): cells aren't contentEditable, so scrolling never
+  // pops the keyboard; editing happens in a bottom edit bar instead.
+  private touch = false;
+  private rangeMode = false;
+  private zoom = 1;
+  private statsEl?: HTMLElement;
+  private rangeBtn?: HTMLButtonElement;
+  private sheetEl?: HTMLElement;
+
   private constructor(private host: HTMLElement, isCsv: boolean) { this.isCsv = isCsv; }
 
   static async open(host: HTMLElement, blob: Blob, name: string, onChange?: () => void): Promise<SpreadsheetEditor> {
@@ -184,6 +193,8 @@ export class SpreadsheetEditor implements DocEditor {
     }
     if (ed.order.length === 0) { ed.order.push('Sheet1'); ed.sheets.set('Sheet1', [['']]); ed.bold.set('Sheet1', new Set()); }
     ed.active = ed.order[0]!;
+    ed.touch = window.matchMedia?.('(pointer: coarse)').matches || window.innerWidth < 700
+      || !!host.closest('.app-shell.is-mobile');
     ed.render();
     window.addEventListener('keydown', ed.onKey);
     return ed;
@@ -249,6 +260,12 @@ export class SpreadsheetEditor implements DocEditor {
   }
 
   private callFunc(name: string, args: Val[]): Scalar {
+    if (name.toUpperCase() === 'IF') {
+      if (args.length < 2) throw { code: 'ERR' };
+      const cond = toScalar(args[0]!);
+      const truthy = typeof cond === 'number' ? cond !== 0 : cond !== '' && cond.toUpperCase() !== 'FALSE' && cond !== '0';
+      return toScalar(truthy ? args[1]! : (args[2] ?? 0));
+    }
     const nums = numericArgs(args);
     switch (name.toUpperCase()) {
       case 'SUM': return nums.reduce((a, b) => a + b, 0);
@@ -276,6 +293,7 @@ export class SpreadsheetEditor implements DocEditor {
       if (t === '+') { next(); return toNum(parseFactor()); }
       if (t === '(') { next(); const v = parseExpr(); expect(')'); return v; }
       if (isNumTok(t)) { next(); return Number(t); }
+      if (t[0] === '"') { next(); return t.slice(1, -1); }
       if (isName(t) && tokens[pos + 1] === '(') {
         const fn = next(); next(); // consume name and '('
         const args: Val[] = [];
@@ -299,13 +317,26 @@ export class SpreadsheetEditor implements DocEditor {
       }
       return v;
     };
-    const parseExpr = (): Val => {
+    const parseAdd = (): Val => {
       let v: Val = parseTerm();
       while (peek() === '+' || peek() === '-') {
         const op = next(); const r = toNum(parseTerm());
         v = op === '+' ? toNum(v) + r : toNum(v) - r;
       }
       return v;
+    };
+    // Comparisons yield 1/0 (numeric when both sides are numbers, else text).
+    const CMP = new Set(['=', '<>', '<', '>', '<=', '>=']);
+    const parseExpr = (): Val => {
+      const left = parseAdd();
+      if (!CMP.has(peek() ?? '')) return left;
+      const op = next()!;
+      const a = toScalar(left), b = toScalar(parseAdd());
+      const na = Number(a), nb = Number(b);
+      const numeric = String(a).trim() !== '' && String(b).trim() !== '' && Number.isFinite(na) && Number.isFinite(nb);
+      const d = numeric ? na - nb : String(a).localeCompare(String(b));
+      const res = op === '=' ? d === 0 : op === '<>' ? d !== 0 : op === '<' ? d < 0 : op === '>' ? d > 0 : op === '<=' ? d <= 0 : d >= 0;
+      return res ? 1 : 0;
     };
 
     const result = parseExpr();
@@ -427,10 +458,19 @@ export class SpreadsheetEditor implements DocEditor {
       if (td) td.textContent = input.value; // show raw while editing via the bar
     });
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); this.endEdit(); this.refreshDisplays(); this.moveTo(this.sel.r + 1, this.sel.c, true); }
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (this.touch) { this.touchCommit(true); return; }
+      this.endEdit(); this.refreshDisplays(); this.moveTo(this.sel.r + 1, this.sel.c, true);
     });
     bar.append(ref, input);
-    wrap.appendChild(bar);
+    if (this.touch) {
+      wrap.classList.add('touch');
+      input.setAttribute('enterkeyhint', 'next');
+      input.placeholder = 'Tap a cell, then type here';
+    } else {
+      wrap.appendChild(bar);
+    }
 
     // --- Operations toolbar (wraps on small screens) ---
     const ops = document.createElement('div');
@@ -482,6 +522,7 @@ export class SpreadsheetEditor implements DocEditor {
 
     grid.addEventListener('scroll', () => this.positionFillHandle());
     wrap.appendChild(grid);
+    if (this.touch) wrap.appendChild(this.buildTouchBar(bar));
 
     this.host.appendChild(wrap);
     this.renderGrid();
@@ -496,8 +537,13 @@ export class SpreadsheetEditor implements DocEditor {
   }
 
   private syncBar() {
-    this.refEl.textContent = `${colLabel(this.sel.c)}${this.sel.r + 1}`;
+    const rg = this.curRange();
+    const multi = rg.r1 !== rg.r2 || rg.c1 !== rg.c2;
+    this.refEl.textContent = multi
+      ? `${colLabel(rg.c1)}${rg.r1 + 1}:${colLabel(rg.c2)}${rg.r2 + 1}`
+      : `${colLabel(this.sel.c)}${this.sel.r + 1}`;
     this.cellInput.value = this.cellValue(this.sel.r, this.sel.c);
+    this.updateStats();
   }
 
   private tdAt(r: number, c: number): HTMLElement | null {
@@ -527,6 +573,7 @@ export class SpreadsheetEditor implements DocEditor {
   private paintRange() {
     for (const el of Array.from(this.grid.querySelectorAll('td.in-range'))) el.classList.remove('in-range');
     this.paintHeaders();
+    this.updateStats();
     const rg = this.range;
     if (!rg) return;
     if (rg.r1 === rg.r2 && rg.c1 === rg.c2) return;
@@ -831,6 +878,7 @@ export class SpreadsheetEditor implements DocEditor {
       const th = document.createElement('th');
       th.textContent = colLabel(c);
       th.addEventListener('click', () => this.selectColumn(c));
+      if (this.touch) this.onLongPress(th, () => { this.selectColumn(c); this.openMoreMenu(); });
       hr.appendChild(th);
     }
     thead.appendChild(hr);
@@ -844,17 +892,27 @@ export class SpreadsheetEditor implements DocEditor {
       rh.className = 'sheet-rownum';
       rh.textContent = String(r + 1);
       rh.addEventListener('click', () => this.selectRow(r));
+      if (this.touch) this.onLongPress(rh, () => { this.selectRow(r); this.openMoreMenu(); });
       tr.appendChild(rh);
       for (let c = 0; c < this.cols; c++) {
         const td = document.createElement('td');
-        td.contentEditable = 'true';
-        td.spellcheck = false;
         td.dataset.r = String(r);
         td.dataset.c = String(c);
         const disp = this.displayValue(grid, r, c);
         td.textContent = disp;
         if (this.isFormulaError(disp)) td.dataset.err = '1';
         if (boldSet.has(r + ',' + c)) td.classList.add('bold');
+        if (this.touch) {
+          // While typing a formula, keep the bar focused so a tap inserts a ref.
+          td.addEventListener('pointerdown', (e) => { if (this.formulaEditing()) e.preventDefault(); });
+          td.addEventListener('click', () => this.touchTap(r, c));
+          td.addEventListener('dblclick', () => this.focusBar());
+          if (r === this.sel.r && c === this.sel.c) td.classList.add('sel');
+          tr.appendChild(td);
+          continue;
+        }
+        td.contentEditable = 'true';
+        td.spellcheck = false;
         td.addEventListener('focus', () => {
           this.editing = true;
           this.activelyTyping = false;
@@ -950,6 +1008,247 @@ export class SpreadsheetEditor implements DocEditor {
     }
   }
 
+  // ---- Touch mode ------------------------------------------------------------
+
+  private buildTouchBar(cellbar: HTMLElement): HTMLElement {
+    const box = document.createElement('div');
+    box.className = 'sheet-mbar';
+    const btn = (label: string, title: string, fn: () => void, cls = '') => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.title = title;
+      b.setAttribute('aria-label', title);
+      if (cls) b.className = cls;
+      // Keep the edit bar focused (keyboard stays up) when tapping controls.
+      b.addEventListener('pointerdown', (e) => e.preventDefault());
+      b.addEventListener('click', fn);
+      return b;
+    };
+    cellbar.append(
+      btn('✓', 'Save cell', () => this.touchCommit(true), 'sheet-mok'),
+      btn('✕', 'Cancel edit', () => this.touchCancel()),
+    );
+    const stats = document.createElement('div');
+    stats.className = 'sheet-mstats';
+    this.statsEl = stats;
+    const nav = document.createElement('div');
+    nav.className = 'sheet-mnav';
+    this.rangeBtn = btn('⬚ Range', 'Select range: next tap extends the selection', () => this.toggleRangeMode());
+    nav.append(
+      btn('◀', 'Move left', () => this.touchMove(0, -1)),
+      btn('▲', 'Move up', () => this.touchMove(-1, 0)),
+      btn('▼', 'Move down', () => this.touchMove(1, 0)),
+      btn('▶', 'Move right', () => this.touchMove(0, 1)),
+      this.rangeBtn,
+      btn('fx', 'Insert function', () => this.openFxMenu()),
+      btn('↶', 'Undo', () => this.undo()),
+      btn('↷', 'Redo', () => this.redo()),
+      btn('−', 'Smaller cells', () => this.setZoom(this.zoom - 0.15)),
+      btn('+', 'Bigger cells', () => this.setZoom(this.zoom + 0.15)),
+      btn('⋯', 'More actions', () => this.openMoreMenu()),
+    );
+    box.append(stats, cellbar, nav);
+    return box;
+  }
+
+  private formulaEditing(): boolean {
+    return document.activeElement === this.cellInput && this.cellInput.value.startsWith('=');
+  }
+
+  private focusBar() {
+    this.cellInput.focus();
+    const n = this.cellInput.value.length;
+    this.cellInput.setSelectionRange(n, n);
+  }
+
+  private touchTap(r: number, c: number) {
+    if (this.formulaEditing()) {
+      // Excel-style: tapping a cell while typing a formula inserts its reference.
+      const inp = this.cellInput;
+      const at = inp.selectionStart ?? inp.value.length;
+      const ref = `${colLabel(c)}${r + 1}`;
+      inp.value = inp.value.slice(0, at) + ref + inp.value.slice(inp.selectionEnd ?? at);
+      inp.setSelectionRange(at + ref.length, at + ref.length);
+      inp.dispatchEvent(new Event('input'));
+      return;
+    }
+    if (this.rangeMode) {
+      this.selFocus = { r, c };
+      this.range = this.norm(this.selAnchor, this.selFocus);
+      this.paintRange();
+      this.syncBar();
+      return;
+    }
+    this.select(r, c);
+  }
+
+  private touchCommit(moveDown: boolean) {
+    const keepFocus = document.activeElement === this.cellInput;
+    this.endEdit();
+    this.activelyTyping = false;
+    this.refreshDisplays();
+    this.onChange?.();
+    if (moveDown) this.moveTo(this.sel.r + 1, this.sel.c, false);
+    if (keepFocus) this.beginEdit();
+  }
+
+  private touchCancel() {
+    if (this.editSnapshot !== null) {
+      this.deserialize(this.editSnapshot);
+      this.editSnapshot = null;
+      const { r, c } = this.sel;
+      this.renderGrid();
+      this.select(r, c);
+    }
+    this.cellInput.blur();
+  }
+
+  private touchMove(dr: number, dc: number) {
+    const keepFocus = document.activeElement === this.cellInput;
+    this.endEdit();
+    this.refreshDisplays();
+    if (this.rangeMode) {
+      const r = Math.max(0, Math.min(this.selFocus.r + dr, this.rows - 1));
+      const c = Math.max(0, Math.min(this.selFocus.c + dc, this.cols - 1));
+      this.selFocus = { r, c };
+      this.range = this.norm(this.selAnchor, this.selFocus);
+      this.paintRange();
+      this.syncBar();
+      this.tdAt(r, c)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    } else {
+      this.moveTo(this.sel.r + dr, this.sel.c + dc, false);
+    }
+    if (keepFocus) this.beginEdit();
+  }
+
+  private toggleRangeMode() {
+    this.rangeMode = !this.rangeMode;
+    this.rangeBtn?.classList.toggle('active', this.rangeMode);
+    if (!this.rangeMode) this.select(this.sel.r, this.sel.c);
+  }
+
+  private setZoom(z: number) {
+    this.zoom = Math.max(0.7, Math.min(1.75, Math.round(z * 100) / 100));
+    this.root.style.setProperty('--sheet-zoom', String(this.zoom));
+  }
+
+  // Excel-mobile style status: sum / average / count of the numeric cells.
+  private updateStats() {
+    if (!this.statsEl) return;
+    const rg = this.curRange();
+    const cells = (rg.r2 - rg.r1 + 1) * (rg.c2 - rg.c1 + 1);
+    if (cells < 2 || cells > 20000) { this.statsEl.textContent = ''; return; }
+    const grid = this.aoa();
+    let sum = 0, n = 0, filled = 0;
+    for (let r = rg.r1; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) {
+      const v = this.displayValue(grid, r, c);
+      if (v === '') continue;
+      filled++;
+      const x = Number(v);
+      if (Number.isFinite(x)) { sum += x; n++; }
+    }
+    const f = (x: number) => String(Math.round(x * 1e6) / 1e6);
+    this.statsEl.textContent = n
+      ? `Sum ${f(sum)} · Average ${f(sum / n)} · Count ${filled}`
+      : `Count ${filled}`;
+  }
+
+  private onLongPress(el: HTMLElement, fn: () => void) {
+    let timer = 0, x = 0, y = 0;
+    const clear = () => { window.clearTimeout(timer); timer = 0; };
+    el.addEventListener('pointerdown', (e) => { x = e.clientX; y = e.clientY; clear(); timer = window.setTimeout(() => { timer = 0; fn(); }, 500); });
+    el.addEventListener('pointermove', (e) => { if (timer && Math.hypot(e.clientX - x, e.clientY - y) > 10) clear(); });
+    el.addEventListener('pointerup', clear);
+    el.addEventListener('pointercancel', clear);
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  private openSheet(title: string, items: [string, () => void][]) {
+    this.sheetEl?.remove();
+    const backdrop = document.createElement('div');
+    backdrop.className = 'sheet-msheet-backdrop';
+    const panel = document.createElement('div');
+    panel.className = 'sheet-msheet';
+    panel.setAttribute('role', 'menu');
+    const h = document.createElement('h4');
+    h.textContent = title;
+    panel.appendChild(h);
+    const close = () => { backdrop.remove(); this.sheetEl = undefined; };
+    for (const [label, fn] of items) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.setAttribute('role', 'menuitem');
+      b.addEventListener('click', () => { close(); fn(); });
+      panel.appendChild(b);
+    }
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+    backdrop.appendChild(panel);
+    this.root.appendChild(backdrop);
+    this.sheetEl = backdrop;
+  }
+
+  private openMoreMenu() {
+    const at = `${colLabel(this.sel.c)}${this.sel.r + 1}`;
+    this.openSheet(`Actions · ${at}`, [
+      ['＋ Row below', () => this.withHistory(() => this.insertRow())],
+      ['＋ Column right', () => this.withHistory(() => this.insertCol())],
+      ['✕ Delete row', () => this.withHistory(() => this.deleteRow())],
+      ['✕ Delete column', () => this.withHistory(() => this.deleteCol())],
+      ['Sort column A→Z', () => this.sortByColumn(true)],
+      ['Sort column Z→A', () => this.sortByColumn(false)],
+      ['Copy', () => this.copy()],
+      ['Paste', () => void this.paste()],
+      ['Clear cells', () => this.clearRange()],
+      ['Bold', () => this.toggleBold()],
+      ['Select row', () => this.selectRow(this.sel.r)],
+      ['Select column', () => this.selectColumn(this.sel.c)],
+    ]);
+  }
+
+  private openFxMenu() {
+    const fns = ['SUM', 'AVERAGE', 'MIN', 'MAX', 'COUNT'];
+    this.openSheet('Insert function', [
+      ...fns.map((f): [string, () => void] => [f, () => this.insertFunction(f)]),
+      ['IF', () => this.insertFunction('IF')],
+    ]);
+  }
+
+  // Put a function in the selected cell over a sensible range: the selected
+  // range (formula goes below it) or the filled cells directly above.
+  private insertFunction(fn: string) {
+    const rg = this.curRange();
+    const multi = rg.r1 !== rg.r2 || rg.c1 !== rg.c2;
+    let target = { ...this.sel };
+    let text: string;
+    if (fn === 'IF') {
+      const src = this.sel.c > 0 ? `${colLabel(this.sel.c - 1)}${this.sel.r + 1}` : `${colLabel(this.sel.c)}${Math.max(1, this.sel.r)}`;
+      text = `=IF(${src}>0,"Yes","No")`;
+    } else if (multi) {
+      target = { r: rg.r2 + 1, c: rg.c1 };
+      text = `=${fn}(${colLabel(rg.c1)}${rg.r1 + 1}:${colLabel(rg.c2)}${rg.r2 + 1})`;
+    } else {
+      const c = this.sel.c;
+      let top = this.sel.r - 1;
+      while (top >= 0 && this.cellValue(top, c) !== '') top--;
+      top++;
+      text = top <= this.sel.r - 1
+        ? `=${fn}(${colLabel(c)}${top + 1}:${colLabel(c)}${this.sel.r})`
+        : `=${fn}()`;
+    }
+    if (this.rangeMode) this.toggleRangeMode();
+    this.moveTo(target.r, target.c, false);
+    this.beginEdit();
+    this.setCellValue(this.sel.r, this.sel.c, text);
+    this.syncBar();
+    const td = this.tdAt(this.sel.r, this.sel.c);
+    if (td) td.textContent = text;
+    this.focusBar();
+    // Leave the caret inside the parentheses of an empty call.
+    if (text.endsWith('()')) this.cellInput.setSelectionRange(text.length - 1, text.length - 1);
+  }
+
   async export(): Promise<{ blob: Blob; contentType: string }> {
     // Export COMPUTED values (not raw formulas) for portability — see class doc.
     if (this.isCsv) {
@@ -979,6 +1278,7 @@ export class SpreadsheetEditor implements DocEditor {
   }
 
   destroy() {
+    this.sheetEl?.remove();
     window.removeEventListener('keydown', this.onKey);
     document.removeEventListener('pointermove', this.onPointerMove);
     document.removeEventListener('pointerup', this.onPointerUp);
