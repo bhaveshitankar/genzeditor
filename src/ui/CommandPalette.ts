@@ -89,6 +89,11 @@ export class CommandPalette {
     }
   }
 
+  /** Run a command by id (lets other UI reuse palette actions). */
+  run(id: string): void {
+    this.commands.find((c) => c.id === id)?.run();
+  }
+
   open() {
     this.overlay.style.display = 'flex';
     this.input.value = '';

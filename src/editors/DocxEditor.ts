@@ -224,120 +224,8 @@ export class DocxEditor implements DocEditor {
     const label = btn?.textContent ?? '⤓ PDF';
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     try {
-      const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
-      const pdf = await PDFDocument.create();
-      const F = {
-        normal: await pdf.embedFont(StandardFonts.Helvetica),
-        bold: await pdf.embedFont(StandardFonts.HelveticaBold),
-        italic: await pdf.embedFont(StandardFonts.HelveticaOblique),
-        boldItalic: await pdf.embedFont(StandardFonts.HelveticaBoldOblique),
-      };
-      const fontFor = (b: boolean, i: boolean) => b && i ? F.boldItalic : b ? F.bold : i ? F.italic : F.normal;
-
-      const PAGE_W = 612, PAGE_H = 792, MARGIN = 56;
-      let page = pdf.addPage([PAGE_W, PAGE_H]);
-      let y = PAGE_H - MARGIN;
-
-      interface Word { t: string; b: boolean; i: boolean }
-      // Remove all characters that WinAnsi (used by pdf-lib) cannot encode
-      // WinAnsi only supports ASCII (0x00-0x7F) and Latin-1 supplement (0x80-0xFF)
-      const sanitizeForPdf = (text: string): string => {
-        return text
-          .split('')
-          .filter(c => {
-            const code = c.charCodeAt(0);
-            // Keep ASCII (0-127) and Latin-1 (128-255)
-            return code <= 255;
-          })
-          .join('')
-          .trim();
-      };
-      // Flatten a block element into whitespace-split styled words.
-      const wordsOf = (el: HTMLElement, forceBold: boolean): Word[] => {
-        const out: Word[] = [];
-        const walk = (n: Node, b: boolean, i: boolean) => {
-          if (n.nodeType === Node.TEXT_NODE) {
-            const text = n.textContent ?? '';
-            for (const part of text.split(/(\s+)/)) {
-              if (part === '') continue;
-              const sanitized = sanitizeForPdf(part);
-              if (!sanitized) continue; // Skip if only emoji
-              out.push({ t: sanitized.replace(/\s+/g, ' '), b, i });
-            }
-            return;
-          }
-          if (n.nodeType !== Node.ELEMENT_NODE) return;
-          const tag = (n as HTMLElement).tagName.toLowerCase();
-          const nb = b || tag === 'b' || tag === 'strong';
-          const ni = i || tag === 'i' || tag === 'em';
-          n.childNodes.forEach((c) => walk(c, nb, ni));
-        };
-        walk(el, forceBold, false);
-        return out;
-      };
-
-      // Lay a run of words out with wrapping + pagination at the given size/indent.
-      const drawWords = (words: Word[], size: number, indent: number) => {
-        const lineH = size * 1.35;
-        const maxX = PAGE_W - MARGIN;
-        let x = MARGIN + indent;
-        const newline = () => {
-          y -= lineH;
-          if (y < MARGIN) { page = pdf.addPage([PAGE_W, PAGE_H]); y = PAGE_H - MARGIN; }
-          x = MARGIN + indent;
-        };
-        if (words.length === 0) { newline(); return; }
-        for (const w of words) {
-          // Double-check sanitization before rendering
-          const safText = sanitizeForPdf(w.t);
-          if (!safText) continue; // Skip if becomes empty after sanitization
-          const f = fontFor(w.b, w.i);
-          try {
-            const ww = f.widthOfTextAtSize(safText, size);
-            if (x + ww > maxX && x > MARGIN + indent) newline();
-            // A leading space at the start of a line is dropped.
-            if (!(safText === ' ' && x === MARGIN + indent)) {
-              page.drawText(safText, { x, y: y - size, size, font: f, color: rgb(0, 0, 0) });
-              x += ww;
-            }
-          } catch (err) {
-            // If there's an encoding error, skip this word
-            console.warn(`Skipping unencodable text: "${w.t}"`, err);
-          }
-        }
-        newline();
-      };
-
-      const SIZES: Record<string, number> = { h1: 22, h2: 18, h3: 15, h4: 13, h5: 12, h6: 11 };
-      let listIndex = 0;
-      for (const node of Array.from(this.editable.childNodes)) {
-        if (node.nodeType === Node.TEXT_NODE) {
-          const t = sanitizeForPdf(node.textContent ?? '').trim();
-          if (t) drawWords([{ t, b: false, i: false }], 11, 0);
-          continue;
-        }
-        if (node.nodeType !== Node.ELEMENT_NODE) continue;
-        const el = node as HTMLElement;
-        const tag = el.tagName.toLowerCase();
-        if (tag in SIZES) {
-          y -= 6; // a little space above headings
-          drawWords(wordsOf(el, true), SIZES[tag]!, 0);
-        } else if (tag === 'ul' || tag === 'ol') {
-          listIndex = 0;
-          el.querySelectorAll(':scope > li').forEach((li) => {
-            listIndex += 1;
-            const marker: Word = { t: tag === 'ul' ? '•' : `${listIndex}.`, b: false, i: false };
-            drawWords([marker, { t: ' ', b: false, i: false }, ...wordsOf(li as HTMLElement, false)], 11, 18);
-          });
-        } else {
-          drawWords(wordsOf(el, false), 11, 0);
-        }
-      }
-
-      const bytes = await pdf.save();
-      const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
       const outName = this.name.replace(/\.[^.]+$/, '') + '.pdf';
-      this.download(new Blob([ab], { type: 'application/pdf' }), outName);
+      this.download(await this.pdfBlob(), outName);
       showClipboardFeedback('PDF downloaded');
     } catch (err) {
       console.error('PDF export failed:', err);
@@ -345,6 +233,123 @@ export class DocxEditor implements DocEditor {
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = label; }
     }
+  }
+
+  /** Render the current document to a PDF blob (no download side effect). */
+  async pdfBlob(): Promise<Blob> {
+    const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
+    const pdf = await PDFDocument.create();
+    const F = {
+      normal: await pdf.embedFont(StandardFonts.Helvetica),
+      bold: await pdf.embedFont(StandardFonts.HelveticaBold),
+      italic: await pdf.embedFont(StandardFonts.HelveticaOblique),
+      boldItalic: await pdf.embedFont(StandardFonts.HelveticaBoldOblique),
+    };
+    const fontFor = (b: boolean, i: boolean) => b && i ? F.boldItalic : b ? F.bold : i ? F.italic : F.normal;
+
+    const PAGE_W = 612, PAGE_H = 792, MARGIN = 56;
+    let page = pdf.addPage([PAGE_W, PAGE_H]);
+    let y = PAGE_H - MARGIN;
+
+    interface Word { t: string; b: boolean; i: boolean }
+    // Remove all characters that WinAnsi (used by pdf-lib) cannot encode
+    // WinAnsi only supports ASCII (0x00-0x7F) and Latin-1 supplement (0x80-0xFF)
+    const sanitizeForPdf = (text: string): string => {
+      return text
+        .split('')
+        .filter(c => {
+          const code = c.charCodeAt(0);
+          // Keep ASCII (0-127) and Latin-1 (128-255)
+          return code <= 255;
+        })
+        .join('')
+        .trim();
+    };
+    // Flatten a block element into whitespace-split styled words.
+    const wordsOf = (el: HTMLElement, forceBold: boolean): Word[] => {
+      const out: Word[] = [];
+      const walk = (n: Node, b: boolean, i: boolean) => {
+        if (n.nodeType === Node.TEXT_NODE) {
+          const text = n.textContent ?? '';
+          for (const part of text.split(/(\s+)/)) {
+            if (part === '') continue;
+            const sanitized = sanitizeForPdf(part);
+            if (!sanitized) continue; // Skip if only emoji
+            out.push({ t: sanitized.replace(/\s+/g, ' '), b, i });
+          }
+          return;
+        }
+        if (n.nodeType !== Node.ELEMENT_NODE) return;
+        const tag = (n as HTMLElement).tagName.toLowerCase();
+        const nb = b || tag === 'b' || tag === 'strong';
+        const ni = i || tag === 'i' || tag === 'em';
+        n.childNodes.forEach((c) => walk(c, nb, ni));
+      };
+      walk(el, forceBold, false);
+      return out;
+    };
+
+    // Lay a run of words out with wrapping + pagination at the given size/indent.
+    const drawWords = (words: Word[], size: number, indent: number) => {
+      const lineH = size * 1.35;
+      const maxX = PAGE_W - MARGIN;
+      let x = MARGIN + indent;
+      const newline = () => {
+        y -= lineH;
+        if (y < MARGIN) { page = pdf.addPage([PAGE_W, PAGE_H]); y = PAGE_H - MARGIN; }
+        x = MARGIN + indent;
+      };
+      if (words.length === 0) { newline(); return; }
+      for (const w of words) {
+        // Double-check sanitization before rendering
+        const safText = sanitizeForPdf(w.t);
+        if (!safText) continue; // Skip if becomes empty after sanitization
+        const f = fontFor(w.b, w.i);
+        try {
+          const ww = f.widthOfTextAtSize(safText, size);
+          if (x + ww > maxX && x > MARGIN + indent) newline();
+          // A leading space at the start of a line is dropped.
+          if (!(safText === ' ' && x === MARGIN + indent)) {
+            page.drawText(safText, { x, y: y - size, size, font: f, color: rgb(0, 0, 0) });
+            x += ww;
+          }
+        } catch (err) {
+          // If there's an encoding error, skip this word
+          console.warn(`Skipping unencodable text: "${w.t}"`, err);
+        }
+      }
+      newline();
+    };
+
+    const SIZES: Record<string, number> = { h1: 22, h2: 18, h3: 15, h4: 13, h5: 12, h6: 11 };
+    let listIndex = 0;
+    for (const node of Array.from(this.editable.childNodes)) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const t = sanitizeForPdf(node.textContent ?? '').trim();
+        if (t) drawWords([{ t, b: false, i: false }], 11, 0);
+        continue;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      const el = node as HTMLElement;
+      const tag = el.tagName.toLowerCase();
+      if (tag in SIZES) {
+        y -= 6; // a little space above headings
+        drawWords(wordsOf(el, true), SIZES[tag]!, 0);
+      } else if (tag === 'ul' || tag === 'ol') {
+        listIndex = 0;
+        el.querySelectorAll(':scope > li').forEach((li) => {
+          listIndex += 1;
+          const marker: Word = { t: tag === 'ul' ? '•' : `${listIndex}.`, b: false, i: false };
+          drawWords([marker, { t: ' ', b: false, i: false }, ...wordsOf(li as HTMLElement, false)], 11, 18);
+        });
+      } else {
+        drawWords(wordsOf(el, false), 11, 0);
+      }
+    }
+
+    const bytes = await pdf.save();
+    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    return new Blob([ab], { type: 'application/pdf' });
   }
 
   private download(blob: Blob, filename: string): void {

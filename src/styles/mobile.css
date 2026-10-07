@@ -1,0 +1,595 @@
+/* Mobile app (mobile.html). Everything is scoped under html.is-mobile so the
+   desktop app is untouched. Thumb-first: 44px+ targets, safe-area insets,
+   100dvh layout, bottom sheets instead of centered modals. */
+
+html.is-mobile {
+  --m-bar-h: 56px;
+  --m-safe-top: env(safe-area-inset-top, 0px);
+  --m-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --m-safe-left: env(safe-area-inset-left, 0px);
+  --m-safe-right: env(safe-area-inset-right, 0px);
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+html.is-mobile body { overscroll-behavior: none; }
+html.is-mobile button, html.is-mobile a, html.is-mobile label { touch-action: manipulation; }
+
+/* ---------- Hide desktop chrome ---------- */
+html.is-mobile .app-ribbon,
+html.is-mobile .rail,
+html.is-mobile .inspector,
+html.is-mobile .sidebar-resizer,
+html.is-mobile .files-panel > .panel-head .select-btn,
+html.is-mobile .storage-hint,
+html.is-mobile .drop-overlay { display: none !important; }
+
+html.is-mobile .app-shell {
+  height: 100dvh;
+  padding-left: var(--m-safe-left);
+  padding-right: var(--m-safe-right);
+}
+html.is-mobile .app-body { flex: 1; min-height: 0; }
+html.is-mobile .editor-area { padding-bottom: var(--m-safe-bottom); }
+
+/* ---------- App bar ---------- */
+html.is-mobile .m-appbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: calc(var(--m-bar-h) + var(--m-safe-top));
+  padding: var(--m-safe-top) 6px 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  z-index: 30;
+}
+html.is-mobile .m-icon-btn {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+}
+html.is-mobile .m-icon-btn:active { background: var(--surface-hover); }
+html.is-mobile .m-appbar [data-act="ai"] { color: var(--brand-500); }
+html.is-mobile .m-title {
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 1.02rem;
+  font-weight: 650;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 10px;
+}
+html.is-mobile .m-title:not(:disabled):active { background: var(--surface-hover); }
+html.is-mobile .m-title.is-brand {
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 800;
+}
+
+/* Editor command strip (Format / Find / Edit·Preview…) under the app bar */
+html.is-mobile .m-tools { flex-shrink: 0; }
+html.is-mobile .m-tools .cmd-group[hidden] { display: none; }
+html.is-mobile .m-tools .cmd-group {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+html.is-mobile .m-tools .cmd-group-label { display: none; }
+html.is-mobile .m-tools .editor-tools {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 0;
+  background: none;
+  border: none;
+  width: 100%;
+}
+html.is-mobile .m-tools .editor-tools::-webkit-scrollbar { display: none; }
+html.is-mobile .m-tools .editor-tools button,
+html.is-mobile .m-tools .view-toggle button {
+  min-height: 38px;
+  padding: 0 14px;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+/* Full screen: hide app bar + strip, show a floating exit button */
+html.is-mobile .m-exit-fs { display: none; }
+html.is-mobile .app-shell.fullscreen .m-appbar,
+html.is-mobile .app-shell.fullscreen .m-tools { display: none; }
+html.is-mobile .app-shell.fullscreen .m-exit-fs {
+  display: inline-flex;
+  position: fixed;
+  top: calc(10px + var(--m-safe-top));
+  right: calc(10px + var(--m-safe-right));
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  backdrop-filter: blur(8px);
+  color: var(--text);
+  z-index: 50;
+  box-shadow: var(--shadow-lg);
+}
+
+/* ---------- Drawer (files + settings) ---------- */
+html.is-mobile .files-panel {
+  display: flex !important;
+  flex-direction: column;
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(86vw, 340px);
+  padding-top: var(--m-safe-top);
+  padding-bottom: var(--m-safe-bottom);
+  transform: translateX(-105%);
+  transition: transform 0.26s var(--ease);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  z-index: 60;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+html.is-mobile .files-panel.open { transform: none; }
+html.is-mobile .drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 12, 20, 0.5);
+  z-index: 55;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s var(--ease);
+}
+html.is-mobile .drawer-backdrop.show { opacity: 1; pointer-events: auto; }
+
+html.is-mobile .m-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 6px 4px 14px;
+}
+html.is-mobile .m-brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 1.05rem; }
+html.is-mobile .m-drawer-quick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 6px 12px 10px;
+}
+html.is-mobile .m-drawer-quick button {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+}
+html.is-mobile .m-drawer-quick button:first-child { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+html.is-mobile .files-panel > .panel-head { padding: 6px 14px 2px; }
+html.is-mobile .files-panel .panel-search { padding: 0 12px 6px; }
+html.is-mobile .files-panel .panel-search input { min-height: 44px; font-size: 16px; }
+html.is-mobile [data-role="file-drawer"] { flex: 0 0 auto; overflow: visible; padding: 0 8px; }
+html.is-mobile [data-role="file-drawer"] li { display: flex; align-items: center; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+html.is-mobile [data-role="file-drawer"] .file-item { min-height: 48px; flex: 1; font-size: 0.95rem; }
+html.is-mobile [data-role="file-drawer"] .delete-btn {
+  opacity: 0.55 !important;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+}
+
+html.is-mobile .m-drawer-menu {
+  margin-top: auto;
+  padding: 10px 8px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+html.is-mobile .m-account { padding: 4px 8px 8px; }
+html.is-mobile .m-account .auth-bar { display: flex; justify-content: flex-start; }
+html.is-mobile .m-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.95rem;
+  text-decoration: none;
+  text-align: left;
+}
+html.is-mobile .m-menu-row:active { background: var(--surface-hover); }
+html.is-mobile .m-switch-row { justify-content: space-between; }
+html.is-mobile .m-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 46px;
+  height: 28px;
+  flex: 0 0 46px;
+  border-radius: 999px;
+  background: var(--border-strong, #999);
+  position: relative;
+  transition: background 0.2s;
+}
+html.is-mobile .m-switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+html.is-mobile .m-switch:checked { background: var(--brand-500); }
+html.is-mobile .m-switch:checked::after { transform: translateX(18px); }
+html.is-mobile .m-version { font-size: 0.75rem; color: var(--text-faint); padding: 8px 10px 0; margin: 0; }
+
+/* ---------- Home screen ---------- */
+html.is-mobile .m-home {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 16px calc(24px + var(--m-safe-bottom));
+  -webkit-overflow-scrolling: touch;
+}
+html.is-mobile .m-home-title { font-size: 1.35rem; font-weight: 800; margin: 4px 2px 14px; letter-spacing: -0.3px; }
+html.is-mobile .m-new-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+@media (min-width: 520px) { html.is-mobile .m-new-grid { grid-template-columns: repeat(4, 1fr); } }
+html.is-mobile .m-new-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 92px;
+  padding: 12px 6px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.2;
+}
+html.is-mobile .m-new-tile:active { transform: scale(0.97); background: var(--surface-hover); }
+html.is-mobile .m-new-icon { color: var(--brand-500); display: inline-flex; }
+html.is-mobile .m-new-icon svg { width: 26px; height: 26px; }
+html.is-mobile .m-open-btn {
+  margin-top: 14px;
+  width: 100%;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 16px;
+  border: 1.5px dashed var(--border-strong, var(--border));
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+html.is-mobile .m-section-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-faint);
+  margin: 22px 2px 8px;
+}
+html.is-mobile .m-recent { display: flex; flex-direction: column; gap: 8px; }
+html.is-mobile .m-recent-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+html.is-mobile .m-recent-card:active { background: var(--surface-hover); }
+html.is-mobile .m-recent-icon { color: var(--brand-500); display: inline-flex; flex: 0 0 auto; }
+html.is-mobile .m-recent-text { display: flex; flex-direction: column; min-width: 0; }
+html.is-mobile .m-recent-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html.is-mobile .m-recent-meta { font-size: 0.78rem; color: var(--text-muted); }
+html.is-mobile .m-home-foot { margin-top: 24px; font-size: 0.8rem; color: var(--text-muted); text-align: center; line-height: 1.6; }
+html.is-mobile .m-home-foot a, html.is-mobile .m-link { color: var(--brand-500); }
+html.is-mobile .m-link { background: none; border: none; padding: 0; font: inherit; text-decoration: underline; }
+
+/* ---------- Bottom sheets (action sheet, download) ---------- */
+html.is-mobile .m-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2050;
+  background: rgba(10, 12, 20, 0.5);
+  display: flex;
+  align-items: flex-end;
+  animation: m-fade 0.18s var(--ease);
+}
+html.is-mobile .m-sheet-overlay.leaving { animation: m-fade-out 0.18s var(--ease) forwards; }
+@keyframes m-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes m-fade-out { to { opacity: 0; } }
+html.is-mobile .m-sheet {
+  width: 100%;
+  max-height: 88dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface);
+  border-radius: 22px 22px 0 0;
+  padding: 6px 12px calc(12px + var(--m-safe-bottom));
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.25);
+  animation: m-up 0.24s var(--ease);
+  transition: transform 0.18s var(--ease);
+}
+html.is-mobile .m-sheet.leaving { transform: translateY(100%); }
+@keyframes m-up { from { transform: translateY(100%); } to { transform: none; } }
+html.is-mobile .m-sheet-handle {
+  width: 40px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border-strong, var(--border));
+  margin: 6px auto 10px;
+}
+html.is-mobile .m-sheet-head { display: flex; flex-direction: column; gap: 2px; padding: 0 8px 10px; }
+html.is-mobile .m-sheet-title { font-size: 1.02rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html.is-mobile .m-sheet-sub { font-size: 0.8rem; color: var(--text-muted); }
+html.is-mobile .m-sheet-list { display: flex; flex-direction: column; }
+html.is-mobile .m-sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 52px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  font-size: 1rem;
+  text-align: left;
+}
+html.is-mobile .m-sheet-item:active { background: var(--surface-hover); }
+html.is-mobile .m-sheet-item.danger { color: var(--danger); }
+html.is-mobile .m-sheet-icon { width: 24px; display: inline-flex; justify-content: center; color: var(--text-muted); }
+html.is-mobile .m-sheet-item.danger .m-sheet-icon { color: var(--danger); }
+html.is-mobile .m-sheet-cancel {
+  width: 100%;
+  min-height: 50px;
+  margin-top: 8px;
+  border-radius: 14px;
+  border: none;
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+html.is-mobile .m-field { display: flex; flex-direction: column; gap: 6px; padding: 4px 8px 12px; font-size: 0.82rem; color: var(--text-muted); font-weight: 600; }
+html.is-mobile .m-name-row { display: flex; align-items: center; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); overflow: hidden; }
+html.is-mobile .m-name { flex: 1; min-width: 0; min-height: 48px; padding: 0 12px; border: none; background: transparent; color: var(--text); font-size: 16px; }
+html.is-mobile .m-name:focus { outline: none; }
+html.is-mobile .m-name-row:focus-within { border-color: var(--brand-500); }
+html.is-mobile .m-ext { padding: 0 12px; color: var(--text-muted); font-weight: 600; font-size: 0.95rem; }
+html.is-mobile .m-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+html.is-mobile .m-chip {
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+}
+html.is-mobile .m-chip.selected { background: var(--brand-gradient); border-color: transparent; color: #fff; }
+html.is-mobile .m-dl-error { color: var(--danger); font-size: 0.85rem; padding: 0 8px; margin: 0; min-height: 0; }
+html.is-mobile .m-dl-actions { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 0; }
+html.is-mobile .m-btn {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 650;
+}
+html.is-mobile .m-btn[hidden] { display: none; }
+html.is-mobile .m-btn-primary { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+html.is-mobile .m-btn.busy { opacity: 0.6; }
+
+/* ---------- Existing modals → bottom sheets ---------- */
+html.is-mobile .modal-overlay { align-items: flex-end; padding: 0; }
+html.is-mobile .modal {
+  max-width: none !important;
+  width: 100%;
+  max-height: 90dvh;
+  overflow-y: auto;
+  border-radius: 22px 22px 0 0;
+  padding: 18px 16px calc(16px + var(--m-safe-bottom));
+  animation: m-up 0.24s var(--ease);
+}
+html.is-mobile .modal input,
+html.is-mobile .modal textarea,
+html.is-mobile .modal select { font-size: 16px; min-height: 46px; }
+html.is-mobile .modal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+html.is-mobile .modal-actions button { min-height: 50px; font-size: 1rem; border-radius: 14px; }
+html.is-mobile .new-file-types { grid-template-columns: repeat(3, 1fr) !important; }
+
+/* Command palette → full-height sheet with big rows */
+html.is-mobile .command-palette-overlay { align-items: flex-end; padding: 0; }
+html.is-mobile .command-palette {
+  width: 100%;
+  max-width: none;
+  height: 85dvh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 22px 22px 0 0;
+  padding-bottom: var(--m-safe-bottom);
+}
+html.is-mobile .command-palette input { font-size: 16px; min-height: 56px; }
+html.is-mobile .command-palette ul { flex: 1; max-height: none; }
+html.is-mobile .command-palette li { min-height: 52px; font-size: 1rem; }
+
+/* Theme picker → bottom sheet */
+html.is-mobile .theme-popover {
+  position: fixed !important;
+  top: auto !important;
+  right: 0 !important;
+  left: 0 !important;
+  bottom: 0 !important;
+  width: auto !important;
+  max-height: 70dvh;
+  overflow-y: auto;
+  border-radius: 22px 22px 0 0;
+  padding: 12px 12px calc(12px + var(--m-safe-bottom));
+  z-index: 1700;
+}
+html.is-mobile .theme-popover .theme-option { min-height: 48px; }
+
+/* AI assistant → tall bottom sheet */
+html.is-mobile .ai-drawer {
+  top: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 78dvh;
+  border-left: none;
+  border-top: 1px solid var(--border);
+  border-radius: 22px 22px 0 0;
+  transform: translateY(105%);
+  padding-bottom: var(--m-safe-bottom);
+  z-index: 1500;
+}
+html.is-mobile .ai-drawer.open { transform: none; }
+html.is-mobile .ai-drawer textarea { font-size: 16px; }
+
+/* Toasts: bottom-centred above the home indicator */
+html.is-mobile .toast-region {
+  left: 12px;
+  right: 12px;
+  bottom: calc(16px + var(--m-safe-bottom));
+  max-width: none;
+  align-items: center;
+}
+html.is-mobile .toast { width: 100%; max-width: 460px; }
+
+/* ---------- Editor toolbars: one scrollable row of big buttons ---------- */
+html.is-mobile .docx-toolbar,
+html.is-mobile .img-toolbar,
+html.is-mobile .pdf-toolbar,
+html.is-mobile .aud-toolbar,
+html.is-mobile .vid-transport,
+html.is-mobile .vid-tabs,
+html.is-mobile .toolbar {
+  display: flex;
+  flex-wrap: nowrap !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  gap: 6px;
+  padding: 6px 8px;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+}
+html.is-mobile .docx-toolbar::-webkit-scrollbar,
+html.is-mobile .img-toolbar::-webkit-scrollbar,
+html.is-mobile .pdf-toolbar::-webkit-scrollbar,
+html.is-mobile .aud-toolbar::-webkit-scrollbar,
+html.is-mobile .vid-transport::-webkit-scrollbar,
+html.is-mobile .vid-tabs::-webkit-scrollbar,
+html.is-mobile .toolbar::-webkit-scrollbar { display: none; }
+html.is-mobile .docx-toolbar > *,
+html.is-mobile .img-toolbar > *,
+html.is-mobile .pdf-toolbar > *,
+html.is-mobile .aud-toolbar > *,
+html.is-mobile .vid-transport > *,
+html.is-mobile .vid-tabs > *,
+html.is-mobile .toolbar > * { flex: 0 0 auto; scroll-snap-align: start; }
+html.is-mobile .docx-toolbar button,
+html.is-mobile .docx-toolbar select,
+html.is-mobile .img-toolbar button,
+html.is-mobile .pdf-toolbar button,
+html.is-mobile .aud-toolbar button,
+html.is-mobile .vid-transport .vid-btn,
+html.is-mobile .vid-tab,
+html.is-mobile .toolbar button {
+  min-height: 40px;
+  min-width: 40px;
+  padding: 0 12px;
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+/* The docx dropdown menus must escape the scrolling strip */
+html.is-mobile .docx-dropdown { position: static; }
+html.is-mobile .docx-menu { position: fixed; left: 8px; right: 8px; top: auto; z-index: 70; }
+
+/* Document page fills the width on phones */
+html.is-mobile .docx-page { padding: 1rem 0.9rem; }
+html.is-mobile .docx-page::before { display: none; }
+html.is-mobile .docx-zoom,
+html.is-mobile .img-zoom,
+html.is-mobile .vid-zoom { padding-bottom: calc(8px + var(--m-safe-bottom)); }
+
+/* Image editor: panel below canvas on phones */
+html.is-mobile .img-body { flex-direction: column; }
+html.is-mobile .img-panel { width: 100% !important; max-height: 40dvh; border-left: none; border-top: 1px solid var(--border); }
+
+/* Text inputs ≥16px so iOS doesn't zoom on focus */
+html.is-mobile input[type="text"],
+html.is-mobile input[type="search"],
+html.is-mobile input[type="email"],
+html.is-mobile input[type="password"],
+html.is-mobile textarea { font-size: 16px; }
+
+/* Code editor: comfortable touch line height */
+html.is-mobile .cm-editor { font-size: 14px; }
+html.is-mobile .cm-content { line-height: 1.6; }
+
+/* Desktop "try the mobile app" banner never shows inside the mobile app */
+html.is-mobile .mobile-app-banner { display: none; }

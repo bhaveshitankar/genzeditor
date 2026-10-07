@@ -1,5 +1,13 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+
+// Build-time app version (package version + short git sha) for telemetry/feedback.
+const pkgVersion = (JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as { version: string }).version;
+let gitSha = '';
+try { gitSha = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { /* not a git checkout */ }
+const APP_VERSION = gitSha ? `${pkgVersion}+${gitSha}` : pkgVersion;
 
 // Mirror the deployed public/_headers CSP so `vite preview` (used by the e2e
 // suite) exercises the same policy the sandboxed mermaid frame runs under.
@@ -10,6 +18,9 @@ const DEPLOYED_CSP =
   "object-src 'none'; base-uri 'none'";
 
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   server: {
     port: 3000,
   },
@@ -25,6 +36,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
+        // Mobile app (served as the root of mobile.genzeditor.com).
+        mobile: resolve(__dirname, 'mobile.html'),
         // Standalone same-origin frame document for isolated mermaid rendering.
         mermaidFrame: resolve(__dirname, 'mermaid-frame.html'),
         // Isolated frame that runs the background-removal model (needs 'unsafe-eval').

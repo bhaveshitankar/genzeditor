@@ -27,8 +27,49 @@ import { CompareView } from '../diff/CompareView';
 import { THEMES, applyTheme, getSavedTheme } from '../theme/themes';
 import { validatorFor } from '../editors/validate';
 import { AiPanel, type AiTarget } from '../ui/AiPanel';
+import { reportFailure, telemetryEnabled, setTelemetryEnabled } from '../telemetry';
+import { openFeedbackSheet } from '../ui/FeedbackSheet';
 import type { AiEditResult } from '../api/client';
 import { icon, iconNameForKind } from '../ui/icons';
+
+/** Hooks a mobile chrome implements to mirror shell state (title, home screen). */
+export interface ShellChrome {
+  renderHome(host: HTMLElement): void;
+  onFileOpened(record: FileRecord): void;
+  onLibraryChanged(): void;
+}
+
+/** Narrow facade over AppShell for the mobile chrome (keeps internals private). */
+export interface ShellApi {
+  root: HTMLElement;
+  listFiles(): Promise<FileRecord[]>;
+  currentFile(): Promise<FileRecord | undefined>;
+  currentKind(): FileKind | undefined;
+  openFile(id: string): Promise<void>;
+  templates(): ReadonlyArray<{ id: string; label: string; kind: FileKind; ext: string }>;
+  createFromTemplate(id: string): Promise<void>;
+  openNewFileModal(): void;
+  iconForKind(kind: string): string;
+  upload(): void;
+  rename(record: FileRecord): void;
+  deleteFile(record: FileRecord): Promise<void>;
+  getCurrentBlob(): Promise<{ blob: Blob; contentType: string } | null>;
+  docxPdf(): Promise<Blob | null>;
+  share(editable: boolean): Promise<void>;
+  saveShares(): Promise<void>;
+  stopSharing(): Promise<void>;
+  compare(): void;
+  toggleFullscreen(): void;
+  openPalette(): void;
+  toggleAi(): void;
+  openTheme(anchor: HTMLElement): void;
+  openFeedback(): void;
+  toast(message: string, kind?: 'success' | 'error' | 'info', ms?: number): void;
+  confirm(opts: { title: string; message: string; confirmLabel?: string; danger?: boolean }): Promise<boolean>;
+  openDrawer(): void;
+  closeDrawer(): void;
+  formatBytes(n: number): string;
+}
 
 export class AppShell {
   // localStorage key holding the id of the last-opened file, so a refresh can
@@ -67,7 +108,16 @@ export class AppShell {
   // Live search filter for the files panel (lowercased substring of the name).
   private fileFilter = '';
 
-  constructor(private root: HTMLElement, private store: FileStore) {
+  private readonly isMobile: boolean;
+  private chrome?: ShellChrome;
+
+  constructor(
+    private root: HTMLElement,
+    private store: FileStore,
+    opts: { mobile?: boolean; chrome?: (api: ShellApi) => ShellChrome } = {},
+  ) {
+    this.isMobile = !!opts.mobile;
+    if (this.isMobile) document.documentElement.classList.add('is-mobile');
     this.render();
     this.aiPanel = new AiPanel({
       isAuthed: () => this.meState.authenticated,
@@ -78,6 +128,76 @@ export class AppShell {
     this.wirePalette();
     this.wireKeyboard();
     void this.initAuth();
+    if (opts.chrome) {
+      this.chrome = opts.chrome(this.api());
+      if (!this.currentFileId) this.renderEmptyState();
+    }
+  }
+
+  private api(): ShellApi {
+    const aside = () => this.root.querySelector('.files-panel') as HTMLElement;
+    const backdrop = () => this.root.querySelector('[data-role="drawer-backdrop"]') as HTMLElement;
+    const current = async () => (this.currentFileId ? (await this.store.list()).find((f) => f.id === this.currentFileId) : undefined);
+    return {
+      root: this.root,
+      listFiles: () => this.store.list(),
+      currentFile: current,
+      currentKind: () => this.currentFileKind as FileKind | undefined,
+      openFile: (id) => this.openFile(id),
+      templates: () => AppShell.NEW_FILE_TEMPLATES,
+      createFromTemplate: async (id) => {
+        const t = AppShell.NEW_FILE_TEMPLATES.find((x) => x.id === id);
+        if (!t) return;
+        const names = new Set((await this.store.list()).map((f) => f.name));
+        let name = `Untitled.${t.ext}`;
+        for (let i = 2; names.has(name); i++) name = `Untitled ${i}.${t.ext}`;
+        await this.createNewFile(name, t.kind, t.content, t.ext);
+      },
+      openNewFileModal: () => this.openNewFileModal(),
+      iconForKind: (k) => this.iconForKind(k),
+      upload: () => this.uploadInput.click(),
+      rename: (r) => void this.handleRename(r),
+      deleteFile: (r) => this.confirmDeleteFile(r),
+      getCurrentBlob: () => this.getCurrentBlob(),
+      docxPdf: async () => (this.currentDocKind === 'DocxEditor' ? (this.currentDoc as DocxEditor).pdfBlob() : null),
+      share: (rw) => this.handleShare(rw),
+      saveShares: () => this.handleSaveShares(),
+      stopSharing: () => this.handleStopSharing(),
+      compare: () => void this.startCompare(),
+      toggleFullscreen: () => this.palette.run('fullscreen'),
+      openPalette: () => this.palette.open(),
+      toggleAi: () => this.aiPanel?.toggle(),
+      openTheme: (a) => this.openThemePopover(a),
+      openFeedback: () => this.openFeedback(),
+      toast: (m, k, ms) => this.toast(m, k, ms),
+      confirm: (o) => this.confirmModal(o),
+      openDrawer: () => { aside().classList.add('open'); backdrop().classList.add('show'); },
+      closeDrawer: () => this.closeDrawer(),
+      formatBytes: (n) => this.formatBytes(n),
+    };
+  }
+
+  private openFeedback(): void {
+    openFeedbackSheet({
+      root: this.root,
+      app: this.isMobile ? 'mobile' : 'web',
+      fileKind: this.currentFileKind,
+      toast: (m, k) => this.toast(m, k),
+    });
+  }
+
+  private async confirmDeleteFile(record: FileRecord): Promise<void> {
+    const ok = await this.confirmModal({
+      title: 'Delete file?',
+      message: `“${record.name}” will be permanently removed from this browser.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    if (this.currentFileId === record.id) await this.clearEditor();
+    await this.store.remove(record.id);
+    await this.refreshLibrary();
+    this.toast(`Deleted “${record.name}”`, 'info', 2500);
   }
 
   private async blobToText(blob: Blob): Promise<string> {
@@ -130,6 +250,9 @@ export class AppShell {
               <span class="rail-icon">${icon('sparkles')}</span><span class="rail-label">AI</span>
             </button>
             <span class="rail-spacer"></span>
+            <button type="button" class="rail-btn" data-role="rail-feedback" aria-label="Report a problem or send feedback" title="Feedback">
+              <span class="rail-icon">${icon('info')}</span><span class="rail-label">Feedback</span>
+            </button>
             <button type="button" class="rail-btn" data-role="rail-inspector" aria-label="Toggle inspector" title="Details">
               <span class="rail-icon">${icon('info')}</span><span class="rail-label">Details</span>
             </button>
@@ -279,6 +402,7 @@ export class AppShell {
     this.root.querySelector('[data-role="compare-btn"]')?.addEventListener('click', () => void this.startCompare());
     this.root.querySelector('[data-role="theme-btn"]')?.addEventListener('click', (e) => this.openThemePopover(e.currentTarget as HTMLElement));
     this.root.querySelector('[data-role="new-btn"]')?.addEventListener('click', () => void this.openNewFileModal());
+    this.root.querySelector('[data-role="rail-feedback"]')?.addEventListener('click', () => this.openFeedback());
 
     this.root.querySelector('[data-role="select-btn"]')?.addEventListener('click', () => this.toggleSelectMode());
     this.root.querySelector('[data-role="selection-cancel"]')?.addEventListener('click', () => this.toggleSelectMode(false));
@@ -305,6 +429,7 @@ export class AppShell {
 
   /** Premium empty state with a drag-and-drop zone, shown when no file is open. */
   private renderEmptyState() {
+    if (this.chrome) { this.chrome.renderHome(this.editorHost); return; }
     this.editorHost.innerHTML = `
       <div class="empty-state">
         <div class="dropzone" data-role="dropzone">
@@ -796,6 +921,20 @@ export class AppShell {
         },
       },
       {
+        id: 'feedback',
+        label: 'Report a problem / send feedback',
+        run: () => this.openFeedback(),
+      },
+      {
+        id: 'error-reports',
+        label: 'Toggle anonymous error reports',
+        run: () => {
+          const on = !telemetryEnabled();
+          setTelemetryEnabled(on);
+          this.toast(on ? 'Anonymous error reports on' : 'Anonymous error reports off', 'info', 2200);
+        },
+      },
+      {
         id: 'theme',
         label: 'Switch theme',
         run: () => {
@@ -853,6 +992,14 @@ export class AppShell {
       });
       pop.appendChild(b);
     }
+    const tele = document.createElement('label');
+    tele.className = 'theme-telemetry';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = telemetryEnabled();
+    cb.addEventListener('change', () => setTelemetryEnabled(cb.checked));
+    tele.append(cb, document.createTextNode(' Send anonymous error reports'));
+    pop.appendChild(tele);
     const rect = anchor.getBoundingClientRect();
     pop.style.top = `${rect.bottom + 6}px`;
     pop.style.right = `${window.innerWidth - rect.right}px`;
@@ -971,6 +1118,7 @@ export class AppShell {
       this.paintAuthBar();
       this.toast('Signed out', 'info');
     } catch (err) {
+      reportFailure('logout', err);
       this.toast(`Logout failed: ${err}`, 'error');
     }
   }
@@ -1090,7 +1238,14 @@ export class AppShell {
   }
 
   private async handleDownload(record: FileRecord) {
-    const current = await this.getCurrentBlob();
+    let current: { blob: Blob; contentType: string } | null;
+    try {
+      current = await this.getCurrentBlob();
+    } catch (err) {
+      reportFailure('export', err, record.kind);
+      this.toast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      return;
+    }
     if (!current) return;
     let name = record.name;
     // Images can export PNG (transparency / bg-removal) or JPEG (jpg source);
@@ -1203,6 +1358,7 @@ export class AppShell {
         'success',
       );
     } catch (err) {
+      reportFailure('share', err, record.kind);
       this.toast(`Share failed: ${this.friendlyShareError(err)}`, 'error');
     }
   }
@@ -1225,6 +1381,7 @@ export class AppShell {
     }
     await this.store.updateMeta(record.id, { shares: left });
     this.syncSaveButton(left.length > 0);
+    if (left.length) reportFailure('stop-sharing', new Error(`${left.length} delete(s) failed`), record.kind);
     if (left.length) this.toast('Some links could not be deleted (sign in on the device that created them) — try again.', 'error', 5000);
     else this.toast('Share links deleted from our server', 'success');
   }
@@ -1260,6 +1417,7 @@ export class AppShell {
       if (content) await this.store.update(record.id, content.blob);
       this.toast(`Saved to ${count} shared link${count === 1 ? '' : 's'}`, 'success');
     } catch (err) {
+      reportFailure('save-shares', err, this.currentFileKind);
       this.toast(`Save failed: ${err}`, 'error');
     }
   }
@@ -1415,6 +1573,7 @@ export class AppShell {
         }
         this.toast(`Renamed to "${newName}"`, 'success', 2500);
       } catch (err) {
+        reportFailure('rename', err, record.kind);
         this.toast(`Rename failed: ${err}`, 'error');
       }
     };
@@ -1427,6 +1586,11 @@ export class AppShell {
   }
 
   async refreshLibrary(): Promise<void> {
+    await this.renderLibrary();
+    this.chrome?.onLibraryChanged();
+  }
+
+  private async renderLibrary(): Promise<void> {
     const all = await this.store.list();
     this.drawer.innerHTML = '';
 
@@ -1452,6 +1616,7 @@ export class AppShell {
 
     for (const file of files) {
       const li = document.createElement('li');
+      li.dataset.id = file.id;
       if (file.id === this.currentFileId) li.classList.add('active');
       if (this.selectMode) li.classList.add('selecting');
 
@@ -1605,6 +1770,15 @@ export class AppShell {
   }
 
   async openFile(id: string): Promise<void> {
+    try {
+      await this.openFileInner(id);
+    } catch (err) {
+      reportFailure('open-file', err, this.currentFileKind);
+      this.toast(`Couldn't open this file: ${err instanceof Error ? err.message : String(err)}`, 'error', 6000);
+    }
+  }
+
+  private async openFileInner(id: string): Promise<void> {
     const files = await this.store.list();
     const record = files.find(f => f.id === id);
     if (!record) return;
@@ -1614,6 +1788,7 @@ export class AppShell {
     this.currentFileId = id;
     this.currentFileKind = record.kind;
     this.markActiveFile(id);
+    this.chrome?.onFileOpened(record);
     // Remember the open file so a page refresh can reopen it instead of
     // dropping back to the empty state.
     try { localStorage.setItem(AppShell.LAST_FILE_KEY, id); } catch { /* storage unavailable */ }

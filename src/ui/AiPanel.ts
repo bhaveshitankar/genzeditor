@@ -1,6 +1,7 @@
 import './styles/ai.css';
 import { aiEdit, AiError, type AiEditResult, type AiKind, type ByoKey } from '../api/client';
 import { icon } from './icons';
+import { reportFailure } from '../telemetry';
 
 const BYOK_STORE = 'anyedits:aiKey';
 
@@ -200,6 +201,7 @@ export class AiPanel {
       thinking.className = 'ai-msg ai-msg-assistant ok';
     } catch (e) {
       thinking.className = 'ai-msg ai-msg-error';
+      if (!(e instanceof AiError && (e.code === 'daily_limit' || e.code === 'unauthorized'))) reportFailure('ai-edit', e, target.kind);
       if (e instanceof AiError) {
         if (e.code === 'daily_limit') thinking.textContent = `Daily free limit reached (${e.limit ?? 10}/day). Add your own API key below for unlimited use.`;
         else if (e.code === 'unauthorized') thinking.textContent = 'Please sign in again.';

@@ -4,6 +4,9 @@ interface ImportMetaEnv {
   readonly VITE_API_BASE?: string;
 }
 
+// Injected by vite.config.ts `define` (package version + git sha).
+declare const __APP_VERSION__: string;
+
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }

@@ -2660,3 +2660,40 @@ button, input, select, a { transition-property: background-color, border-color, 
 .share-pw[hidden] { display: none; }
 .share-modal .share-facts a { color: var(--brand-500); }
 .file-action.is-danger { border-color: #ef4444; color: #ef4444; }
+
+/* Feedback / report a problem */
+.feedback-modal { max-width: 480px; }
+.feedback-modal .fb-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.75rem; }
+.feedback-modal .fb-chip {
+  padding: 0.45rem 0.85rem; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font-size: 0.85rem; font-weight: 600; cursor: pointer;
+}
+.feedback-modal .fb-chip.selected { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+.feedback-modal textarea, .feedback-modal input[type="email"] {
+  width: 100%; box-sizing: border-box; padding: 0.65rem 0.75rem; margin-bottom: 0.6rem;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text);
+  font: inherit; font-size: 0.92rem; resize: vertical;
+}
+.feedback-modal textarea:focus, .feedback-modal input[type="email"]:focus { outline: none; border-color: var(--brand-500); }
+.feedback-modal .fb-tech { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--text-muted); }
+.feedback-modal .fb-error { color: var(--danger) !important; font-size: 0.82rem !important; margin: 0.4rem 0 0.6rem !important; min-height: 1em; }
+
+/* Theme popover: anonymous error report toggle */
+.theme-popover .theme-telemetry {
+  display: flex; align-items: center; gap: 0.45rem; padding: 0.55rem 0.6rem 0.2rem;
+  margin-top: 0.3rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-muted); cursor: pointer;
+}
+
+/* Phones on the desktop site: point to the mobile app */
+.mobile-app-banner {
+  position: fixed; left: 10px; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  z-index: 2100; display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.6rem 0.6rem 0.6rem 0.9rem; border-radius: 14px;
+  background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-lg); font-size: 0.88rem;
+}
+.mobile-app-banner span { flex: 1; }
+.mobile-app-banner .mobile-app-open {
+  padding: 0.5rem 0.9rem; border-radius: 10px; background: var(--brand-gradient); color: #fff;
+  font-weight: 700; text-decoration: none;
+}
+.mobile-app-banner .mobile-app-close { width: 36px; height: 36px; border: none; background: transparent; color: var(--text-muted); font-size: 1rem; }

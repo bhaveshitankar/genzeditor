@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!-- Main-app Content-Security-Policy (delivered here, not via _headers, so the
+       isolated frames can own their own looser CSP without intersection). No
+       'unsafe-eval' — the only code that needs it (bg-removal/onnxruntime) runs
+       in the sandboxed /bg-removal-frame.html which has its own policy. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; script-src 'self' blob: 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://esm.sh https://challenges.cloudflare.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; font-src 'self' data:; frame-src 'self' blob: https://challenges.cloudflare.com; worker-src 'self' blob:; connect-src 'self' blob: https://api.genzeditor.com wss://api.genzeditor.com https://anyedits-api.skillmesh.workers.dev wss://anyedits-api.skillmesh.workers.dev https://s3.filebase.io https://cdn.jsdelivr.net https://esm.sh https://staticimgly.com https://challenges.cloudflare.com https://static.cloudflareinsights.com; object-src 'none'; base-uri 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#F3F1FA" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0E0B14" media="(prefers-color-scheme: dark)">
+
+  <title>GenZ Editor — Mobile</title>
+  <meta name="description" content="Edit anything in your browser — files, code, images, documents, sketches, even games. Free, private, local-first. No account, no uploads, no limits.">
+  <meta name="keywords" content="online editor, browser file editor, free online editor, edit images online, markdown editor, json editor, code editor, pdf editor, whiteboard, no sign up editor, private editor">
+  <meta name="author" content="GenZ Editor">
+  <meta name="robots" content="index, follow, max-image-preview:large">
+  <link rel="canonical" href="https://mobile.genzeditor.com/">
+
+  <!-- Icons -->
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/mobile.webmanifest">
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="GenZ Editor">
+  <meta name="format-detection" content="telephone=no">
+</head>
+<body class="is-mobile-body">
+  <div id="app"></div>
+  <script type="module" src="/src/mobile/main.ts"></script>
+</body>
+</html>

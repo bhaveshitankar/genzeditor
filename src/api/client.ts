@@ -169,3 +169,21 @@ export async function deleteShare(shareId: string, csrfToken?: string): Promise<
   });
   if (!res.ok && res.status !== 404) throw new Error((await res.json() as { error: string }).error);
 }
+
+export type FeedbackCategory = 'bug' | 'idea' | 'question' | 'other';
+export async function sendFeedback(input: {
+  category: FeedbackCategory;
+  message: string;
+  email?: string;
+  context?: { app: string; version: string; fileKind?: string; platform?: string; path?: string };
+}): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/feedback`, {
+    method: 'POST', credentials: 'include',
+    headers: { 'content-type': 'application/json', 'X-Device-Id': deviceId() },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(body.error ?? `http_${res.status}`);
+  }
+}
