@@ -2,20 +2,20 @@ import { FileStore } from '../store/opfs';
 import type { FileRecord, FileKind } from '../store/types';
 import { handleUpload } from '../upload/uploadHandler';
 import { TextEditor } from '../editors/TextEditor';
-import { ImageEditor } from '../editors/ImageEditor';
+import type { ImageEditor } from '../editors/ImageEditor';
 import { renderMarkdown } from '../editors/MarkdownPreview';
 import { MermaidPreview } from '../editors/MermaidPreview';
 import { formatJson } from '../editors/JsonTools';
 import { editorKindFor, type DocEditor } from '../editors/registry';
-import { SpreadsheetEditor } from '../editors/SpreadsheetEditor';
-import { PdfEditor } from '../editors/PdfEditor';
-import { PresentationView } from '../editors/PresentationView';
-import { VideoEditor } from '../editors/VideoEditor';
-import { AudioEditor } from '../editors/AudioEditor';
-import { DocxEditor } from '../editors/DocxEditor';
-import { SketchEditor } from '../editors/SketchEditor';
-import { GameEditor } from '../editors/GameEditor';
-import { FloorPlanEditor } from '../editors/FloorPlanEditor';
+import type { SpreadsheetEditor } from '../editors/SpreadsheetEditor';
+import type { PdfEditor } from '../editors/PdfEditor';
+import type { PresentationView } from '../editors/PresentationView';
+import type { VideoEditor } from '../editors/VideoEditor';
+import type { AudioEditor } from '../editors/AudioEditor';
+import type { DocxEditor } from '../editors/DocxEditor';
+import type { SketchEditor } from '../editors/SketchEditor';
+import type { GameEditor } from '../editors/GameEditor';
+import type { FloorPlanEditor } from '../editors/FloorPlanEditor';
 import { CommandPalette } from '../ui/CommandPalette';
 import { lineDiff } from '../diff/lineDiff';
 import { getMe, signOut, type MeState, deleteShare } from '../api/client';
@@ -37,6 +37,8 @@ export class AppShell {
 
   private currentEditor?: TextEditor;
   private currentDoc?: DocEditor;
+  // Which lazy-loaded editor class currentDoc is (editors load on demand).
+  private currentDocKind?: string;
   private currentPreview?: MermaidPreview;
   private currentFileId?: string;
   private currentFileKind?: string;
@@ -401,41 +403,41 @@ export class AppShell {
         onChanged: () => this.scheduleAutosave(),
       };
     }
-    if (this.currentDoc instanceof ImageEditor) {
-      const ed = this.currentDoc;
+    if (this.currentDocKind === 'ImageEditor') {
+      const ed = this.currentDoc as ImageEditor;
       return { kind: 'image', label: 'image', apply: (r) => ed.applyAiOps(this.aiArray(r.ops, 'ops')), onChanged: save };
     }
-    if (this.currentDoc instanceof VideoEditor) {
-      const ed = this.currentDoc;
+    if (this.currentDocKind === 'VideoEditor') {
+      const ed = this.currentDoc as VideoEditor;
       // Non-destructive video edits persist on explicit export, not autosave.
       return { kind: 'video', label: 'video', apply: (r) => ed.applyAiPatch(this.aiObject(r.ops, 'patch')) };
     }
-    if (this.currentDoc instanceof AudioEditor) {
-      const ed = this.currentDoc;
+    if (this.currentDocKind === 'AudioEditor') {
+      const ed = this.currentDoc as AudioEditor;
       return { kind: 'audio', label: 'audio', apply: (r) => ed.applyAiOps(this.aiArray(r.ops, 'ops')), onChanged: save };
     }
-    if (this.currentDoc instanceof DocxEditor) {
-      const ed = this.currentDoc;
+    if (this.currentDocKind === 'DocxEditor') {
+      const ed = this.currentDoc as DocxEditor;
       return { kind: 'docx', label: 'document', getText: () => ed.getHtml(), apply: (r) => (r.text != null ? ed.setHtml(r.text) : 'no changes'), onChanged: save };
     }
-    if (this.currentDoc instanceof SpreadsheetEditor) {
-      const ed = this.currentDoc;
+    if (this.currentDocKind === 'SpreadsheetEditor') {
+      const ed = this.currentDoc as SpreadsheetEditor;
       return { kind: 'spreadsheet', label: 'spreadsheet', getText: () => ed.getCsv(), apply: (r) => (r.text != null ? ed.setCsv(r.text) : 'no changes'), onChanged: save };
     }
-    if (this.currentDoc instanceof PdfEditor) {
-      const ed = this.currentDoc;
+    if (this.currentDocKind === 'PdfEditor') {
+      const ed = this.currentDoc as PdfEditor;
       return { kind: 'pdf', label: 'PDF', apply: (r) => ed.applyAiAnnotations(this.aiArray(r.ops, 'annotations')), onChanged: save };
     }
-    if (this.currentDoc instanceof GameEditor) {
-      const ed = this.currentDoc;
+    if (this.currentDocKind === 'GameEditor') {
+      const ed = this.currentDoc as GameEditor;
       return { kind: 'game', label: 'game', meta: { doc: ed.aiDoc() }, apply: (r) => ed.applyAiOps(this.aiArray(r.ops, 'ops')), onChanged: save };
     }
-    if (this.currentDoc instanceof FloorPlanEditor) {
-      const ed = this.currentDoc;
+    if (this.currentDocKind === 'FloorPlanEditor') {
+      const ed = this.currentDoc as FloorPlanEditor;
       return { kind: 'floorplan', label: 'floor plan', getText: () => ed.getPlanJson(), apply: (r) => (r.text != null ? ed.applyAiPlan(r.text) : 'no changes'), onChanged: save };
     }
-    if (this.currentDoc instanceof SketchEditor) {
-      const ed = this.currentDoc;
+    if (this.currentDocKind === 'SketchEditor') {
+      const ed = this.currentDoc as SketchEditor;
       return { kind: 'sketch', label: 'sketch', getText: () => ed.getSceneJson(), apply: (r) => ed.applyAiScene(JSON.stringify(r.ops ?? {})), onChanged: save };
     }
     return null;
@@ -1713,8 +1715,10 @@ export class AppShell {
       const body = document.createElement('div');
       body.className = 'doc-body';
       this.editorHost.appendChild(body);
+      const { ImageEditor } = await import('../editors/ImageEditor');
       const doc = await ImageEditor.open(body, blob, record.name, () => this.scheduleSaveDoc());
       this.currentDoc = doc;
+      this.currentDocKind = 'ImageEditor';
       this.addToolbarActions(toolbar, record);
     } else if (editorType === 'spreadsheet') {
       const toolbar = this.editorToolbar();
@@ -1723,8 +1727,11 @@ export class AppShell {
       body.className = 'doc-body';
       this.editorHost.appendChild(body);
 
+      const { SpreadsheetEditor } = await import('../editors/SpreadsheetEditor');
+
       const doc = await SpreadsheetEditor.open(body, blob, record.name, () => this.scheduleSaveDoc());
       this.currentDoc = doc;
+      this.currentDocKind = 'SpreadsheetEditor';
       this.addToolbarActions(toolbar, record);
     } else if (editorType === 'pdf') {
       const toolbar = this.editorToolbar();
@@ -1733,8 +1740,11 @@ export class AppShell {
       body.className = 'doc-body';
       this.editorHost.appendChild(body);
 
+      const { PdfEditor } = await import('../editors/PdfEditor');
+
       const doc = await PdfEditor.open(body, blob, () => this.scheduleSaveDoc(), record.name);
       this.currentDoc = doc;
+      this.currentDocKind = 'PdfEditor';
       this.addToolbarActions(toolbar, record);
     } else if (editorType === 'presentation') {
       const toolbar = this.editorToolbar();
@@ -1743,8 +1753,11 @@ export class AppShell {
       body.className = 'doc-body';
       this.editorHost.appendChild(body);
 
+      const { PresentationView } = await import('../editors/PresentationView');
+
       const doc = await PresentationView.open(body, blob);
       this.currentDoc = doc;
+      this.currentDocKind = 'PresentationView';
       // View-only: Download/Share still work (fall back to original bytes).
       this.addToolbarActions(toolbar, record);
     } else if (editorType === 'document') {
@@ -1752,24 +1765,30 @@ export class AppShell {
       const body = document.createElement('div');
       body.className = 'doc-body';
       this.editorHost.appendChild(body);
+      const { DocxEditor } = await import('../editors/DocxEditor');
       const doc = await DocxEditor.open(body, blob, () => this.scheduleSaveDoc(), record.name);
       this.currentDoc = doc;
+      this.currentDocKind = 'DocxEditor';
       this.addToolbarActions(toolbar, record);
     } else if (editorType === 'audio') {
       const toolbar = this.editorToolbar();
       const body = document.createElement('div');
       body.className = 'doc-body';
       this.editorHost.appendChild(body);
+      const { AudioEditor } = await import('../editors/AudioEditor');
       const doc = await AudioEditor.open(body, blob, () => this.scheduleSaveDoc());
       this.currentDoc = doc;
+      this.currentDocKind = 'AudioEditor';
       this.addToolbarActions(toolbar, record);
     } else if (editorType === 'sketch') {
       const toolbar = this.editorToolbar();
       const body = document.createElement('div');
       body.className = 'doc-body';
       this.editorHost.appendChild(body);
+      const { SketchEditor } = await import('../editors/SketchEditor');
       const doc = await SketchEditor.open(body, blob, () => this.scheduleSaveDoc());
       this.currentDoc = doc;
+      this.currentDocKind = 'SketchEditor';
       this.addToolbarActions(toolbar, record);
     } else if (editorType === 'video') {
       const toolbar = this.editorToolbar();
@@ -1778,24 +1797,30 @@ export class AppShell {
       this.editorHost.appendChild(body);
       // No onChange autosave: exporting a video re-runs ffmpeg, too heavy to fire
       // on every trim tweak. Persisting happens on Download/Share/Save instead.
+      const { VideoEditor } = await import('../editors/VideoEditor');
       const doc = await VideoEditor.open(body, blob, record.name);
       this.currentDoc = doc;
+      this.currentDocKind = 'VideoEditor';
       this.addToolbarActions(toolbar, record);
     } else if (editorType === 'game') {
       const toolbar = this.editorToolbar();
       const body = document.createElement('div');
       body.className = 'doc-body';
       this.editorHost.appendChild(body);
+      const { GameEditor } = await import('../editors/GameEditor');
       const doc = await GameEditor.open(body, blob, record.name, () => this.scheduleSaveDoc());
       this.currentDoc = doc;
+      this.currentDocKind = 'GameEditor';
       this.addToolbarActions(toolbar, record);
     } else if (editorType === 'floorplan') {
       const toolbar = this.editorToolbar();
       const body = document.createElement('div');
       body.className = 'doc-body';
       this.editorHost.appendChild(body);
+      const { FloorPlanEditor } = await import('../editors/FloorPlanEditor');
       const doc = await FloorPlanEditor.open(body, blob, record.name, () => this.scheduleSaveDoc());
       this.currentDoc = doc;
+      this.currentDocKind = 'FloorPlanEditor';
       this.addToolbarActions(toolbar, record);
     }
 
@@ -1955,6 +1980,7 @@ export class AppShell {
     if (this.currentDoc) {
       this.currentDoc.destroy();
       this.currentDoc = undefined;
+      this.currentDocKind = undefined;
     }
     if (this.currentPreview) {
       this.currentPreview.destroy();
