@@ -51,5 +51,9 @@ export async function sweepExpired(
   // for their window; drop anything older than 2 days.
   await env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(now - 2 * 86_400_000).run();
 
+  // Telemetry kept 30 days, feedback 1 year.
+  await env.DB.prepare('DELETE FROM client_events WHERE ts < ?').bind(now - 30 * 86_400_000).run();
+  await env.DB.prepare('DELETE FROM feedback WHERE ts < ?').bind(now - 365 * 86_400_000).run();
+
   return { deletedShares, deletedLedger, deletedObjects };
 }

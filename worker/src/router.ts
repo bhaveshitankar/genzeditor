@@ -1,10 +1,11 @@
 // worker/src/router.ts
 import type { Env } from './env';
-import { json, error, preflight, originAllowed, isAllowedOrigin, withCors } from './http';
+import { json, error, preflight, originAllowed, isAllowedOrigin, withCors, corsHeaders, securityHeaders } from './http';
 import { ownerRef, ipHash } from './identity';
 import { rateLimit } from './ratelimit';
 import { createShare, confirmShare, resolveShare, initSaveBack, deleteShare } from './shares';
 import { deleteObject } from './filebase';
+import { recordTelemetry, recordFeedback } from './feedback';
 import { createAuth } from './auth';
 import { normalizeEmail, isValidSyntax, domainOf, isDisposable, hasMx } from './email/validate';
 import { checkThrottle, recordStrike, clearThrottle } from './throttle';
@@ -33,6 +34,17 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     if (origin && !isAllowedOrigin(origin, env)) return error('bad_origin', env, 403);
     const id = env.GAME_ROOM.idFromName(room[1]!);
     return env.GAME_ROOM.get(id).fetch(req);
+  }
+
+  // --- Client failure telemetry: anonymous, no session lookup needed ---
+  if (req.method === 'POST' && path === '/api/telemetry') {
+    if (!originAllowed(req, env)) return error('bad_origin', env, 403);
+    const ip = req.headers.get('CF-Connecting-IP') ?? '0.0.0.0';
+    const key = await ipHash(ip, env.IP_HASH_SECRET);
+    if (!(await rateLimit(env.DB, key, 'telemetry', 60, 3_600_000)).ok) return error('rate_limited', env, 429);
+    const body = await req.json().catch(() => null);
+    if (!(await recordTelemetry(env, req, body))) return error('bad_request', env, 400);
+    return new Response(null, { status: 204, headers: { ...corsHeaders(env, req), ...securityHeaders() } });
   }
 
   const auth = createAuth(env);
@@ -91,6 +103,18 @@ export async function handle(req: Request, env: Env): Promise<Response> {
   const sessionData = await auth.api.getSession({ headers: req.headers });
   const userId = sessionData?.user?.id ?? null;
   const owner = await ownerRef(req, env, userId);
+
+  // --- User feedback / "report a problem" ---
+  if (req.method === 'POST' && path === '/api/feedback') {
+    if (!originAllowed(req, env)) return error('bad_origin', env, 403);
+    const ip = req.headers.get('CF-Connecting-IP') ?? '0.0.0.0';
+    const key = await ipHash(ip, env.IP_HASH_SECRET);
+    if (!(await rateLimit(env.DB, key, 'feedback', 5, 86_400_000)).ok) return error('rate_limited', env, 429);
+    const body = await req.json().catch(() => null);
+    const err = await recordFeedback(env, req, body, userId);
+    if (err) return error(err, env, 400);
+    return json({ ok: true }, env);
+  }
 
   // --- AI edit: login-gated, 10 free edits/day (BYOK = unlimited) ---
   if (req.method === 'POST' && path === '/api/ai/edit') {
