@@ -1016,6 +1016,7 @@ export class AppShell {
       this.sheetCompare = new SheetCompare(area, this.store, files, {
         initialLeftId: this.currentFileId,
         onClose: () => { this.sheetCompare = undefined; },
+        onMerged: (id) => { void this.refreshLibrary().then(() => this.openFile(id)); },
         toast: (m, k) => this.toast(m, k),
       });
       return;

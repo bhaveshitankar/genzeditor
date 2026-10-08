@@ -29,3 +29,14 @@ describe('sheet diff', () => {
     expect(diffToCsv(d)).toContain('removed,3,,');
   });
 });
+
+import { deltaText } from '../../src/diff/SheetCompare';
+describe('numeric delta', () => {
+  it('shows absolute and percent change for numbers only', () => {
+    expect(deltaText('3', '4')).toBe('+1 (+33.3%)');
+    expect(deltaText('$1,000', '$900')).toBe('-100 (-10%)');
+    expect(deltaText('0', '5')).toBe('+5');
+    expect(deltaText('apple', 'pear')).toBe('');
+    expect(deltaText('2', '2.0')).toBe('');
+  });
+});
