@@ -189,13 +189,13 @@ export class AppShell {
   private async confirmDeleteFile(record: FileRecord): Promise<void> {
     const ok = await this.confirmModal({
       title: 'Delete file?',
-      message: `“${record.name}” will be permanently removed from this browser.`,
+      message: `“${record.name}” will be permanently removed from this browser.${this.shareNote([record])}`,
       confirmLabel: 'Delete',
       danger: true,
     });
     if (!ok) return;
     if (this.currentFileId === record.id) await this.clearEditor();
-    await this.store.remove(record.id);
+    await this.removeFile(record.id);
     await this.refreshLibrary();
     this.toast(`Deleted “${record.name}”`, 'info', 2500);
   }
@@ -891,13 +891,13 @@ export class AppShell {
           if (!record) return;
           const ok = await this.confirmModal({
             title: 'Delete file?',
-            message: `"${record.name}" will be permanently removed from this browser.`,
+            message: `"${record.name}" will be permanently removed from this browser.${this.shareNote([record])}`,
             confirmLabel: 'Delete',
             danger: true,
           });
           if (ok) {
             await this.clearEditor();
-            await this.store.remove(record.id);
+            await this.removeFile(record.id);
             await this.refreshLibrary();
             this.toast(`Deleted "${record.name}"`, 'info', 2500);
           }
@@ -1363,6 +1363,20 @@ export class AppShell {
     }
   }
 
+  // Delete a file from this browser, plus any uploaded share copies on our
+  // server (best effort — server copies also expire on their own).
+  private async removeFile(id: string): Promise<void> {
+    const record = (await this.store.list()).find((f) => f.id === id);
+    for (const sh of record?.shares ?? []) {
+      await deleteShare(sh.shareId, this.meState.csrfToken).catch(() => {});
+    }
+    await this.removeFile(id);
+  }
+
+  private shareNote(records: { shares?: ShareLink[] }[]): string {
+    return records.some((r) => r.shares?.length) ? ' Its share links will stop working and the uploaded copy is deleted from our server.' : '';
+  }
+
   // Right to erasure: delete this file's uploaded copies from our server now.
   private async handleStopSharing() {
     const record = (await this.store.list()).find((f) => f.id === this.currentFileId);
@@ -1519,14 +1533,14 @@ export class AppShell {
     if (ids.length === 0) return;
     const ok = await this.confirmModal({
       title: `Delete ${ids.length} file${ids.length === 1 ? '' : 's'}?`,
-      message: `${ids.length} file${ids.length === 1 ? '' : 's'} will be permanently removed from this browser.`,
+      message: `${ids.length} file${ids.length === 1 ? '' : 's'} will be permanently removed from this browser.${(await this.store.list()).some((f) => ids.includes(f.id) && f.shares?.length) ? ' Share links for them stop working and uploaded copies are deleted from our server.' : ''}`,
       confirmLabel: 'Delete',
       danger: true,
     });
     if (!ok) return;
     for (const id of ids) {
       if (this.currentFileId === id) await this.clearEditor();
-      await this.store.remove(id);
+      await this.removeFile(id);
     }
     this.toast(`Deleted ${ids.length} file${ids.length === 1 ? '' : 's'}`, 'info', 2500);
     this.toggleSelectMode(false);
@@ -1654,7 +1668,7 @@ export class AppShell {
         e.stopPropagation();
         const ok = await this.confirmModal({
           title: 'Delete file?',
-          message: `“${file.name}” will be permanently removed from this browser.`,
+          message: `“${file.name}” will be permanently removed from this browser.${this.shareNote([file])}`,
           confirmLabel: 'Delete',
           danger: true,
         });
@@ -1662,7 +1676,7 @@ export class AppShell {
           if (this.currentFileId === file.id) {
             await this.clearEditor();
           }
-          await this.store.remove(file.id);
+          await this.removeFile(file.id);
           await this.refreshLibrary();
           this.toast(`Deleted “${file.name}”`, 'info', 2500);
         }

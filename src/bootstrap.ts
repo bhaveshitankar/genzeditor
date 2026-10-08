@@ -13,7 +13,10 @@ export async function bootstrap(
   opts: { mobile?: boolean; chrome?: (api: ShellApi) => ShellChrome } = {},
 ): Promise<AppShell> {
   initTheme();
-  const store = new FileStore(new OpfsAdapter());
+  const adapter = new OpfsAdapter();
+  const store = new FileStore(adapter);
+  // Reclaim space from interrupted saves in the background (never blocks load).
+  setTimeout(() => { void adapter.cleanupOrphans().catch(() => {}); }, 5000);
   const shell = new AppShell(root, store, { mobile: !!opts.mobile, chrome: opts.chrome });
 
   // Open a shared link from the current hash. Runs on initial load and again

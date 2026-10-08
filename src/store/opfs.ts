@@ -65,8 +65,37 @@ export class OpfsAdapter implements StorageAdapter {
   async get(id: string) { const dir = await this.dir(); return (await (await dir.getFileHandle(id)).getFile()); }
   async del(id: string) {
     const dir = await this.dir();
-    await dir.removeEntry(id).catch(() => {});
-    await dir.removeEntry(this.metaName(id)).catch(() => {});
+    const rm = (name: string) => dir.removeEntry(name).catch((e: unknown) => {
+      if ((e as DOMException)?.name !== 'NotFoundError') throw e; // already gone is fine
+    });
+    await rm(id);
+    await rm(this.metaName(id));
+  }
+
+  // Remove storage that no listed file owns: data without metadata (a save
+  // interrupted between the two writes), metadata without data, and Chrome's
+  // temporary *.crswap files left by interrupted writes. Returns bytes freed.
+  async cleanupOrphans(): Promise<number> {
+    const dir = await this.dir();
+    const names = new Map<string, FileSystemFileHandle>();
+    // @ts-expect-error entries() is available on FileSystemDirectoryHandle at runtime
+    for await (const [name, handle] of dir.entries()) {
+      if ((handle as FileSystemHandle).kind === 'file') names.set(name, handle as FileSystemFileHandle);
+    }
+    let freed = 0;
+    for (const [name, handle] of names) {
+      const isMeta = name.endsWith('.meta.json');
+      const orphan = name.endsWith('.crswap')
+        || (isMeta && !names.has(name.slice(0, -'.meta.json'.length)))
+        || (!isMeta && !names.has(this.metaName(name)));
+      if (!orphan) continue;
+      // Skip anything touched in the last hour: another tab may be mid-save.
+      let file: File;
+      try { file = await handle.getFile(); } catch { continue; }
+      if (Date.now() - file.lastModified < 60 * 60 * 1000) continue;
+      await dir.removeEntry(name).then(() => { freed += file.size; }).catch(() => {});
+    }
+    return freed;
   }
   async entries(): Promise<Array<[string, FileRecord]>> {
     const dir = await this.dir(); const out: Array<[string, FileRecord]> = [];
