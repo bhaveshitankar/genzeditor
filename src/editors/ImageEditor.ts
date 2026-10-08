@@ -133,6 +133,10 @@ export class ImageEditor {
 
   private tool: Tool = 'select';
   private selectedId: string | null = null;
+  // Multi-selection (marquee / shift-click). Active only while it contains selectedId.
+  private multi = new Set<string>();
+  private groupOrig: Map<string, Layer> | null = null;
+  private marqueeEl: HTMLElement | null = null;
 
   // Brush/shape settings
   private color = '#ff3b6b';
@@ -174,7 +178,7 @@ export class ImageEditor {
   private antsPhase = 0;
   private antsTimer = 0;
 
-  private drag: { mode: 'draw' | 'move' | 'resize' | 'shape' | 'crop-move' | 'crop-resize' | 'lasso';
+  private drag: { mode: 'draw' | 'move' | 'resize' | 'shape' | 'crop-move' | 'crop-resize' | 'lasso' | 'marquee' | 'move-group';
     corner?: string; start: Point; orig?: Layer; origCrop?: { x: number; y: number; w: number; h: number } } | null = null;
 
   private constructor(container: HTMLElement, base: HTMLCanvasElement, contentType: string, onChange?: () => void) {
@@ -421,8 +425,25 @@ export class ImageEditor {
     this.composite(this.canvas);
     this.ctx = this.canvas.getContext('2d')!;
     this.drawSelectionOverlay();
+    this.drawGroupOutlines();
     this.positionCropBox();
     this.positionSelBox();
+  }
+
+  // Dashed outline around each layer of a multi-selection (display canvas only).
+  private drawGroupOutlines(): void {
+    if (this.tool !== 'select' || !this.isGroup()) return;
+    const c = this.ctx;
+    const lw = Math.max(1.5, this.canvas.width / 600);
+    c.save();
+    c.lineWidth = lw;
+    c.setLineDash([lw * 4, lw * 3]);
+    for (const l of this.selectedLayers()) {
+      const b = this.bbox(l);
+      c.strokeStyle = '#ffffff'; c.lineDashOffset = 0; c.strokeRect(b.x, b.y, b.w, b.h);
+      c.strokeStyle = '#ff3b9a'; c.lineDashOffset = lw * 3.5; c.strokeRect(b.x, b.y, b.w, b.h);
+    }
+    c.restore();
   }
 
   // ---- Geometry helpers ----
@@ -468,6 +489,16 @@ export class ImageEditor {
   private selected(): Layer | null {
     return this.state.layers.find((l) => l.id === this.selectedId) ?? null;
   }
+
+  // All selected layers: the multi-selection when active, else the single one.
+  private selectedLayers(): Layer[] {
+    if (this.selectedId && this.multi.size > 1 && this.multi.has(this.selectedId)) {
+      return this.state.layers.filter((l) => this.multi.has(l.id));
+    }
+    const s = this.selected();
+    return s ? [s] : [];
+  }
+  private isGroup(): boolean { return this.selectedLayers().length > 1; }
 
   // ---- Pointer handling ----
 
@@ -521,20 +552,74 @@ export class ImageEditor {
       return;
     }
 
-    // select tool: pick topmost hit and start moving
+    // select tool: shift-click toggles, a hit inside a group moves the group,
+    // a plain hit selects one layer, empty space starts a marquee.
     const hit = this.hitTest(p);
-    this.selectedId = hit?.id ?? null;
-    if (hit) { this.commit(); this.drag = { mode: 'move', start: p, orig: cloneLayer(hit) }; }
-    else this.drag = null;
+    if (hit && e.shiftKey) {
+      if (!this.isGroup()) { this.multi.clear(); if (this.selectedId) this.multi.add(this.selectedId); }
+      if (this.multi.has(hit.id)) this.multi.delete(hit.id); else this.multi.add(hit.id);
+      this.selectedId = this.multi.has(hit.id) ? hit.id : [...this.multi].pop() ?? null;
+      this.drag = null;
+    } else if (hit && this.isGroup() && this.multi.has(hit.id)) {
+      this.commit();
+      this.selectedId = hit.id;
+      this.groupOrig = new Map(this.selectedLayers().map((l) => [l.id, cloneLayer(l)]));
+      this.drag = { mode: 'move-group', start: p };
+    } else if (hit) {
+      this.multi.clear();
+      this.selectedId = hit.id;
+      this.commit();
+      this.drag = { mode: 'move', start: p, orig: cloneLayer(hit) };
+    } else {
+      if (!e.shiftKey) { this.multi.clear(); this.selectedId = null; }
+      this.drag = { mode: 'marquee', start: p };
+    }
     this.render();
     this.rebuildPanel();
   };
+
+  private drawMarquee(a: Point, b: Point): void {
+    if (!this.marqueeEl) { this.marqueeEl = el('div', 'img-marquee'); this.wrap.appendChild(this.marqueeEl); }
+    const r = this.canvas.getBoundingClientRect();
+    const wr = this.wrap.getBoundingClientRect();
+    const sx = r.width / this.canvas.width, sy = r.height / this.canvas.height;
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+    Object.assign(this.marqueeEl.style, {
+      display: 'block',
+      left: `${(r.left - wr.left) + x * sx}px`, top: `${(r.top - wr.top) + y * sy}px`,
+      width: `${Math.abs(b.x - a.x) * sx}px`, height: `${Math.abs(b.y - a.y) * sy}px`,
+    });
+  }
+
+  // Select every layer whose box intersects the marquee (adds to it with shift).
+  private finishMarquee(a: Point, b: Point, add: boolean): void {
+    if (this.marqueeEl) this.marqueeEl.style.display = 'none';
+    const x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y), x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+    if (x1 - x0 < 3 && y1 - y0 < 3) return; // a click, not a drag
+    const hits = this.state.layers.filter((l) => {
+      const bb = this.bbox(l);
+      return bb.x < x1 && bb.x + bb.w > x0 && bb.y < y1 && bb.y + bb.h > y0;
+    });
+    if (!add) this.multi.clear();
+    for (const l of hits) this.multi.add(l.id);
+    this.selectedId = hits.length ? hits[hits.length - 1]!.id : (add ? this.selectedId : null);
+    if (this.selectedId) this.multi.add(this.selectedId);
+  }
 
   private onPointerMove = (e: PointerEvent): void => {
     if (!this.drag) return;
     const p = this.toImage(e);
     if (this.drag.mode === 'lasso') { this.lassoPts.push(p); this.render(); return; }
+    if (this.drag.mode === 'marquee') { this.drawMarquee(this.drag.start, p); return; }
     const dx = p.x - this.drag.start.x, dy = p.y - this.drag.start.y;
+    if (this.drag.mode === 'move-group' && this.groupOrig) {
+      for (const l of this.selectedLayers()) {
+        const o = this.groupOrig.get(l.id);
+        if (o) this.moveLayer(l, o, dx, dy);
+      }
+      this.render();
+      return;
+    }
     const cur = this.selected();
     if (!cur) return;
 
@@ -556,7 +641,15 @@ export class ImageEditor {
       this.finishLasso(e.shiftKey);
       return;
     }
-    if (this.drag && (this.drag.mode === 'move' || this.drag.mode === 'resize' || this.drag.mode === 'shape' || this.drag.mode === 'draw')) {
+    if (this.drag?.mode === 'marquee') {
+      this.finishMarquee(this.drag.start, this.toImage(e), e.shiftKey);
+      this.drag = null;
+      this.render();
+      this.rebuildPanel();
+      return;
+    }
+    this.groupOrig = null;
+    if (this.drag && (this.drag.mode === 'move' || this.drag.mode === 'move-group' || this.drag.mode === 'resize' || this.drag.mode === 'shape' || this.drag.mode === 'draw')) {
       this.onChange?.();
     }
     this.drag = null;
@@ -849,16 +942,25 @@ export class ImageEditor {
 
     this.buildToolbar();
     this.rebuildPanel();
+    document.addEventListener('keydown', this.onCropKey);
   }
 
-  private activePanel: 'adjust' | 'filters' | 'transform' | 'reshape' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' | 'select' = 'adjust';
+  /** The tool strip, so the host can mount it in its own header bar. */
+  toolbarElement(): HTMLElement { return this.toolbar; }
+
+  // null = side panel hidden (click the active tab again to collapse it).
+  private activePanel: 'adjust' | 'filters' | 'transform' | 'reshape' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' | 'select' | null = 'adjust';
 
   private buildToolbar(): void {
     this.toolbar.innerHTML = '';
     const tool = (label: string, name: Tool): void => {
       const b = button(label, 'img-tool');
       b.dataset.tool = name;
-      b.onclick = (): void => this.setTool(name);
+      b.onclick = (): void => {
+        // Clicking the active tool again drops back to Select and hides its panel.
+        if (this.tool === name && name !== 'select') { this.activePanel = null; this.setTool('select'); return; }
+        this.setTool(name);
+      };
       this.toolbar.appendChild(b);
     };
     tool('Select', 'select');
@@ -874,10 +976,17 @@ export class ImageEditor {
 
     this.toolbar.appendChild(el('div', 'img-sep'));
 
-    const panelBtn = (label: string, panel: typeof this.activePanel): void => {
+    const panelBtn = (label: string, panel: NonNullable<typeof this.activePanel>): void => {
       const b = button(label, 'img-tool');
       b.dataset.panel = panel;
       b.onclick = (): void => {
+        if (this.activePanel === panel) {
+          // Toggle off: collapse the side panel for a bigger canvas.
+          if (panel === 'reshape') { this.crop = null; this.cropAspect = null; this.tool = 'select'; this.endCrop(); }
+          this.activePanel = null;
+          this.rebuildPanel(); this.syncToolbar();
+          return;
+        }
         this.activePanel = panel;
         if (panel === 'reshape') this.startReshape();
         this.rebuildPanel(); this.syncToolbar();
@@ -945,11 +1054,42 @@ export class ImageEditor {
         this.cropBox!.appendChild(hnd);
       });
       this.cropBox.addEventListener('pointerdown', (e) => this.cropBodyDown(e));
+      this.cropBox.addEventListener('dblclick', () => this.confirmCrop());
+      // Apply / Cancel right under the box (Enter / Esc also work).
+      const bar = el('div', 'img-crop-actions');
+      const cancel = button('✕ Cancel', 'img-btn');
+      cancel.onclick = (): void => this.cancelCrop();
+      const ok = button('✓ Apply', 'img-btn primary');
+      ok.onclick = (): void => this.confirmCrop();
+      bar.append(cancel, ok);
+      bar.addEventListener('pointerdown', (e) => e.stopPropagation());
+      this.cropBox.appendChild(bar);
       this.wrap.appendChild(this.cropBox);
     }
     this.cropBox.style.display = 'block';
     this.positionCropBox();
   }
+
+  // Reshape reuses the crop box, so "apply" means applying the reshape there.
+  private confirmCrop(): void {
+    if (this.activePanel === 'reshape') this.applyReshape();
+    else this.applyCrop();
+  }
+
+  private cancelCrop(): void {
+    this.crop = null;
+    this.cropAspect = null;
+    if (this.activePanel === 'reshape') this.activePanel = null;
+    this.setTool('select');
+  }
+
+  private onCropKey = (e: KeyboardEvent): void => {
+    if (this.tool !== 'crop' || !this.crop || !this.cropBox || this.cropBox.style.display === 'none') return;
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+    if (e.key === 'Enter') { e.preventDefault(); this.confirmCrop(); }
+    else if (e.key === 'Escape') { e.preventDefault(); this.cancelCrop(); }
+  };
 
   private endCrop(): void {
     if (this.cropBox) this.cropBox.style.display = 'none';
@@ -1023,7 +1163,7 @@ export class ImageEditor {
 
   private positionSelBox(): void {
     const sel = this.selected();
-    if (!sel || this.tool !== 'select') { if (this.selBox) this.selBox.style.display = 'none'; return; }
+    if (!sel || this.tool !== 'select' || this.isGroup()) { if (this.selBox) this.selBox.style.display = 'none'; return; }
     if (!this.selBox) {
       this.selBox = el('div', 'img-sel');
       const hnd = el('div', 'img-sel-handle');
@@ -1064,6 +1204,7 @@ export class ImageEditor {
   private rebuildPanel(): void {
     const host = this.panelHost;
     host.innerHTML = '';
+    host.hidden = this.activePanel === null;
     switch (this.activePanel) {
       case 'adjust': this.buildAdjustPanel(host); break;
       case 'filters': this.buildFiltersPanel(host); break;
@@ -2024,6 +2165,11 @@ export class ImageEditor {
       showClipboardFeedback('Selection copied');
       return;
     }
+    if (this.isGroup()) {
+      setAppClipboard('image-layer', this.selectedLayers().map((x) => this.detachLayer(x)));
+      showClipboardFeedback(`${this.selectedLayers().length} layers copied`);
+      return;
+    }
     const l = this.selected();
     if (l) {
       setAppClipboard('image-layer', this.detachLayer(l));
@@ -2040,11 +2186,12 @@ export class ImageEditor {
 
   private cmdDelete(): void {
     if (this.selMask) { this.deleteSelectionPixels(); return; }
-    const l = this.selected();
-    if (!l) return;
+    const ls = this.selectedLayers();
+    if (!ls.length) return;
     this.commit();
-    this.state.layers.splice(this.state.layers.indexOf(l), 1);
+    this.state.layers = this.state.layers.filter((l) => !ls.includes(l));
     this.selectedId = null;
+    this.multi.clear();
     this.render();
     this.rebuildPanel();
   }
@@ -2066,13 +2213,20 @@ export class ImageEditor {
     this.cmdDelete();
   }
 
-  private insertLayerCopy(src: Layer, offset: number): void {
-    const l = this.detachLayer(src);
-    l.id = uid();
-    this.moveLayer(l, src, offset, offset);
+  private insertLayerCopy(src: Layer | Layer[], offset: number): void {
+    const srcs = Array.isArray(src) ? src : [src];
+    if (!srcs.length) return;
     this.commit();
-    this.state.layers.push(l);
-    this.selectedId = l.id;
+    this.multi.clear();
+    for (const one of srcs) {
+      const l = this.detachLayer(one);
+      l.id = uid();
+      this.moveLayer(l, one, offset, offset);
+      this.state.layers.push(l);
+      this.multi.add(l.id);
+      this.selectedId = l.id;
+    }
+    if (this.multi.size < 2) this.multi.clear();
     this.clearSelectionState();
     this.setTool('select');
     this.render();
@@ -2081,8 +2235,8 @@ export class ImageEditor {
 
   private cmdDuplicate(): void {
     if (this.selMask) { this.extractSelection(false); return; }
-    const l = this.selected();
-    if (l) this.insertLayerCopy(l, Math.max(10, Math.round(this.state.base.width * 0.02)));
+    const ls = this.selectedLayers();
+    if (ls.length) this.insertLayerCopy(ls, Math.max(10, Math.round(this.state.base.width * 0.02)));
   }
 
   private async cmdPaste(data?: DataTransfer | null): Promise<void> {
@@ -2091,7 +2245,7 @@ export class ImageEditor {
         ?? [...data.items].find((it) => it.kind === 'file' && it.type.startsWith('image/'))?.getAsFile();
       if (file) { await this.addImageLayer(file); return; }
     }
-    const clip = getAppClipboard<Layer>('image-layer');
+    const clip = getAppClipboard<Layer | Layer[]>('image-layer');
     if (clip) { this.insertLayerCopy(clip, Math.max(10, Math.round(this.state.base.width * 0.02))); return; }
     if (data) return; // a real paste event without an image: nothing to do
     await this.pasteImage();
@@ -2154,6 +2308,8 @@ export class ImageEditor {
     this.canvas?.removeEventListener('pointermove', this.onPointerMove);
     this.canvas?.removeEventListener('pointerup', this.onPointerUp);
     this.canvas?.removeEventListener('pointercancel', this.onPointerUp);
+    document.removeEventListener('keydown', this.onCropKey);
+    this.toolbar?.remove(); // may live in the host's header
     this.container.innerHTML = '';
   }
 }

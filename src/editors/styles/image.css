@@ -276,3 +276,22 @@
 /* reshape preview: circle / rounded crop box */
 .img-crop.round { border-radius: 50%; }
 .img-crop.rounded { border-radius: 18%; }
+
+/* Tool strip mounted in the app's top bar (AppShell). */
+.img-toolbar.in-ribbon { padding: 0; border: 0; background: none; gap: 4px; flex-wrap: nowrap; }
+.img-toolbar.in-ribbon .img-spacer { flex: 0 0 8px; }
+
+/* Crop: Apply / Cancel under the box */
+.img-crop-actions {
+  position: absolute; left: 50%; top: calc(100% + 10px); transform: translateX(-50%);
+  display: flex; gap: 6px; white-space: nowrap; z-index: 3; cursor: default;
+}
+.img-crop-actions .img-btn { box-shadow: var(--shadow-md); }
+
+/* Marquee (drag-to-select) */
+.img-marquee {
+  position: absolute; pointer-events: none; display: none;
+  border: 1px dashed var(--brand-500); background: color-mix(in srgb, var(--brand-500) 12%, transparent);
+}
+.editor-tools .img-tool[aria-pressed='true'] { background: var(--brand-gradient); border-color: transparent; color: var(--on-brand, #fff); }
+.img-crop-actions .img-btn { padding: 8px 16px; font-size: 14px; font-weight: 600; border-radius: var(--r-full); }

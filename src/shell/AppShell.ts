@@ -2035,6 +2035,15 @@ export class AppShell {
       this.editorHost.appendChild(body);
       const { ImageEditor } = await import('../editors/ImageEditor');
       const doc = await ImageEditor.open(body, blob, record.name, () => this.scheduleSaveDoc());
+      // Tools/panels go in the top bar instead of a second row over the canvas.
+      const strip = doc.toolbarElement?.();
+      if (strip) {
+        strip.classList.add('in-ribbon');
+        toolbar.appendChild(strip);
+        // The editor loads async, so the rAF reveal in editorToolbar() already ran.
+        const group = this.root.querySelector('[data-role="edit-group"]') as HTMLElement | null;
+        if (group) group.hidden = false;
+      }
       this.currentDoc = doc;
       this.currentDocKind = 'ImageEditor';
       this.addToolbarActions(toolbar, record);
