@@ -137,6 +137,9 @@ export class AppShell {
     }
   }
 
+  /** Create a new file from a template id ('document', 'csv', 'scan'…) — used by app shortcuts. */
+  async newFromTemplate(id: string): Promise<void> { await this.api().createFromTemplate(id); }
+
   private api(): ShellApi {
     const aside = () => this.root.querySelector('.files-panel') as HTMLElement;
     const backdrop = () => this.root.querySelector('[data-role="drawer-backdrop"]') as HTMLElement;

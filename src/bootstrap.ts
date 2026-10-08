@@ -138,6 +138,13 @@ export async function bootstrap(
     }
   };
   void importSharedInbox();
+
+  // App-icon shortcuts open /?new=<template> (see manifest "shortcuts").
+  const wanted = new URLSearchParams(location.search).get('new');
+  if (wanted) {
+    history.replaceState(null, '', location.pathname + location.hash);
+    void shell.newFromTemplate(wanted);
+  }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void importSharedInbox(); });
 
   // Offline + installable: register the service worker in production builds only.

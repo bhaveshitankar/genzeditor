@@ -267,5 +267,43 @@
         }
       ]
     }
-  }
+  },
+  "shortcuts": [
+    {
+      "name": "New document",
+      "short_name": "Document",
+      "url": "/?new=document",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Scan to PDF",
+      "short_name": "Scan",
+      "url": "/?new=scan",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "New spreadsheet",
+      "short_name": "Sheet",
+      "url": "/?new=csv",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ]
 }
