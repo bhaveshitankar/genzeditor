@@ -9,7 +9,7 @@ import { formatJson } from '../editors/JsonTools';
 import { editorKindFor, type DocEditor } from '../editors/registry';
 import type { SpreadsheetEditor } from '../editors/SpreadsheetEditor';
 import type { PdfEditor } from '../editors/PdfEditor';
-import type { PresentationView } from '../editors/PresentationView';
+import type { PresentationEditor } from '../editors/PresentationEditor';
 import type { VideoEditor } from '../editors/VideoEditor';
 import type { AudioEditor } from '../editors/AudioEditor';
 import type { DocxEditor } from '../editors/DocxEditor';
@@ -146,6 +146,7 @@ export class AppShell {
       openFile: (id) => this.openFile(id),
       templates: () => AppShell.NEW_FILE_TEMPLATES,
       createFromTemplate: async (id) => {
+        if (id === 'scan') { void this.openScanner(); return; }
         const t = AppShell.NEW_FILE_TEMPLATES.find((x) => x.id === id);
         if (!t) return;
         const names = new Set((await this.store.list()).map((f) => f.name));
@@ -159,7 +160,7 @@ export class AppShell {
       rename: (r) => void this.handleRename(r),
       deleteFile: (r) => this.confirmDeleteFile(r),
       getCurrentBlob: () => this.getCurrentBlob(),
-      docxPdf: async () => (this.currentDocKind === 'DocxEditor' ? (this.currentDoc as DocxEditor).pdfBlob() : null),
+      docxPdf: () => this.currentPdf(),
       share: (rw) => this.handleShare(rw),
       saveShares: () => this.handleSaveShares(),
       stopSharing: () => this.handleStopSharing(),
@@ -241,6 +242,9 @@ export class AppShell {
             </button>
             <button type="button" class="rail-btn" data-role="new-btn" aria-label="Create new file" title="New file">
               <span class="rail-icon">${icon('filePlus')}</span><span class="rail-label">New</span>
+            </button>
+            <button type="button" class="rail-btn" data-role="rail-scan" aria-label="Scan document to PDF" title="Scan document">
+              <span class="rail-icon">${icon('camera')}</span><span class="rail-label">Scan</span>
             </button>
             <label class="rail-btn" data-role="rail-upload" aria-label="Upload file" title="Upload">
               <input type="file">
@@ -341,6 +345,8 @@ export class AppShell {
     };
     this.root.querySelector('[data-role="rail-inspector"]')?.addEventListener('click', toggleInspector);
     this.root.querySelector('[data-role="inspector-collapse"]')?.addEventListener('click', toggleInspector);
+
+    this.root.querySelector('[data-role="rail-scan"]')?.addEventListener('click', () => void this.openScanner());
 
     // AI panel toggle with mutual exclusivity
     this.root.querySelector('[data-role="rail-ai"]')?.addEventListener('click', () => {
@@ -693,6 +699,8 @@ export class AppShell {
     { id: 'csv', label: 'Spreadsheet (CSV)', icon: '📊', kind: 'spreadsheet', ext: 'csv', content: 'Column A,Column B,Column C\n,,\n' },
     { id: 'code', label: 'Code', icon: '⌘', kind: 'code', ext: 'txt', content: '' },
     { id: 'document', label: 'Word document', icon: '📘', kind: 'document', ext: 'docx', content: '' },
+    { id: 'presentation', label: 'Presentation', icon: '📽', kind: 'presentation', ext: 'pptx', content: '' },
+    { id: 'scan', label: 'Scan document → PDF', icon: '📷', kind: 'pdf', ext: 'pdf', content: '' },
     { id: 'image', label: 'Image (blank)', icon: '🖼', kind: 'image', ext: 'png', content: '' },
     { id: 'audio', label: 'Audio (record)', icon: '🎙', kind: 'audio', ext: 'wav', content: '' },
     { id: 'sketch', label: 'Sketch', icon: '✏️', kind: 'sketch', ext: 'excalidraw', content: '' },
@@ -728,7 +736,7 @@ export class AppShell {
       b.className = 'new-file-type' + (t === selected ? ' selected' : '');
       b.setAttribute('role', 'option');
       b.innerHTML = `<span class="nf-icon"></span><span class="nf-label"></span>`;
-      (b.querySelector('.nf-icon') as HTMLElement).innerHTML = this.iconForKind(t.kind);
+      (b.querySelector('.nf-icon') as HTMLElement).innerHTML = this.iconForKind(t.id === 'scan' ? 'scan' : t.kind);
       (b.querySelector('.nf-label') as HTMLElement).textContent = t.label;
       b.addEventListener('click', () => {
         selected = t;
@@ -751,6 +759,7 @@ export class AppShell {
     const submit = () => {
       const name = (nameInput.value.trim() || `Untitled.${selected.ext}`);
       close();
+      if (selected.id === 'scan') { void this.openScanner(); return; }
       void this.createNewFile(name, selected.kind, selected.content, selected.ext);
     };
     confirm.addEventListener('click', submit);
@@ -778,7 +787,7 @@ export class AppShell {
     // zero-byte blob (show a Record prompt / a blank editable page).
     // A blank sketch is also an empty blob — SketchEditor starts an empty scene
     // for zero-byte input and writes real .excalidraw JSON on first save.
-    if (kind === 'audio' || kind === 'document' || kind === 'sketch' || kind === 'floorplan') {
+    if (kind === 'audio' || kind === 'document' || kind === 'sketch' || kind === 'floorplan' || kind === 'presentation') {
       const type = kind === 'audio' ? 'audio/wav'
         : kind === 'sketch' || kind === 'floorplan' ? 'application/json'
         : 'application/octet-stream';
@@ -796,6 +805,48 @@ export class AppShell {
     await this.refreshLibrary();
     await this.openFile(rec.id);
     this.toast(`Created “${name}”`, 'success', 2500);
+  }
+
+  // PDF rendition of the open doc (Word / presentation), for "Download as PDF".
+  private async currentPdf(): Promise<Blob | null> {
+    if (this.currentDocKind === 'DocxEditor') return (this.currentDoc as DocxEditor).pdfBlob();
+    if (this.currentDocKind === 'PresentationEditor') return (this.currentDoc as PresentationEditor).pdfBlob();
+    return null;
+  }
+
+  // Full-screen document scanner (camera / uploads → perspective-corrected PDF).
+  private async openScanner(): Promise<void> {
+    this.closeDrawer();
+    const { openDocScanner } = await import('../tools/DocScanner');
+    openDocScanner({
+      root: this.root,
+      toast: (m, k) => this.toast(m, k),
+      onSave: async (pdf, name) => {
+        const rec = await this.store.save(await this.uniqueName(name), pdf, 'pdf');
+        await this.refreshLibrary();
+        await this.openFile(rec.id);
+        this.toast(`Saved “${rec.name}”`, 'success', 2500);
+      },
+      onSaveImages: async (images, baseName) => {
+        for (let i = 0; i < images.length; i++) {
+          const ext = images[i]!.type === 'image/png' ? 'png' : 'jpg';
+          await this.store.save(await this.uniqueName(`${baseName} p${i + 1}.${ext}`), images[i]!, 'image');
+        }
+        await this.refreshLibrary();
+        this.toast(`Saved ${images.length} image${images.length === 1 ? '' : 's'}`, 'success', 2500);
+      },
+    });
+  }
+
+  // Name not already used in the library ("a.png" → "a (2).png").
+  private async uniqueName(name: string): Promise<string> {
+    const names = new Set((await this.store.list()).map((f) => f.name));
+    if (!names.has(name)) return name;
+    const m = /^(.*?)(\.[^.]+)?$/.exec(name)!;
+    for (let i = 2; ; i++) {
+      const n = `${m[1]} (${i})${m[2] ?? ''}`;
+      if (!names.has(n)) return n;
+    }
   }
 
   // Generate a blank white PNG blob for a new image document.
@@ -819,6 +870,11 @@ export class AppShell {
         id: 'upload',
         label: 'Upload',
         run: () => this.uploadInput.click(),
+      },
+      {
+        id: 'scan-document',
+        label: 'Scan document to PDF',
+        run: () => void this.openScanner(),
       },
       {
         id: 'find',
@@ -1211,6 +1267,17 @@ export class AppShell {
     if (!record.shares || record.shares.length === 0) stop.hidden = true;
 
     grid.append(save, download, shareRo, shareRw, stop);
+    if (this.currentDocKind === 'PresentationEditor') {
+      const pdf = mk('Export PDF', ICON.download, 'export-pdf-btn', async () => {
+        const blob = await this.currentPdf();
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = record.name.replace(/\.[^.]+$/, '') + '.pdf'; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      });
+      grid.insertBefore(pdf, shareRo);
+    }
     panel.append(heading, meta, grid);
   }
 
@@ -1942,12 +2009,11 @@ export class AppShell {
       body.className = 'doc-body';
       this.editorHost.appendChild(body);
 
-      const { PresentationView } = await import('../editors/PresentationView');
+      const { PresentationEditor } = await import('../editors/PresentationEditor');
 
-      const doc = await PresentationView.open(body, blob);
+      const doc = await PresentationEditor.open(body, blob, record.name, () => this.scheduleSaveDoc());
       this.currentDoc = doc;
-      this.currentDocKind = 'PresentationView';
-      // View-only: Download/Share still work (fall back to original bytes).
+      this.currentDocKind = 'PresentationEditor';
       this.addToolbarActions(toolbar, record);
     } else if (editorType === 'document') {
       const toolbar = this.editorToolbar();
@@ -1987,7 +2053,14 @@ export class AppShell {
       // No onChange autosave: exporting a video re-runs ffmpeg, too heavy to fire
       // on every trim tweak. Persisting happens on Download/Share/Save instead.
       const { VideoEditor } = await import('../editors/VideoEditor');
-      const doc = await VideoEditor.open(body, blob, record.name);
+      const doc = await VideoEditor.open(body, blob, record.name, {
+        toast: (m, k) => this.toast(m, k),
+        // Thumbnails / frames go into the library without leaving the video.
+        saveImage: async (img, name) => {
+          await this.store.save(await this.uniqueName(name), img, 'image');
+          await this.refreshLibrary();
+        },
+      });
       this.currentDoc = doc;
       this.currentDocKind = 'VideoEditor';
       this.addToolbarActions(toolbar, record);

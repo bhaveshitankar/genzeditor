@@ -62,7 +62,7 @@ export class MobileChrome implements ShellChrome {
       b.type = 'button';
       b.className = 'm-new-tile';
       b.setAttribute('role', 'listitem');
-      b.innerHTML = `<span class="m-new-icon">${this.api.iconForKind(t.kind)}</span><span class="m-new-label"></span>`;
+      b.innerHTML = `<span class="m-new-icon">${this.api.iconForKind(t.id === 'scan' ? 'scan' : t.kind)}</span><span class="m-new-label"></span>`;
       (b.querySelector('.m-new-label') as HTMLElement).textContent = t.label;
       b.addEventListener('click', () => void this.api.createFromTemplate(t.id));
       grid.appendChild(b);
@@ -141,12 +141,14 @@ export class MobileChrome implements ShellChrome {
     quick.className = 'm-drawer-quick';
     quick.innerHTML = `
       <button type="button" data-act="new">${icon('filePlus', 20)}<span>New</span></button>
-      <button type="button" data-act="open">${icon('upload', 20)}<span>Open</span></button>`;
+      <button type="button" data-act="open">${icon('upload', 20)}<span>Open</span></button>
+      <button type="button" data-act="scan">${icon('camera', 20)}<span>Scan</span></button>`;
     quick.addEventListener('click', (e) => {
       const act = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')?.dataset.act;
       this.api.closeDrawer();
       if (act === 'new') this.api.openNewFileModal();
       else if (act === 'open') this.api.upload();
+      else if (act === 'scan') void this.api.createFromTemplate('scan');
     });
     head.after(quick);
 
@@ -348,6 +350,7 @@ export class MobileChrome implements ShellChrome {
     const formats: Fmt[] =
       kind === 'image' ? [{ id: 'png', label: 'PNG', ext: 'png', type: 'image/png' }, { id: 'jpeg', label: 'JPEG', ext: 'jpg', type: 'image/jpeg' }]
       : kind === 'document' ? [{ id: 'orig', label: 'Word (.docx)', ext: origExt || 'docx' }, { id: 'pdf', label: 'PDF', ext: 'pdf', type: 'application/pdf' }]
+      : kind === 'presentation' ? [{ id: 'orig', label: 'PowerPoint (.pptx)', ext: 'pptx' }, { id: 'pdf', label: 'PDF', ext: 'pdf', type: 'application/pdf' }]
       : [{ id: 'orig', label: `Original (.${origExt || 'file'})`, ext: origExt }];
     let fmt = formats[0]!;
     const canShareFiles = typeof navigator.canShare === 'function'

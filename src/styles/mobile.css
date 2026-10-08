@@ -179,7 +179,7 @@ html.is-mobile .m-drawer-head {
 html.is-mobile .m-brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 1.05rem; }
 html.is-mobile .m-drawer-quick {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
   padding: 6px 12px 10px;
 }

@@ -89,6 +89,12 @@ const FONT_BOLD_FILE = 'font-bold.ttf';
 const TEXT_DEFAULT_DUR = 3;
 const TEXT_MAX_DUR = 3600;
 const FPS = 30;
+
+export interface VideoEditorOptions {
+  // Saves an image (e.g. a thumbnail) into the file library.
+  saveImage?: (blob: Blob, name: string) => Promise<void>;
+  toast?: (msg: string, kind?: 'success' | 'error' | 'info') => void;
+}
 const MIN_LEN = 0.1;
 const IMAGE_DEFAULT_DUR = 3;
 const IMAGE_MAX_DUR = 600;
@@ -173,14 +179,14 @@ export class VideoEditor implements DocEditor {
   private resizeObs: ResizeObserver | null = null;
   private unbindUndo: (() => void) | null = null;
 
-  private constructor(host: HTMLElement, blob: Blob, name: string) {
+  private constructor(host: HTMLElement, blob: Blob, name: string, private opts: VideoEditorOptions = {}) {
     this.host = host;
     this.blob = blob;
     this.name = name;
   }
 
-  static async open(host: HTMLElement, blob: Blob, name: string): Promise<VideoEditor> {
-    const ed = new VideoEditor(host, blob, name);
+  static async open(host: HTMLElement, blob: Blob, name: string, opts: VideoEditorOptions = {}): Promise<VideoEditor> {
+    const ed = new VideoEditor(host, blob, name, opts);
     try {
       ed.main.push(await ed.makeClip(blob, name));
     } catch {
@@ -936,6 +942,7 @@ export class VideoEditor implements DocEditor {
           <button class="vid-tab" data-tab="resize">Resize</button>
           <button class="vid-tab" data-tab="adjust">Adjust</button>
           <button class="vid-tab" data-tab="audio">Audio</button>
+          <button class="vid-tab" data-tab="thumbnail">Thumbnail</button>
           <button class="vid-tab" data-tab="export">Export</button>
         </div>
 
@@ -996,6 +1003,12 @@ export class VideoEditor implements DocEditor {
           <button type="button" class="vid-btn" data-role="pickAudio">+ Add audio clip…</button>
           <button type="button" class="vid-btn" data-role="extractAudio">Extract audio (.m4a)</button>
           <span class="vid-hint">Audio clips live on their own rows; overlapping clips are mixed. Select one for volume and fades.</span>
+        </div>
+
+        <div class="vid-panel" data-panel="thumbnail">
+          <button type="button" class="vid-btn" data-role="makeThumb">🖼 Make thumbnail from this frame</button>
+          <button type="button" class="vid-btn" data-role="snapFrame">Save frame as image</button>
+          <span class="vid-hint">Move the playhead to the best moment, then design a YouTube / Shorts thumbnail with bold text, emoji and your face cut-out.</span>
         </div>
 
         <div class="vid-panel" data-panel="export">
@@ -1141,6 +1154,10 @@ export class VideoEditor implements DocEditor {
     this.q('pickAudio').addEventListener('click', () => this.auFile.click());
     this.q('muteOriginal').addEventListener('click', () => { this.muteOriginal = !this.muteOriginal; this.syncControls(); });
 
+    // Thumbnail.
+    this.q('makeThumb').addEventListener('click', () => void this.openThumbnail());
+    this.q('snapFrame').addEventListener('click', () => void this.saveFrame());
+
     // Export format.
     const fs = this.q<HTMLSelectElement>('fmt');
     fs.addEventListener('change', () => { this.outFmt = fs.value as Fmt; });
@@ -1160,6 +1177,54 @@ export class VideoEditor implements DocEditor {
       else if (z === 'reset') setZoom(100);
     });
     zs.addEventListener('input', () => setZoom(Number(zs.value)));
+  }
+
+  // Seek to t and wait until the preview canvas shows that frame, then copy it.
+  private async grabFrame(t: number): Promise<HTMLCanvasElement> {
+    if (this.playing) this.setPlaying(false);
+    this.seek(t);
+    const cur = this.mainAt(this.t);
+    const m = cur ? this.mediaFor(cur.clip) : null;
+    const frame = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()));
+    for (let i = 0; i < 90; i++) {
+      await frame();
+      if (!(m instanceof HTMLVideoElement) || (!m.seeking && m.readyState >= 2)) break;
+    }
+    await frame(); await frame();
+    const out = document.createElement('canvas');
+    out.width = this.canvas.width; out.height = this.canvas.height;
+    out.getContext('2d')!.drawImage(this.canvas, 0, 0);
+    return out;
+  }
+
+  private async openThumbnail(): Promise<void> {
+    const { openThumbnailMaker } = await import('./ThumbnailMaker');
+    const frame = await this.grabFrame(this.t);
+    openThumbnailMaker({
+      root: document.body,
+      frame,
+      duration: this.total(),
+      time: this.t,
+      grabFrame: (t) => this.grabFrame(t),
+      baseName: this.name,
+      onSave: this.opts.saveImage,
+      toast: this.opts.toast,
+    });
+  }
+
+  private async saveFrame(): Promise<void> {
+    const frame = await this.grabFrame(this.t);
+    const blob = await new Promise<Blob | null>((r) => frame.toBlob(r, 'image/png'));
+    if (!blob) return;
+    const name = `${this.name.replace(/\.[^.]+$/, '')} frame ${fmtT(this.t).replace(/[:.]/g, '-')}.png`;
+    if (this.opts.saveImage) {
+      await this.opts.saveImage(blob, name);
+      this.opts.toast?.('Frame saved to your files', 'success');
+    } else {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = name; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
   }
 
   private showTab(tab: string): void {

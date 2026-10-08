@@ -1,0 +1,250 @@
+/* Presentation editor — all classes prefixed `pres-`, using app design tokens. */
+
+.pres-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  color: var(--text);
+}
+
+/* Toolbar */
+.pres-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 12px);
+}
+.pres-group { display: flex; align-items: center; gap: 3px; padding-right: 6px; border-right: 1px solid var(--border); }
+.pres-group:last-child { border-right: 0; }
+.pres-btn, .pres-color, .pres-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  min-width: 30px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 8px);
+  cursor: pointer;
+  white-space: nowrap;
+  justify-content: center;
+}
+.pres-btn:hover:not(:disabled), .pres-color:hover { background: var(--surface-hover); }
+.pres-btn:disabled, .pres-color.is-disabled { opacity: 0.45; cursor: default; pointer-events: none; }
+.pres-btn.pres-b { font-weight: 700; }
+.pres-btn.pres-i { font-style: italic; }
+.pres-btn.pres-u { text-decoration: underline; }
+.pres-btn.pres-primary { background: var(--brand-500); border-color: var(--brand-500); color: var(--on-brand, #fff); }
+.pres-color input { width: 20px; height: 20px; padding: 0; border: 0; background: none; cursor: pointer; }
+
+/* Body: strip + main */
+.pres-body { display: flex; gap: 10px; min-height: 0; }
+.pres-strip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 72vh;
+  overflow-y: auto;
+  padding: 4px 6px 4px 2px;
+}
+.pres-thumb { display: flex; gap: 6px; align-items: flex-start; cursor: pointer; }
+.pres-thumb-num { font-size: 11px; color: var(--text-muted); min-width: 14px; text-align: right; padding-top: 2px; }
+.pres-thumb-frame {
+  position: relative;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  flex: 0 0 auto;
+}
+.pres-thumb-frame .pres-slide { pointer-events: none; }
+.pres-thumb.is-active .pres-thumb-frame { border-color: var(--brand-500); }
+.pres-thumb.is-drop .pres-thumb-frame { border-style: dashed; border-color: var(--brand-600); }
+
+.pres-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.pres-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 12px);
+  overflow: hidden;
+}
+.pres-viewport { position: relative; box-shadow: var(--shadow-md); flex: 0 0 auto; }
+.pres-notes {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 8px);
+}
+
+/* Slide + elements (in slide px; scaled with transform) */
+.pres-slide {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  overflow: hidden;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.pres-slide-edit { touch-action: none; overflow: visible; }
+.pres-el { position: absolute; box-sizing: border-box; transform-origin: 50% 50%; }
+.pres-slide-edit .pres-el { cursor: move; }
+.pres-slide-edit .pres-el.is-locked { pointer-events: none; cursor: default; }
+.pres-el.is-line { min-width: 6px; min-height: 6px; }
+.pres-geom { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.pres-pic img { display: block; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.pres-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 4.8px 9.6px;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  line-height: 1.2;
+  counter-reset: pres-n;
+  outline: none;
+}
+.pres-anchor-t { justify-content: flex-start; }
+.pres-anchor-ctr { justify-content: center; }
+.pres-anchor-b { justify-content: flex-end; }
+.pres-p { margin: 0; }
+.pres-p[data-bu]::before {
+  content: attr(data-bu);
+  display: inline-block;
+  width: 1.1em;
+  margin-left: -1.1em;
+}
+.pres-p[data-bu="num"] { counter-increment: pres-n; }
+.pres-p[data-bu="num"]::before { content: counter(pres-n) "."; }
+.pres-hint { color: #9a9a9a !important; font-weight: 400 !important; }
+.pres-slide-edit .pres-el[data-id] .pres-hint { outline: 1px dashed #b5b5b5; outline-offset: -1px; }
+.pres-table {
+  width: 100%;
+  height: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  line-height: 1.2;
+  outline: none;
+}
+.pres-table td { border: 1px solid #8c8c8c; padding: 4px 6px; vertical-align: top; white-space: pre-wrap; overflow: hidden; }
+.pres-el.is-editing { cursor: text; user-select: text; -webkit-user-select: text; z-index: 5; }
+.pres-el.is-editing .pres-text, .pres-el.is-editing td { user-select: text; -webkit-user-select: text; cursor: text; }
+
+/* Selection box + handles (sized in screen px via --pres-inv = 1/scale) */
+.pres-sel {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: none;
+  outline: calc(2px * var(--pres-inv, 1)) solid var(--brand-500);
+  z-index: 10;
+}
+.pres-handle {
+  position: absolute;
+  width: calc(12px * var(--pres-inv, 1));
+  height: calc(12px * var(--pres-inv, 1));
+  margin: calc(-6px * var(--pres-inv, 1)) 0 0 calc(-6px * var(--pres-inv, 1));
+  background: #fff;
+  border: calc(2px * var(--pres-inv, 1)) solid var(--brand-500);
+  border-radius: 50%;
+  box-sizing: border-box;
+  pointer-events: auto;
+  touch-action: none;
+}
+.pres-h-nw { left: 0; top: 0; cursor: nwse-resize; }
+.pres-h-n { left: 50%; top: 0; cursor: ns-resize; }
+.pres-h-ne { left: 100%; top: 0; cursor: nesw-resize; }
+.pres-h-e { left: 100%; top: 50%; cursor: ew-resize; }
+.pres-h-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.pres-h-s { left: 50%; top: 100%; cursor: ns-resize; }
+.pres-h-sw { left: 0; top: 100%; cursor: nesw-resize; }
+.pres-h-w { left: 0; top: 50%; cursor: ew-resize; }
+
+/* Slideshow overlay */
+.pres-show {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: none;
+}
+.pres-show-frame { position: relative; overflow: hidden; }
+.pres-show-count {
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+.pres-show-exit {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+.pres-show-exit:hover { opacity: 1; }
+
+/* Legacy / error message */
+.pres-message {
+  max-width: 560px;
+  margin: 40px auto;
+  padding: 20px 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 12px);
+  color: var(--text);
+  line-height: 1.5;
+}
+.pres-message p { margin: 8px 0 0; color: var(--text-muted); }
+
+/* Narrow screens: horizontal thumbnail strip, scrollable toolbar */
+@media (max-width: 700px) {
+  .pres-toolbar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .pres-group { flex: 0 0 auto; }
+  .pres-body { flex-direction: column-reverse; }
+  .pres-strip { flex-direction: row; max-height: none; overflow-x: auto; overflow-y: hidden; padding: 2px; }
+  .pres-thumb { flex-direction: column; gap: 2px; }
+  .pres-thumb-num { text-align: left; }
+  .pres-btn, .pres-color, .pres-select { height: 34px; }
+}
+
+/* Empty paragraphs don't show bullets (matches PowerPoint) except while typing. */
+.pres-el:not(.is-editing) .pres-p[data-bu]:not(:has(span))::before { content: none; }

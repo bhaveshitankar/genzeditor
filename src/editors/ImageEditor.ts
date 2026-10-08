@@ -11,6 +11,39 @@ export function computeResize(w: number, h: number, maxDim: number): { w: number
   return { w: Math.round(w * scale), h: Math.round(h * scale) };
 }
 
+// Largest rect of the given aspect (w/h) centered inside a w×h image.
+export function fitAspect(w: number, h: number, aspect: number): { x: number; y: number; w: number; h: number } {
+  const cw = Math.min(w, h * aspect), ch = cw / aspect;
+  return { x: (w - cw) / 2, y: (h - ch) / 2, w: cw, h: ch };
+}
+
+// Output pixel size for a reshape: `size` is the long side (0 = keep source scale).
+export function reshapeSize(srcW: number, srcH: number, aspect: number, size: number): { w: number; h: number } {
+  if (size <= 0) return { w: Math.max(1, Math.round(srcW)), h: Math.max(1, Math.round(srcH)) };
+  return aspect >= 1
+    ? { w: size, h: Math.max(1, Math.round(size / aspect)) }
+    : { w: Math.max(1, Math.round(size * aspect)), h: size };
+}
+
+type ReshapeShape = 'circle' | 'rounded' | 'square';
+
+// Profile-picture / social presets for the Reshape panel.
+const RESHAPE_PRESETS: { label: string; shape: ReshapeShape; aspect: number; size: number }[] = [
+  { label: 'Instagram DP', shape: 'circle', aspect: 1, size: 1080 },
+  { label: 'WhatsApp DP', shape: 'circle', aspect: 1, size: 640 },
+  { label: 'LinkedIn / X', shape: 'circle', aspect: 1, size: 400 },
+  { label: 'Insta post 4:5', shape: 'square', aspect: 4 / 5, size: 1350 },
+  { label: 'Story 9:16', shape: 'square', aspect: 9 / 16, size: 1920 },
+  { label: 'YouTube 16:9', shape: 'square', aspect: 16 / 9, size: 1280 },
+  { label: 'Passport 35×45', shape: 'square', aspect: 35 / 45, size: 600 },
+];
+
+const RESHAPE_RATIOS: { label: string; v: number }[] = [
+  { label: '1:1', v: 1 }, { label: '4:5', v: 4 / 5 }, { label: '3:4', v: 3 / 4 }, { label: '2:3', v: 2 / 3 },
+  { label: '9:16', v: 9 / 16 }, { label: '16:9', v: 16 / 9 }, { label: '4:3', v: 4 / 3 }, { label: '3:2', v: 3 / 2 },
+  { label: '1.91:1', v: 1.91 },
+];
+
 export function computeRotatedSize(w: number, h: number, deg: 90 | 180 | 270): { w: number; h: number } {
   return deg === 180 ? { w, h } : { w: h, h: w };
 }
@@ -122,6 +155,11 @@ export class ImageEditor {
   // Crop rectangle in image coordinates (or null when not cropping).
   private crop: { x: number; y: number; w: number; h: number } | null = null;
   private cropAspect: number | null = null; // null = free
+
+  // Reshape (profile pic) settings: shape mask, aspect, output long side (0 = keep),
+  // fill = crop to the box, fit = letterbox the whole image onto a background.
+  private reshape = { shape: 'circle' as ReshapeShape, aspect: 1, size: 0, mode: 'fill' as 'fill' | 'fit',
+    bg: 'transparent' as 'transparent' | 'color' | 'blur', bgColor: '#ffffff' };
 
   // Active pointer gesture bookkeeping.
   // Pixel selection (wand / lasso): alpha mask the size of the base image.
@@ -822,7 +860,7 @@ export class ImageEditor {
     });
   }
 
-  private activePanel: 'adjust' | 'filters' | 'transform' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' | 'select' = 'adjust';
+  private activePanel: 'adjust' | 'filters' | 'transform' | 'reshape' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' | 'select' = 'adjust';
 
   private buildToolbar(): void {
     this.toolbar.innerHTML = '';
@@ -848,12 +886,17 @@ export class ImageEditor {
     const panelBtn = (label: string, panel: typeof this.activePanel): void => {
       const b = button(label, 'img-tool');
       b.dataset.panel = panel;
-      b.onclick = (): void => { this.activePanel = panel; this.rebuildPanel(); this.syncToolbar(); };
+      b.onclick = (): void => {
+        this.activePanel = panel;
+        if (panel === 'reshape') this.startReshape();
+        this.rebuildPanel(); this.syncToolbar();
+      };
       this.toolbar.appendChild(b);
     };
     panelBtn('Adjust', 'adjust');
     panelBtn('Filters', 'filters');
     panelBtn('Transform', 'transform');
+    panelBtn('Reshape', 'reshape');
     panelBtn('Layers', 'layers');
     panelBtn('Remove BG', 'bg');
 
@@ -974,6 +1017,11 @@ export class ImageEditor {
   private clampCrop(): void {
     if (!this.crop) return;
     const b = this.state.base;
+    if (this.cropAspect) {
+      // Shrink uniformly so a locked aspect survives clamping.
+      const k = Math.min(1, b.width / this.crop.w, b.height / this.crop.h);
+      this.crop.w *= k; this.crop.h *= k;
+    }
     this.crop.w = Math.min(this.crop.w, b.width);
     this.crop.h = Math.min(this.crop.h, b.height);
     this.crop.x = Math.max(0, Math.min(this.crop.x, b.width - this.crop.w));
@@ -1029,6 +1077,7 @@ export class ImageEditor {
       case 'adjust': this.buildAdjustPanel(host); break;
       case 'filters': this.buildFiltersPanel(host); break;
       case 'transform': this.buildTransformPanel(host); break;
+      case 'reshape': this.buildReshapePanel(host); break;
       case 'draw': this.buildDrawPanel(host); break;
       case 'text': this.buildTextPanel(host); break;
       case 'shapes': this.buildShapesPanel(host); break;
@@ -1037,6 +1086,15 @@ export class ImageEditor {
       case 'select': this.buildSelectPanel(host); break;
     }
     this.positionSelBox();
+    this.syncCropShape();
+  }
+
+  // Circle/rounded preview on the crop box while the Reshape panel is open.
+  private syncCropShape(): void {
+    if (!this.cropBox) return;
+    const on = this.activePanel === 'reshape' && this.reshape.mode === 'fill';
+    this.cropBox.classList.toggle('round', on && this.reshape.shape === 'circle');
+    this.cropBox.classList.toggle('rounded', on && this.reshape.shape === 'rounded');
   }
 
   private slider(host: HTMLElement, label: string, key: keyof Adjustments, min: number, max: number, step = 1): void {
@@ -1169,6 +1227,155 @@ export class ImageEditor {
     rr.append(input, go);
     host.appendChild(rr);
     host.appendChild(note(`Current: ${this.state.base.width} × ${this.state.base.height}px`));
+  }
+
+  // ---- Reshape (profile pic / ratio) ----
+
+  // Lock the crop box to the reshape aspect and auto-center the largest fit.
+  private startReshape(): void {
+    const r = this.reshape;
+    if (r.mode === 'fit') { this.tool = 'select'; this.endCrop(); this.crop = null; return; }
+    this.cropAspect = r.aspect;
+    this.tool = 'crop';
+    this.startCrop();
+    const b = this.state.base;
+    this.crop = fitAspect(b.width, b.height, r.aspect);
+    this.positionCropBox();
+  }
+
+  private applyReshape(): void {
+    const r = this.reshape;
+    const flat = document.createElement('canvas');
+    this.composite(flat);
+    const src = r.mode === 'fill'
+      ? (this.crop ?? fitAspect(flat.width, flat.height, r.aspect))
+      : null;
+    // Natural size: the crop itself (fill) or the image padded out to the aspect (fit).
+    const natural = src ?? (flat.width / flat.height > r.aspect
+      ? { w: flat.width, h: flat.width / r.aspect }
+      : { w: flat.height * r.aspect, h: flat.height });
+    const { w, h } = reshapeSize(natural.w, natural.h, r.aspect, r.size);
+    const out = document.createElement('canvas');
+    out.width = w; out.height = h;
+    const c = out.getContext('2d')!;
+    c.imageSmoothingQuality = 'high';
+    if (src) {
+      c.drawImage(flat, src.x, src.y, src.w, src.h, 0, 0, w, h);
+    } else {
+      if (r.bg === 'color') { c.fillStyle = r.bgColor; c.fillRect(0, 0, w, h); }
+      else if (r.bg === 'blur') {
+        const cover = Math.max(w / flat.width, h / flat.height);
+        c.filter = `blur(${Math.round(Math.max(w, h) / 40)}px) brightness(85%)`;
+        c.drawImage(flat, (w - flat.width * cover) / 2, (h - flat.height * cover) / 2, flat.width * cover, flat.height * cover);
+        c.filter = 'none';
+      }
+      const contain = Math.min(w / flat.width, h / flat.height);
+      const dw = flat.width * contain, dh = flat.height * contain;
+      c.drawImage(flat, (w - dw) / 2, (h - dh) / 2, dw, dh);
+    }
+    if (r.shape !== 'square') {
+      // Mask to the shape; outside pixels become transparent.
+      c.globalCompositeOperation = 'destination-in';
+      c.beginPath();
+      if (r.shape === 'circle') c.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+      else c.roundRect(0, 0, w, h, Math.min(w, h) * 0.18);
+      c.fill();
+      c.globalCompositeOperation = 'source-over';
+    }
+    const transparent = r.shape !== 'square' || (!src && r.bg === 'transparent');
+    this.commit();
+    if (transparent) this.contentType = 'image/png';
+    this.state.adjustments = neutralAdjustments();
+    this.state.layers = [];
+    this.crop = null;
+    this.endCrop();
+    this.tool = 'select';
+    this.activePanel = 'transform';
+    this.replaceBase(out);
+    this.rebuildPanel();
+    this.syncToolbar();
+    this.onChange?.();
+  }
+
+  private buildReshapePanel(host: HTMLElement): void {
+    const r = this.reshape;
+    const refresh = (): void => { this.startReshape(); this.rebuildPanel(); this.syncToolbar(); };
+    const chipRow = <T,>(items: { label: string; v: T }[], cur: T, set: (v: T) => void): HTMLElement => {
+      const chips = el('div', 'img-chips');
+      for (const it of items) {
+        const chip = button(it.label, 'img-chip');
+        chip.setAttribute('aria-pressed', String(cur === it.v));
+        chip.onclick = (): void => { set(it.v); refresh(); };
+        chips.appendChild(chip);
+      }
+      return chips;
+    };
+
+    host.appendChild(title('Quick presets'));
+    const presets = el('div', 'img-chips');
+    for (const p of RESHAPE_PRESETS) {
+      const chip = button(p.label, 'img-chip');
+      chip.onclick = (): void => { Object.assign(r, { shape: p.shape, aspect: p.aspect, size: p.size, mode: 'fill' }); refresh(); };
+      presets.appendChild(chip);
+    }
+    host.appendChild(presets);
+
+    host.appendChild(title('Shape'));
+    host.appendChild(chipRow<ReshapeShape>(
+      [{ label: '● Circle', v: 'circle' }, { label: '▢ Rounded', v: 'rounded' }, { label: '■ Square / rect', v: 'square' }],
+      r.shape, (v) => { r.shape = v; if (v === 'circle') r.aspect = 1; }));
+
+    host.appendChild(title('Ratio'));
+    host.appendChild(chipRow(RESHAPE_RATIOS, r.aspect, (v) => {
+      r.aspect = v;
+      if (r.shape === 'circle' && v !== 1) r.shape = 'square';
+    }));
+
+    host.appendChild(title('Output size (long side)'));
+    const sizes = chipRow([{ label: 'Keep', v: 0 }, { label: '256', v: 256 }, { label: '400', v: 400 },
+      { label: '640', v: 640 }, { label: '1080', v: 1080 }, { label: '2048', v: 2048 }], r.size, (v) => { r.size = v; });
+    host.appendChild(sizes);
+    const custom = el('div', 'img-row');
+    const input = document.createElement('input');
+    input.type = 'number'; input.min = '16'; input.max = '8192';
+    input.className = 'img-input wide'; input.placeholder = 'Custom px';
+    if (r.size) input.value = String(r.size);
+    input.onchange = (): void => { const v = Math.round(Number(input.value)); if (v >= 16) { r.size = Math.min(v, 8192); refresh(); } };
+    custom.appendChild(input);
+    host.appendChild(custom);
+
+    host.appendChild(title('Fit'));
+    host.appendChild(chipRow<'fill' | 'fit'>([{ label: 'Crop to fill', v: 'fill' }, { label: 'Fit whole image', v: 'fit' }],
+      r.mode, (v) => { r.mode = v; }));
+    if (r.mode === 'fit') {
+      host.appendChild(chipRow<'transparent' | 'color' | 'blur'>(
+        [{ label: 'Transparent', v: 'transparent' }, { label: 'Blur', v: 'blur' }, { label: 'Color', v: 'color' }],
+        r.bg, (v) => { r.bg = v; }));
+      if (r.bg === 'color') {
+        const row = el('div', 'img-row');
+        const sw = document.createElement('input');
+        sw.type = 'color'; sw.value = r.bgColor;
+        sw.oninput = (): void => { r.bgColor = sw.value; };
+        row.append(document.createTextNode('Background '), sw);
+        host.appendChild(row);
+      }
+    }
+
+    const out = (() => {
+      const b = this.state.base;
+      const nat = r.mode === 'fill' && this.crop ? this.crop : fitAspect(b.width, b.height, r.aspect);
+      return reshapeSize(nat.w, nat.h, r.aspect, r.size);
+    })();
+    host.appendChild(note(r.mode === 'fill'
+      ? `Drag the box to choose what stays. Output: ${out.w} × ${out.h}px${r.shape !== 'square' ? ' (transparent PNG)' : ''}`
+      : `Whole image fitted into ${out.w} × ${out.h}px`));
+    const row = el('div', 'img-row');
+    const auto = button('Auto center', 'img-btn');
+    auto.onclick = refresh;
+    const apply = button('Apply', 'img-btn primary');
+    apply.onclick = (): void => this.applyReshape();
+    row.append(auto, apply);
+    host.appendChild(row);
   }
 
   private colorRow(host: HTMLElement): void {

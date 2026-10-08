@@ -15,7 +15,7 @@ export function detectKind(name: string, mime?: string): FileKind {
       || mime === 'text/csv'
       || mime?.includes('spreadsheetml')
       || mime === 'application/vnd.ms-excel') return 'spreadsheet';
-  if (['pptx','ppt'].includes(ext)
+  if (['pptx','ppt','pptm','ppsx','pps','potx'].includes(ext)
       || mime?.includes('presentationml')
       || mime === 'application/vnd.ms-powerpoint') return 'presentation';
   if (['docx','docm'].includes(ext)

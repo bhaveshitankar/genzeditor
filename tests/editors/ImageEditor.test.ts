@@ -13,3 +13,16 @@ describe('image math', () => {
     expect(computeRotatedSize(200, 100, 180)).toEqual({ w: 200, h: 100 });
   });
 });
+
+import { fitAspect, reshapeSize } from '../../src/editors/ImageEditor';
+describe('reshape geometry', () => {
+  it('fitAspect centers the largest box of the ratio', () => {
+    expect(fitAspect(1000, 500, 1)).toEqual({ x: 250, y: 0, w: 500, h: 500 });
+    expect(fitAspect(600, 1200, 16 / 9).w).toBeCloseTo(600);
+  });
+  it('reshapeSize uses size as the long side', () => {
+    expect(reshapeSize(500, 500, 1, 400)).toEqual({ w: 400, h: 400 });
+    expect(reshapeSize(900, 1600, 9 / 16, 1920)).toEqual({ w: 1080, h: 1920 });
+    expect(reshapeSize(123.4, 50, 2, 0)).toEqual({ w: 123, h: 50 });
+  });
+});
