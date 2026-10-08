@@ -701,6 +701,7 @@ export class AppShell {
     { id: 'presentation', label: 'Presentation', icon: '📽', kind: 'presentation', ext: 'pptx', content: '' },
     { id: 'scan', label: 'Scan document → PDF', icon: '📷', kind: 'pdf', ext: 'pdf', content: '' },
     { id: 'image', label: 'Image (blank)', icon: '🖼', kind: 'image', ext: 'png', content: '' },
+    { id: 'video', label: 'Video', icon: '🎬', kind: 'video', ext: 'webm', content: '' },
     { id: 'text', label: 'Text note', icon: '📄', kind: 'text', ext: 'txt', content: '' },
     { id: 'markdown', label: 'Markdown', icon: '📝', kind: 'markdown', ext: 'md', content: '# Title\n\nStart writing…\n' },
     { id: 'sketch', label: 'Sketch', icon: '✏️', kind: 'sketch', ext: 'excalidraw', content: '' },
@@ -800,7 +801,15 @@ export class AppShell {
     const fileExt = /\.([^.]+)$/.exec(name)?.[1]?.toLowerCase() ?? ext;
 
     if (kind === 'video') {
-      this.toast('Can’t create an empty video — upload one, or use the Video editor on an existing clip.', 'info', 5000);
+      const { blankVideoType, createBlankVideo } = await import('../editors/blankVideo');
+      const t = blankVideoType(fileExt);
+      if (!t) { this.toast('This browser can’t create video files — upload a clip instead.', 'error', 5000); return; }
+      if (t.ext !== fileExt) name = name.replace(/\.[^.]+$/, `.${t.ext}`); // e.g. .mov/.avi → what we can really write
+      this.toast('Creating video…', 'info', 2500);
+      const rec = await this.store.save(name, await createBlankVideo(t.mime), kind);
+      await this.refreshLibrary();
+      await this.openFile(rec.id);
+      this.toast(`Created “${name}”`, 'success', 2500);
       return;
     }
     // Legacy / odd presentation extensions can't be written; the editor saves .pptx.

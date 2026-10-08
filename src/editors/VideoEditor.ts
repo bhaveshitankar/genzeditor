@@ -2241,6 +2241,17 @@ async function probeMedia(blob: Blob, name: string, url: string): Promise<{ kind
   v.src = url;
   try {
     await withTimeout(once(v, 'loadedmetadata'), 10000);
+    // MediaRecorder / screen-recording files report Infinity until the end is
+    // reached; seeking far past it makes the browser compute the real length.
+    if (v.duration === Infinity) {
+      v.currentTime = 1e9;
+      await withTimeout(new Promise<void>((res) => {
+        const check = (): void => { if (isFinite(v.duration)) { v.removeEventListener('durationchange', check); v.removeEventListener('timeupdate', check); res(); } };
+        v.addEventListener('durationchange', check);
+        v.addEventListener('timeupdate', check);
+      }), 8000);
+      v.currentTime = 0;
+    }
     if (!isFinite(v.duration) || v.duration <= 0 || !v.videoWidth) throw new Error('unplayable');
     return { kind: 'video', dur: v.duration, w: v.videoWidth, h: v.videoHeight };
   } finally {
