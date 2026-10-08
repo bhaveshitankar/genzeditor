@@ -48,7 +48,7 @@
 .img-tool[aria-pressed='true'] {
   background: var(--brand-gradient);
   border-color: transparent;
-  color: #fff;
+  color: var(--on-brand, #fff);
 }
 .img-tool:disabled { opacity: 0.5; cursor: not-allowed; }
 .img-sep { flex: 0 0 auto; width: 1px; align-self: stretch; background: var(--border); margin: 2px 4px; }
@@ -166,7 +166,7 @@
   transition: background 0.15s var(--ease);
 }
 .img-btn:hover { background: var(--surface-hover); }
-.img-btn.primary { background: var(--brand-gradient); border-color: transparent; color: #fff; }
+.img-btn.primary { background: var(--brand-gradient); border-color: transparent; color: var(--on-brand, #fff); }
 .img-btn.danger { color: #ef4444; }
 .img-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); cursor: pointer; }
 
@@ -196,7 +196,7 @@
   font-size: 12px;
   cursor: pointer;
 }
-.img-chip[aria-pressed='true'] { background: var(--brand-500); border-color: transparent; color: #fff; }
+.img-chip[aria-pressed='true'] { background: var(--brand-500); border-color: transparent; color: var(--on-brand, #fff); }
 .img-stickers { display: flex; flex-wrap: wrap; gap: 6px; }
 .img-sticker { font-size: 24px; line-height: 1; padding: 6px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); cursor: pointer; }
 

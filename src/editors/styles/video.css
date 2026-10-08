@@ -203,7 +203,7 @@
 .vid-tab:hover { border-color: var(--brand-500); color: var(--text); }
 .vid-tab.active {
   background: var(--brand-gradient);
-  color: #fff;
+  color: var(--on-brand, #fff);
   border-color: transparent;
   box-shadow: var(--shadow-sm);
 }
@@ -289,7 +289,7 @@
   white-space: nowrap;
 }
 .vid-btn:hover:not(:disabled) { border-color: var(--brand-500); background: var(--surface-hover); }
-.vid-btn.active { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+.vid-btn.active { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
 .vid-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* Status + progress */

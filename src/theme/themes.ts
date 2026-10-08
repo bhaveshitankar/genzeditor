@@ -15,6 +15,8 @@ export interface ThemeDef {
 
 export const THEMES: ThemeDef[] = [
   { id: 'system', label: 'System', swatch: ['#F3F1FA', '#FF4D8D'] },
+  { id: 'mono-light', label: 'White (B&W)', swatch: ['#ffffff', '#000000'] },
+  { id: 'mono-dark', label: 'Black (B&W)', swatch: ['#000000', '#ffffff'] },
   { id: 'aurora', label: 'Midnight Aurora', swatch: ['#0b1020', '#7c5cff'], animated: true },
   { id: 'sunset', label: 'Sunset', swatch: ['#1a1024', '#ff7a59'], animated: true },
   { id: 'ocean', label: 'Ocean', swatch: ['#071a2b', '#22d3ee'], animated: true },

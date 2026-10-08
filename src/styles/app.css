@@ -284,7 +284,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 .app-shell.fullscreen .sidebar-resizer { display: none; }
 .app-shell.fullscreen [data-role="fullscreen-btn"] {
   background: var(--brand-gradient);
-  color: #fff;
+  color: var(--on-brand, #fff);
   border-color: transparent;
 }
 
@@ -488,7 +488,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   border-radius: var(--r-full);
   border: none;
   background: var(--brand-gradient);
-  color: #fff;
+  color: var(--on-brand, #fff);
   font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
@@ -560,7 +560,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   border: none;
   border-radius: var(--r-md);
   background: var(--brand-500);
-  color: #fff;
+  color: var(--on-brand, #fff);
   font-size: 0.95rem;
   font-weight: 700;
   cursor: pointer;
@@ -712,7 +712,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 .file-action.is-primary {
   grid-column: 1 / -1;
   background: var(--brand-gradient);
-  color: #fff;
+  color: var(--on-brand, #fff);
   border: none;
   justify-content: center;
   box-shadow: var(--shadow-sm);
@@ -966,7 +966,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 .toolbar button:active { transform: translateY(1px); }
 .toolbar .share-btn {
   background: var(--brand-gradient);
-  color: #fff;
+  color: var(--on-brand, #fff);
   border: none;
   font-weight: 600;
   box-shadow: var(--shadow-sm);
@@ -1007,7 +1007,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 .view-toggle button + button { border-left: 1px solid var(--border) !important; }
 .view-toggle button[aria-pressed="true"] {
   background: var(--brand-gradient) !important;
-  color: #fff !important;
+  color: var(--on-brand, #fff) !important;
 }
 
 /* ---------- Draggable dividers (editor/preview + sidebar) ---------- */
@@ -1094,7 +1094,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   margin-left: auto;
   flex-shrink: 0;
   background: var(--brand-gradient);
-  color: #fff;
+  color: var(--on-brand, #fff);
   text-decoration: none;
   padding: 0.45rem 1rem;
   border-radius: var(--r-full);
@@ -1224,7 +1224,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   transition: all 0.14s var(--ease);
 }
 .av-controls button:hover { border-color: var(--brand-500); background: var(--surface-hover); }
-.av-controls button.active { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+.av-controls button.active { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
 .av-controls .av-rec.active { background: #ef4444; color: #fff; border-color: transparent; }
 .av-status { font-size: 0.8rem; color: var(--text-muted); margin-left: auto; }
 
@@ -1264,7 +1264,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   flex-shrink: 0;
 }
 .docx-toolbar button:hover { background: var(--surface-hover); border-color: var(--border); }
-.docx-toolbar button:active { background: var(--brand-500); color: white; border-color: var(--brand-500); }
+.docx-toolbar button:active { background: var(--brand-500); color: var(--on-brand, #fff); border-color: var(--brand-500); }
 .docx-sep { width: 1px; height: 22px; background: var(--border); margin: 0 0.2rem; flex-shrink: 0; }
 
 /* Toolbar dropdowns */
@@ -1621,7 +1621,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   font-size: 0.8rem;
   cursor: pointer;
 }
-.pdf-toolbar button.active { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+.pdf-toolbar button.active { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
 .pdf-page {
   position: relative;
   margin: 1.25rem auto;
@@ -1689,7 +1689,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   position: absolute;
   top: -18px; left: -2px;
   background: var(--brand-500);
-  color: #fff;
+  color: var(--on-brand, #fff);
   font-size: 11px;
   line-height: 16px;
   padding: 0 5px;
@@ -1738,7 +1738,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 .sig-modal { max-width: 540px; }
 .sig-tabs { display: flex; gap: 0.4rem; margin: 0.25rem 0 0.75rem; }
 .sig-tab { background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted); border-radius: var(--r-sm); padding: 0.35rem 0.9rem; cursor: pointer; font-size: 0.82rem; }
-.sig-tab.active { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+.sig-tab.active { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
 .sig-canvas { width: 100%; height: 180px; background: #fff; border: 1px dashed var(--border); border-radius: var(--r-sm); touch-action: none; cursor: crosshair; }
 .sig-clear { margin-top: 0.5rem; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 0.35rem 0.8rem; cursor: pointer; font-size: 0.8rem; }
 .sig-type-input { width: 100%; padding: 0.6rem 0.75rem; font-size: 0.95rem; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg); color: var(--text); outline: none; }
@@ -1997,7 +1997,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 }
 .modal-actions .btn-cancel { border-color: var(--border); }
 .modal-actions .btn-cancel:hover { background: var(--surface-hover); border-color: var(--border-strong); }
-.modal-actions .btn-confirm { background: var(--brand-500); color: white; border-color: var(--brand-500); font-weight: 700; }
+.modal-actions .btn-confirm { background: var(--brand-500); color: var(--on-brand, #fff); border-color: var(--brand-500); font-weight: 700; }
 .modal-actions .btn-confirm:hover { background: var(--brand-600); border-color: var(--brand-600); }
 .modal-actions .btn-confirm:active { transform: scale(0.98); }
 .modal-actions .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
@@ -2377,6 +2377,31 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 /* ============================================================
    Themes — token overrides applied via html[data-theme]
    ============================================================ */
+/* Simple monochrome themes: pure black/white, no colour accents. */
+html[data-theme="mono-light"] {
+  color-scheme: light;
+  --bg: #ffffff; --surface: #ffffff; --surface-2: #f4f4f4; --surface-hover: #ebebeb;
+  --border: #d6d6d6; --border-strong: #000000; --ink: #000000;
+  --text: #000000; --text-muted: #444444; --text-faint: #8a8a8a;
+  --brand-500: #000000; --brand-600: #1a1a1a; --brand-700: #333333; --blue: #000000; --sun: #000000;
+  --brand-gradient: linear-gradient(#000000, #000000); --on-brand: #ffffff;
+  --shadow-sm: none; --shadow-md: 0 2px 8px rgba(0,0,0,0.12); --shadow-lg: 0 12px 32px rgba(0,0,0,0.18);
+  --shadow-pop: 2px 2px 0 #000000; --shadow-pop-lg: 3px 3px 0 #000000;
+  --cm-bg: transparent; --cm-fg: #000000; --cm-gutter-fg: #8a8a8a;
+  --cm-active-line: rgba(0,0,0,0.05); --cm-cursor: #000000; --cm-selection: rgba(0,0,0,0.16);
+}
+html[data-theme="mono-dark"] {
+  color-scheme: dark;
+  --bg: #000000; --surface: #0a0a0a; --surface-2: #161616; --surface-hover: #222222;
+  --border: #2e2e2e; --border-strong: #ffffff; --ink: #ffffff;
+  --text: #ffffff; --text-muted: #bdbdbd; --text-faint: #7a7a7a;
+  --brand-500: #ffffff; --brand-600: #e6e6e6; --brand-700: #cccccc; --blue: #ffffff; --sun: #ffffff;
+  --brand-gradient: linear-gradient(#ffffff, #ffffff); --on-brand: #000000;
+  --shadow-sm: none; --shadow-md: 0 2px 8px rgba(0,0,0,0.6); --shadow-lg: 0 12px 32px rgba(0,0,0,0.7);
+  --shadow-pop: 2px 2px 0 #3a3a3a; --shadow-pop-lg: 3px 3px 0 #3a3a3a;
+  --cm-bg: transparent; --cm-fg: #ffffff; --cm-gutter-fg: #7a7a7a;
+  --cm-active-line: rgba(255,255,255,0.06); --cm-cursor: #ffffff; --cm-selection: rgba(255,255,255,0.22);
+}
 html[data-theme="dracula"] {
   --bg: #21222c; --surface: #282a36; --surface-2: #2f3140; --surface-hover: #383a4a;
   --border: #383a4a; --border-strong: #4b4e63;
@@ -2668,7 +2693,7 @@ button, input, select, a { transition-property: background-color, border-color, 
   padding: 0.45rem 0.85rem; border-radius: 999px; border: 1px solid var(--border);
   background: var(--surface); color: var(--text); font-size: 0.85rem; font-weight: 600; cursor: pointer;
 }
-.feedback-modal .fb-chip.selected { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+.feedback-modal .fb-chip.selected { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
 .feedback-modal textarea, .feedback-modal input[type="email"] {
   width: 100%; box-sizing: border-box; padding: 0.65rem 0.75rem; margin-bottom: 0.6rem;
   border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text);
@@ -2693,7 +2718,7 @@ button, input, select, a { transition-property: background-color, border-color, 
 }
 .mobile-app-banner span { flex: 1; }
 .mobile-app-banner .mobile-app-open {
-  padding: 0.5rem 0.9rem; border-radius: 10px; background: var(--brand-gradient); color: #fff;
+  padding: 0.5rem 0.9rem; border-radius: 10px; background: var(--brand-gradient); color: var(--on-brand, #fff);
   font-weight: 700; text-decoration: none;
 }
 .mobile-app-banner .mobile-app-close { width: 36px; height: 36px; border: none; background: transparent; color: var(--text-muted); font-size: 1rem; }

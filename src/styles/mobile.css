@@ -195,7 +195,7 @@ html.is-mobile .m-drawer-quick button {
   color: var(--text);
   font-weight: 600;
 }
-html.is-mobile .m-drawer-quick button:first-child { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+html.is-mobile .m-drawer-quick button:first-child { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
 html.is-mobile .files-panel > .panel-head { padding: 6px 14px 2px; }
 html.is-mobile .files-panel .panel-search { padding: 0 12px 6px; }
 html.is-mobile .files-panel .panel-search input { min-height: 44px; font-size: 16px; }
@@ -423,7 +423,7 @@ html.is-mobile .m-chip {
   color: var(--text);
   font-weight: 600;
 }
-html.is-mobile .m-chip.selected { background: var(--brand-gradient); border-color: transparent; color: #fff; }
+html.is-mobile .m-chip.selected { background: var(--brand-gradient); border-color: transparent; color: var(--on-brand, #fff); }
 html.is-mobile .m-dl-error { color: var(--danger); font-size: 0.85rem; padding: 0 8px; margin: 0; min-height: 0; }
 html.is-mobile .m-dl-actions { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 0; }
 html.is-mobile .m-btn {
@@ -440,7 +440,7 @@ html.is-mobile .m-btn {
   font-weight: 650;
 }
 html.is-mobile .m-btn[hidden] { display: none; }
-html.is-mobile .m-btn-primary { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+html.is-mobile .m-btn-primary { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
 html.is-mobile .m-btn.busy { opacity: 0.6; }
 
 /* ---------- Existing modals → bottom sheets ---------- */

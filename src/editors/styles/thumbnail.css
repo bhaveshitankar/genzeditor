@@ -15,9 +15,9 @@
   border-radius: var(--r-sm, 8px); padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
 }
 .thumb-btn:hover, .thumb-chip:hover { background: var(--surface-hover); }
-.thumb-btn.primary { background: var(--brand-gradient); color: #fff; border-color: transparent; }
+.thumb-btn.primary { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
 .thumb-chip { padding: 5px 10px; }
-.thumb-chip[aria-pressed='true'] { background: var(--brand-500); border-color: transparent; color: #fff; }
+.thumb-chip[aria-pressed='true'] { background: var(--brand-500); border-color: transparent; color: var(--on-brand, #fff); }
 .thumb-body { flex: 1; min-height: 0; display: flex; }
 .thumb-stage {
   flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center;

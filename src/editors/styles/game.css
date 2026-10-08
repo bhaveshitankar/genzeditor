@@ -44,7 +44,7 @@
 .game-tab[aria-selected='true'] {
   background: var(--brand-gradient);
   border-color: transparent;
-  color: #fff;
+  color: var(--on-brand, #fff);
 }
 
 .game-hist { display: flex; gap: 4px; flex: 0 0 auto; }
@@ -143,7 +143,7 @@
   cursor: pointer;
 }
 .game-swatch:hover { background: var(--surface-hover); }
-.game-swatch[aria-pressed='true'] { background: var(--brand-gradient); border-color: transparent; color: #fff; }
+.game-swatch[aria-pressed='true'] { background: var(--brand-gradient); border-color: transparent; color: var(--on-brand, #fff); }
 
 .game-resize { display: flex; align-items: center; gap: 6px; }
 .game-x { color: var(--text-muted); }
@@ -227,7 +227,7 @@
   touch-action: none;
   user-select: none;
 }
-.game-dbtn:active { background: var(--brand-gradient); color: #fff; }
+.game-dbtn:active { background: var(--brand-gradient); color: var(--on-brand, #fff); }
 
 @media (max-width: 640px) {
   .game-live { margin-left: 0; }

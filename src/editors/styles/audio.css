@@ -61,7 +61,7 @@
 .aud-btn.aud-primary {
   background: var(--brand-gradient, var(--brand-500));
   border-color: transparent;
-  color: #fff;
+  color: var(--on-brand, #fff);
 }
 .aud-btn.aud-rec.active { background: #e5484d; border-color: #e5484d; color: #fff; }
 
@@ -107,7 +107,7 @@
 .amt-head-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .amt-head-btns { display: flex; gap: 4px; }
 .amt-tbtn { width: 24px; height: 20px; padding: 0; font-size: 11px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-2); color: var(--text); cursor: pointer; }
-.amt-tbtn.on { background: var(--brand-500); color: #fff; border-color: transparent; }
+.amt-tbtn.on { background: var(--brand-500); color: var(--on-brand, #fff); border-color: transparent; }
 .amt-head input[type="range"] { width: 100%; accent-color: var(--brand-500); height: 12px; }
 .amt-scroll { flex: 1 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
 .amt-inner { position: relative; min-width: 100%; }
