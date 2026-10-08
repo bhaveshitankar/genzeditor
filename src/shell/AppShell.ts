@@ -1974,6 +1974,9 @@ export class AppShell {
     const record = files.find(f => f.id === id);
     if (!record) return;
 
+    // Opening a file leaves any compare overlay behind.
+    this.compareView?.close();
+    this.sheetCompare?.close();
     await this.clearEditor();
     this.editorHost.innerHTML = '';
     this.currentFileId = id;
