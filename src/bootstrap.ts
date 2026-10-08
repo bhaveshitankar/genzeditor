@@ -116,6 +116,37 @@ export async function bootstrap(
     }
   });
 
+  // Files shared into the installed app (Android/ChromeOS Share sheet) are parked
+  // in a cache by the service worker; import them now and whenever we regain focus.
+  const importSharedInbox = async (): Promise<void> => {
+    if (typeof caches === 'undefined') return;
+    try {
+      const cache = await caches.open('gz-share-inbox');
+      const keys = await cache.keys();
+      if (!keys.length) return;
+      for (const req of keys) {
+        const res = await cache.match(req);
+        await cache.delete(req);
+        if (!res) continue;
+        const name = decodeURIComponent(res.headers.get('X-Name') || 'shared-file');
+        await shell.ingestFile(new File([await res.blob()], name, { type: res.headers.get('Content-Type') || '' }));
+      }
+      if (location.search.includes('shared=')) history.replaceState(null, '', location.pathname + location.hash);
+    } catch (err) {
+      console.error('Failed to import shared files:', err);
+      reportFailure('share-target', err);
+    }
+  };
+  void importSharedInbox();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void importSharedInbox(); });
+
+  // Offline + installable: register the service worker in production builds only.
+  if ('serviceWorker' in navigator && import.meta.env.PROD) {
+    const register = () => { void navigator.serviceWorker.register('/sw.js').catch(() => {}); };
+    // bootstrap usually finishes after `load` has already fired.
+    if (document.readyState === 'complete') register(); else window.addEventListener('load', register);
+  }
+
   // Clearing the hash after opening avoids re-triggering on refresh; but we
   // still listen so a link pasted into this tab opens live.
   if (typeof window !== 'undefined') {
