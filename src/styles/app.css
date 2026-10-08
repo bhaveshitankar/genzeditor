@@ -2697,3 +2697,19 @@ button, input, select, a { transition-property: background-color, border-color, 
   font-weight: 700; text-decoration: none;
 }
 .mobile-app-banner .mobile-app-close { width: 36px; height: 36px; border: none; background: transparent; color: var(--text-muted); font-size: 1rem; }
+
+/* Long-press edit menu (touch) — see src/editors/editCommands.ts */
+.edit-menu {
+  position: fixed; z-index: 2000;
+  display: flex; flex-wrap: wrap; max-width: calc(100vw - 16px);
+  background: var(--ink, #1f1f2b); border-radius: 12px; padding: 4px;
+  box-shadow: var(--shadow-pop-lg, 0 10px 30px rgba(0,0,0,.3));
+}
+.edit-menu button {
+  border: none; background: none; color: #fff; font: inherit; font-size: 14px;
+  padding: 10px 12px; min-height: 40px; border-radius: 8px; cursor: pointer;
+}
+.edit-menu button:active { background: rgba(255,255,255,.15); }
+.edit-menu button:disabled { opacity: .35; }
+.edit-menu button.danger { color: #ff8a8a; }
+.editor-area canvas, .editor-area img, .editor-area svg { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }

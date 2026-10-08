@@ -1,13 +1,17 @@
 import './styles/presentation.css';
 import type { DocEditor } from './registry';
-import { bindUndoKeys } from './undoKeys';
+import { getAppClipboard, setAppClipboard, type EditCommands } from './editCommands';
 import { isZip, readPptx } from './presentation/pptxRead';
 import { writePptx } from './presentation/pptxWrite';
 import { deckToPdf } from './presentation/canvas';
 import {
   PT_PX, geomPath, isLine, newEl, para, style, uid,
-  type Align, type Deck, type El, type Para, type Slide, type Style,
+  elText, type Align, type Deck, type El, type Media, type Para, type Slide, type Style,
 } from './presentation/model';
+
+/** App-clipboard payloads; media travels with them so images paste into other decks too. */
+interface ElClip { el: El; media: Record<string, Media>; }
+interface SlideClip { slide: Slide; media: Record<string, Media>; }
 
 // Visual .pptx editor: thumbnail strip, scaled slide canvas with absolutely
 // positioned elements (select / drag / resize / inline text editing), a
@@ -139,6 +143,10 @@ export class PresentationEditor implements DocEditor {
   private dragSlide = -1;
   private presenting = false;
   private dead = false;
+  // True when the thumbnail strip was the last thing interacted with (slide-level commands).
+  private stripActive = false;
+  private lastClipText = '';
+  private downAt = 0;
 
   private root!: HTMLElement;
   private strip!: HTMLElement;
@@ -259,7 +267,9 @@ export class PresentationEditor implements DocEditor {
     this.slideEl.addEventListener('pointermove', (e) => this.onPointerMove(e));
     this.slideEl.addEventListener('pointerup', (e) => this.onPointerUp(e));
     this.slideEl.addEventListener('pointercancel', (e) => this.onPointerUp(e));
+    this.strip.addEventListener('pointerdown', () => { this.stripActive = true; });
     this.stage.addEventListener('pointerdown', (e) => {
+      this.stripActive = false;
       if (e.target === this.stage || e.target === this.viewport) { this.commitEdit(); this.select(null); }
     });
     this.notes.addEventListener('focus', () => { this.notesBefore = this.snap(); });
@@ -286,10 +296,6 @@ export class PresentationEditor implements DocEditor {
     };
     document.addEventListener('selectionchange', onSel);
     this.cleanups.push(() => document.removeEventListener('selectionchange', onSel));
-    this.cleanups.push(bindUndoKeys({
-      undo: () => this.undo(), redo: () => this.redo(),
-      isActive: () => this.host.isConnected && !this.presenting,
-    }));
     this.renderAll();
   }
 
@@ -590,7 +596,10 @@ export class PresentationEditor implements DocEditor {
       inner.style.transform = `scale(${tw / d.w})`;
       frame.appendChild(inner);
       t.append(h('span', 'pres-thumb-num', String(i + 1)), frame);
-      t.addEventListener('click', () => this.selectSlide(i));
+      t.addEventListener('click', () => { if (i !== this.cur) this.selectSlide(i); });
+      // Select on press (without rebuilding the strip, so drag still works) — a
+      // long-press then targets this slide.
+      t.addEventListener('pointerdown', () => { if (i !== this.cur) this.setCur(i); });
       t.addEventListener('dragstart', (e) => { this.dragSlide = i; e.dataTransfer?.setData('text/plain', String(i)); });
       t.addEventListener('dragover', (e) => { e.preventDefault(); t.classList.add('is-drop'); });
       t.addEventListener('dragleave', () => t.classList.remove('is-drop'));
@@ -646,6 +655,17 @@ export class PresentationEditor implements DocEditor {
     this.updateToolbar();
   }
 
+  private setCur(i: number): void {
+    this.commitEdit();
+    this.cur = Math.max(0, Math.min(i, this.deck!.slides.length - 1));
+    this.selId = null;
+    this.strip.querySelectorAll('.pres-thumb').forEach((n, k) => n.classList.toggle('is-active', k === this.cur));
+    this.renderStage();
+    if (document.activeElement !== this.notes) this.notes.value = this.slide().notes;
+    this.bgInput.value = `#${this.slide().bg || 'FFFFFF'}`;
+    this.updateToolbar();
+  }
+
   private selectSlide(i: number): void {
     this.commitEdit();
     this.cur = Math.max(0, Math.min(i, this.deck!.slides.length - 1));
@@ -657,6 +677,8 @@ export class PresentationEditor implements DocEditor {
 
   private onPointerDown(e: PointerEvent): void {
     const target = e.target as HTMLElement;
+    this.stripActive = false;
+    this.downAt = e.timeStamp;
     if (this.editing && this.editing.box.contains(target)) return; // caret placement inside the edit
     if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) document.activeElement.blur();
     const handle = target.closest<HTMLElement>('.pres-handle');
@@ -724,7 +746,8 @@ export class PresentationEditor implements DocEditor {
       this.renderStrip();
       this.updateToolbar();
       this.changed();
-    } else if (dr.wasSelected && dr.mode === 'move' && e.type === 'pointerup') {
+    } else if (dr.wasSelected && dr.mode === 'move' && e.type === 'pointerup' && e.timeStamp - this.downAt < 450) {
+      // (a long-press is for the edit menu, not text editing)
       this.startEdit(dr.el); // tap a selected element again → edit its text
     }
   }
@@ -737,8 +760,7 @@ export class PresentationEditor implements DocEditor {
     if (typing) return;
     const el = this.selected();
     if (!el) return;
-    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); this.deleteSel(); }
-    else if (e.key === 'Escape') this.select(null);
+    if (e.key === 'Escape') this.select(null);
     else if (e.key === 'Enter') { e.preventDefault(); this.startEdit(el); }
     else if (e.key.startsWith('Arrow')) {
       e.preventDefault();
@@ -1050,5 +1072,155 @@ export class PresentationEditor implements DocEditor {
     show();
     ov.requestFullscreen?.().catch(() => undefined);
   }
-}
 
+  // ---- edit commands (shell owns the shortcuts + long-press menu) ----------
+
+  commands(): EditCommands {
+    if (!this.deck || this.presenting || !this.root) return {};
+    return {
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      canUndo: () => this.undoStack.length > 0,
+      canRedo: () => this.redoStack.length > 0,
+      hasSelection: () => !!this.selected() || this.stripActive,
+      canPaste: () => true,
+      delete: () => {
+        if (this.selected()) this.deleteSel();
+        else if (this.stripActive) this.delSlide();
+      },
+      copy: () => this.copySel(),
+      cut: () => {
+        if (this.selected()) { this.copySel(); this.deleteSel(); }
+        else if (this.stripActive) { this.copySel(); this.delSlide(); }
+      },
+      paste: (data) => this.pasteData(data),
+      duplicate: () => {
+        const el = this.selected();
+        if (el) this.insertEl(this.elClip(el), 20);
+        else if (this.stripActive) this.dupSlide();
+      },
+    };
+  }
+
+  private mediaFor(keys: string[]): Record<string, Media> {
+    const out: Record<string, Media> = {};
+    for (const k of keys) { const m = this.deck!.media[k]; if (k && m) out[k] = m; }
+    return out;
+  }
+
+  private elClip(el: El): ElClip {
+    this.syncEdit();
+    return { el: JSON.parse(JSON.stringify(el)) as El, media: this.mediaFor([el.media]) };
+  }
+
+  private copySel(): void {
+    const el = this.selected();
+    let text = '';
+    if (el) {
+      const clip = this.elClip(el);
+      setAppClipboard('pres-el', clip);
+      if (el.type === 'pic') {
+        const m = clip.media[el.media];
+        if (m?.mime === 'image/png' && typeof ClipboardItem !== 'undefined') {
+          const blob = new Blob([m.data as BlobPart], { type: 'image/png' });
+          void navigator.clipboard?.write?.([new ClipboardItem({ 'image/png': blob })]).catch(() => undefined);
+        }
+        this.lastClipText = '';
+        return;
+      }
+      text = el.type === 'tbl' ? el.rows.map((r) => r.join('\t')).join('\n') : elText(el);
+    } else if (this.stripActive) {
+      this.syncEdit();
+      const s = this.slide();
+      setAppClipboard('pres-slide', {
+        slide: JSON.parse(JSON.stringify(s)) as Slide,
+        media: this.mediaFor([s.bgMedia, ...s.els.map((e) => e.media)]),
+      } satisfies SlideClip);
+      text = s.els.filter((e) => e.type === 'sp').map(elText).filter((t) => t.trim()).join('\n');
+    } else return;
+    this.lastClipText = text;
+    if (text) void navigator.clipboard?.writeText?.(text).catch(() => undefined);
+  }
+
+  private adoptMedia(media: Record<string, Media>): void {
+    for (const [k, m] of Object.entries(media)) if (!this.deck!.media[k]) this.deck!.media[k] = m;
+  }
+
+  private insertEl(clip: ElClip, offset: number): void {
+    this.adoptMedia(clip.media);
+    const el = JSON.parse(JSON.stringify(clip.el)) as El;
+    el.id = uid();
+    el.locked = false;
+    el.x += offset;
+    el.y += offset;
+    this.addEl(el);
+    this.stripActive = false;
+  }
+
+  private insertSlide(clip: SlideClip): void {
+    this.adoptMedia(clip.media);
+    this.mutate(() => {
+      const copy = JSON.parse(JSON.stringify(clip.slide)) as Slide;
+      copy.id = uid();
+      copy.els.forEach((e) => { e.id = uid(); });
+      this.deck!.slides.splice(this.cur + 1, 0, copy);
+      this.cur++;
+      this.selId = null;
+    });
+    this.stripActive = true;
+  }
+
+  private pasteText(text: string): void {
+    const { w: W, h: H, font } = this.deck!;
+    const s = style({ sz: 24, font });
+    const lines = text.replace(/\r\n?/g, '\n').split('\n');
+    this.addEl(newEl({
+      x: W * 0.15, y: H * 0.35, w: W * 0.7, h: Math.min(H * 0.6, Math.max(H * 0.12, lines.length * 24 * PT_PX * 1.3)),
+      paras: lines.map((l) => para(l, s)),
+    }));
+    this.stripActive = false;
+  }
+
+  /** Paste from the app clipboard (slide or element); returns false when it has neither. */
+  private pasteApp(): boolean {
+    const slide = getAppClipboard<SlideClip>('pres-slide');
+    if (slide) { this.insertSlide(slide); return true; }
+    const el = getAppClipboard<ElClip>('pres-el');
+    if (el) {
+      this.insertEl(el, 20);
+      // Repeated pastes cascade instead of stacking exactly.
+      setAppClipboard('pres-el', { ...el, el: { ...el.el, x: el.el.x + 20, y: el.el.y + 20 } });
+      return true;
+    }
+    return false;
+  }
+
+  private async pasteData(data?: DataTransfer | null): Promise<void> {
+    if (data) {
+      const file = Array.from(data.files ?? []).find((f) => f.type.startsWith('image/'))
+        ?? Array.from(data.items ?? []).find((it) => it.kind === 'file' && it.type.startsWith('image/'))?.getAsFile();
+      if (file) { await this.addImage(file); this.stripActive = false; return; }
+      const text = data.getData('text/plain');
+      if (text && text !== this.lastClipText) { this.pasteText(text); return; }
+      if (this.pasteApp()) return;
+      if (text) this.pasteText(text);
+      return;
+    }
+    if (this.pasteApp()) return;
+    try {
+      const items = await navigator.clipboard.read();
+      for (const it of items) {
+        const type = it.types.find((t) => t.startsWith('image/'));
+        if (type) {
+          const blob = await it.getType(type);
+          await this.addImage(new File([blob], 'pasted', { type }));
+          return;
+        }
+      }
+    } catch { /* fall through to text */ }
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) this.pasteText(text);
+    } catch { /* clipboard unavailable */ }
+  }
+}

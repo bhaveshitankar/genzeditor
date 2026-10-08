@@ -1,4 +1,5 @@
 import type { FileKind } from '../store/types';
+import type { EditCommands } from './editCommands';
 
 // Common shape for the rich document editors (spreadsheet/pdf/presentation).
 // `export()` serializes current state for download / save-back, or returns null
@@ -6,6 +7,8 @@ import type { FileKind } from '../store/types';
 export interface DocEditor {
   destroy(): void;
   export(): Promise<{ blob: Blob; contentType: string } | null>;
+  // Undo/redo/cut/copy/paste/delete… — the shell binds keys + mobile long-press.
+  commands?(): EditCommands;
 }
 // Binary files are preview-only: they must never be decoded as text and
 // rewritten (a lossy round-trip would corrupt the original bytes).

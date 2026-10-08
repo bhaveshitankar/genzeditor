@@ -1,6 +1,6 @@
 import './styles/audio.css';
 import type { DocEditor } from './registry';
-import { bindUndoKeys } from './undoKeys';
+import { type EditCommands, getAppClipboard, setAppClipboard } from './editCommands';
 
 // Client-side, audiomass.co-inspired audio editor built on the Web Audio API —
 // no heavy dependencies. It keeps one editable in-memory AudioBuffer that all
@@ -78,7 +78,8 @@ export class AudioEditor implements DocEditor {
   private mtInner!: HTMLElement;
   private mtProps!: HTMLElement;
   private mtPlayhead: HTMLElement | null = null;
-  private clipboard: AudioBuffer | null = null;
+  // Copied audio lives in the shared app clipboard so it can be pasted into another audio file.
+  private get clipboard(): AudioBuffer | null { return getAppClipboard<AudioBuffer>('audio-buffer'); }
   private onChange: () => void;
 
   // Selection + playhead in seconds. selStart === selEnd means "no region".
@@ -116,9 +117,6 @@ export class AudioEditor implements DocEditor {
   // Drag state.
   private drag: { mode: 'new' | 'start' | 'end' } | null = null;
 
-  // Keyboard undo/redo cleanup.
-  private unbindKeys: (() => void) | null = null;
-
   private constructor(host: HTMLElement, onChange: () => void) {
     this.host = host;
     this.onChange = onChange;
@@ -150,8 +148,6 @@ export class AudioEditor implements DocEditor {
   }
 
   destroy(): void {
-    this.unbindKeys?.();
-    this.unbindKeys = null;
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('keydown', this.onKey);
     document.removeEventListener('pointermove', this.onMtMove);
@@ -338,13 +334,6 @@ export class AudioEditor implements DocEditor {
     this.bindTimeline();
     this.attachPointer();
     this.fitZoom();
-
-    // Bind keyboard undo/redo.
-    this.unbindKeys = bindUndoKeys({
-      undo: () => this.undo(),
-      redo: () => this.redo(),
-      isActive: () => this.isActive(),
-    });
   }
 
   private q(role: string): HTMLElement { return this.host.querySelector(`[data-role="${role}"]`) as HTMLElement; }
@@ -411,7 +400,7 @@ export class AudioEditor implements DocEditor {
 
   private copy() {
     if (!this.buffer || this.selEnd - this.selStart <= 0) return;
-    this.clipboard = sliceBuffer(this.ctx, this.buffer, this.selStart, this.selEnd);
+    setAppClipboard('audio-buffer', sliceBuffer(this.ctx, this.buffer, this.selStart, this.selEnd));
     this.updateButtons();
     this.setStatus(`Copied ${fmt(this.selEnd - this.selStart)}`);
   }
@@ -433,14 +422,80 @@ export class AudioEditor implements DocEditor {
   }
 
   private paste() {
-    if (!this.buffer || !this.clipboard) return;
+    if (this.clipboard) void this.insertBuffer(this.clipboard);
+  }
+
+  // Insert audio at the cursor, replacing the selection if there is one.
+  private async insertBuffer(src: AudioBuffer) {
+    if (!this.buffer) { this.setBuffer(src); this.selStart = 0; this.selEnd = src.duration; this.redraw(); return; }
+    const clip = src.sampleRate === this.buffer.sampleRate ? src : await resample(src, this.buffer.sampleRate);
     const at = this.selEnd - this.selStart > 0 ? this.selStart : this.playhead;
     const before = sliceBuffer(this.ctx, this.buffer, 0, at);
     const after = sliceBuffer(this.ctx, this.buffer, this.selEnd - this.selStart > 0 ? this.selEnd : at, this.buffer.duration);
-    const out = concatBuffers(this.ctx, [before, this.clipboard, after]);
-    this.selStart = at; this.selEnd = at + this.clipboard.duration;
+    const out = concatBuffers(this.ctx, [before, clip, after]);
+    this.selStart = at; this.selEnd = at + clip.duration;
     this.setBuffer(out);
     this.setStatus('Pasted');
+  }
+
+  // Duplicate the selected region right after itself.
+  private duplicateSel() {
+    if (!this.buffer || this.selEnd - this.selStart <= 0) return;
+    const s = this.selStart, e = this.selEnd;
+    const piece = sliceBuffer(this.ctx, this.buffer, s, e);
+    const out = concatBuffers(this.ctx, [
+      sliceBuffer(this.ctx, this.buffer, 0, e), piece, sliceBuffer(this.ctx, this.buffer, e, this.buffer.duration),
+    ]);
+    this.selStart = e; this.selEnd = e + (e - s);
+    this.setBuffer(out);
+    this.setStatus('Duplicated selection');
+  }
+
+  private selectAll() {
+    if (!this.buffer) return;
+    this.selStart = 0; this.selEnd = this.buffer.duration;
+    this.redraw();
+    this.redrawSelStatus();
+  }
+
+  private hasRegion(): boolean { return !!this.buffer && this.selEnd - this.selStart > 0.001; }
+
+  // Shared edit commands; the shell owns the shortcuts and the long-press menu.
+  commands(): EditCommands {
+    return {
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      canUndo: () => this.undoStack.length > 0,
+      canRedo: () => this.redoStack.length > 0,
+      hasSelection: () => this.hasRegion() || !!this.selClip(),
+      canPaste: () => true,
+      copy: () => { if (this.hasRegion()) this.copy(); else this.copyClip(); },
+      cut: () => {
+        if (this.hasRegion()) this.cut();
+        else if (this.selClip()) { this.copyClip(); this.deleteClip(); }
+      },
+      delete: () => { if (this.hasRegion()) this.deleteSel(); else this.deleteClip(); },
+      duplicate: () => { if (this.hasRegion()) this.duplicateSel(); },
+      selectAll: () => this.selectAll(),
+      paste: async (data) => {
+        const files = data ? Array.from(data.files).filter((f) => f.type.startsWith('audio/')) : [];
+        if (files.length) {
+          const decoded = await this.decodeFiles(files);
+          for (const d of decoded) await this.insertBuffer(d.buf);
+          return;
+        }
+        this.paste();
+      },
+    };
+  }
+
+  // No region: copy the whole selected clip (its visible part).
+  private copyClip() {
+    const c = this.selClip();
+    if (!c) return;
+    setAppClipboard('audio-buffer', sliceBuffer(this.ctx, c.buffer, c.offset, c.offset + c.dur));
+    this.updateButtons();
+    this.setStatus(`Copied clip (${fmt(c.dur)})`);
   }
 
   private crop() {
@@ -1228,10 +1283,6 @@ export class AudioEditor implements DocEditor {
     if ((e.target as HTMLElement).closest('input, textarea, select, button, [contenteditable]:not([contenteditable="false"])')) return;
     if (e.key === ' ') { e.preventDefault(); this.playMix(); }
     else if (e.key === 's' || e.key === 'S') { e.preventDefault(); this.splitMix(); }
-    else if (e.key === 'Delete' || e.key === 'Backspace') {
-      e.preventDefault();
-      if (this.selEnd - this.selStart > 0.001) this.deleteSel(); else this.deleteClip();
-    }
   };
 
   private renderTimeline() {
@@ -1430,6 +1481,15 @@ function sliceBuffer(ctx: BaseAudioContext, buf: AudioBuffer, start: number, end
     if (len > 0) out.copyToChannel(buf.getChannelData(c).subarray(a, b), c);
   }
   return out;
+}
+
+async function resample(buf: AudioBuffer, rate: number): Promise<AudioBuffer> {
+  const oac = new OfflineAudioContext(buf.numberOfChannels, Math.max(1, Math.ceil(buf.duration * rate)), rate);
+  const src = oac.createBufferSource();
+  src.buffer = buf;
+  src.connect(oac.destination);
+  src.start();
+  return oac.startRendering();
 }
 
 function concatBuffers(ctx: BaseAudioContext, parts: AudioBuffer[]): AudioBuffer {

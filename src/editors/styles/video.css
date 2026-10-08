@@ -119,6 +119,7 @@
   background-size: auto 100%;
   overflow: hidden;
   cursor: grab;
+  touch-action: none;
 }
 .vt-clip.ov { background-color: color-mix(in srgb, #3b82f6 60%, #000); }
 .vt-clip.tx { background-color: color-mix(in srgb, #f59e0b 60%, #000); }

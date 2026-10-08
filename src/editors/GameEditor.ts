@@ -16,7 +16,7 @@ import { API_BASE } from '../api/client';
 import { runGame, type RunnerHandle, type GameStatus } from './game/engine';
 import { TEMPLATES, PALETTE, EMOJI_CHOICES, SPRITE_KEYS } from './game/templates';
 import { ARENAS } from './game/arenas';
-import { bindUndoKeys } from './undoKeys';
+import type { EditCommands } from './editCommands';
 
 type Tab = 'level' | 'sprites' | 'rules' | 'play';
 
@@ -50,9 +50,6 @@ export class GameEditor {
   private playerTimer: number | null = null;
   private cursorSentAt = 0;
 
-  // Keyboard undo/redo cleanup.
-  private unbindKeys: (() => void) | null = null;
-
   private constructor(container: HTMLElement, name: string, onChange?: () => void) {
     this.container = container;
     this.onChange = onChange;
@@ -77,8 +74,6 @@ export class GameEditor {
   }
 
   destroy(): void {
-    this.unbindKeys?.();
-    this.unbindKeys = null;
     this.stopPlay();
     this.room?.close();
     this.room = null;
@@ -181,12 +176,6 @@ export class GameEditor {
     const hashRoom = /#room=([\w-]+)/.exec(location.hash)?.[1];
     if (hashRoom) this.joinRoom(hashRoom);
 
-    // Bind keyboard undo/redo.
-    this.unbindKeys = bindUndoKeys({
-      undo: () => this.undo(),
-      redo: () => this.redo(),
-    });
-
     this.switchTab('level');
   }
 
@@ -229,6 +218,17 @@ export class GameEditor {
   }
 
   private emitChange() { this.onChange?.(); }
+
+  /** Undo/redo only: the level is a tile painter with no object selection. Nothing in Play mode. */
+  commands(): EditCommands {
+    if (!this.doc || !this.root || this.tab === 'play') return {};
+    return {
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      canUndo: () => this.undoStack.length > 0,
+      canRedo: () => this.redoStack.length > 0,
+    };
+  }
 
   private undo() {
     const prev = this.undoStack.pop();

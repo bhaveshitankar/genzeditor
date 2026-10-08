@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import './styles/spreadsheet.css';
 import type { DocEditor } from './registry';
+import { actionForKey, getAppClipboard, isNativeTextTarget, setAppClipboard, type EditCommands } from './editCommands';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -512,6 +513,13 @@ export class SpreadsheetEditor implements DocEditor {
     const grid = document.createElement('div');
     grid.className = 'sheet-grid';
     this.grid = grid;
+    // Paste into a focused (but not mid-typing) cell = paste cells at the
+    // selection. The shell skips contentEditable targets, so handle it here.
+    grid.addEventListener('paste', (e) => {
+      if (this.activelyTyping || !(e.target as HTMLElement).closest?.('td[data-r]')) return;
+      e.preventDefault();
+      void this.paste(e.clipboardData);
+    });
 
     const fh = document.createElement('div');
     fh.className = 'sheet-fill-handle';
@@ -745,10 +753,34 @@ export class SpreadsheetEditor implements DocEditor {
 
   // ---- Selection / clipboard / formatting shortcuts ------------------------
 
+  /** Shared edit commands; the shell owns the shortcuts and the long-press menu. */
+  commands(): EditCommands {
+    return {
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      canUndo: () => this.undoStack.length > 0 || this.editSnapshot !== null,
+      canRedo: () => this.redoStack.length > 0,
+      copy: () => this.copy(),
+      cut: () => { this.copy(); this.clearRange(); },
+      paste: (data) => this.paste(data),
+      delete: () => this.clearRange(),
+      selectAll: () => this.selectAll(),
+      hasSelection: () => true, // there is always an active cell
+      canPaste: () => true,
+    };
+  }
+
+  // Select the used range (non-empty extent of the sheet); whole grid if empty.
   private selectAll() {
-    this.range = { r1: 0, c1: 0, r2: this.rows - 1, c2: this.cols - 1 };
+    const grid = this.aoa();
+    let r2 = -1, c2 = -1;
+    grid.forEach((row, r) => (row ?? []).forEach((v, c) => {
+      if ((v ?? '') !== '') { if (r > r2) r2 = r; if (c > c2) c2 = c; }
+    }));
+    if (r2 < 0) { r2 = this.rows - 1; c2 = this.cols - 1; }
+    this.range = { r1: 0, c1: 0, r2, c2 };
     this.selAnchor = { r: 0, c: 0 };
-    this.selFocus = { r: this.rows - 1, c: this.cols - 1 };
+    this.selFocus = { r: r2, c: c2 };
     this.paintRange();
     this.positionFillHandle();
   }
@@ -785,19 +817,29 @@ export class SpreadsheetEditor implements DocEditor {
       rows.push(cells.join('\t'));
     }
     const text = rows.join('\n');
+    setAppClipboard('cells', text);
     navigator.clipboard?.writeText(text).catch(() => {});
   }
 
-  private async paste() {
-    let text = '';
-    try { text = await navigator.clipboard.readText(); } catch { return; }
+  // Paste TSV/CSV: from a paste event's data, else the app clipboard, else the
+  // system clipboard.
+  private async paste(data?: DataTransfer | null) {
+    let text = data?.getData('text/plain') ?? '';
+    if (text === '') text = getAppClipboard<string>('cells') ?? '';
+    if (text === '') {
+      try { text = await navigator.clipboard.readText(); } catch { return; }
+    }
     if (text === '') return;
-    const rows = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-    if (rows.length && rows[rows.length - 1] === '') rows.pop();
+    const norm = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = norm.split('\n');
+    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    // Multi-line text without tabs where every line has a comma → CSV.
+    const isCsv = !norm.includes('\t') && lines.length > 1 && lines.every((l) => l.includes(','));
+    const cells: string[][] = isCsv ? parseCsv(norm) : lines.map((l) => l.split('\t'));
     const rg = this.curRange();
     this.withHistory(() => {
-      rows.forEach((line, dr) => {
-        line.split('\t').forEach((val, dc) => {
+      cells.forEach((row, dr) => {
+        row.forEach((val, dc) => {
           this.setCellValue(rg.r1 + dr, rg.c1 + dc, val);
         });
       });
@@ -878,7 +920,8 @@ export class SpreadsheetEditor implements DocEditor {
       const th = document.createElement('th');
       th.textContent = colLabel(c);
       th.addEventListener('click', () => this.selectColumn(c));
-      if (this.touch) this.onLongPress(th, () => { this.selectColumn(c); this.openMoreMenu(); });
+      // Touch: select on press so the shell's long-press edit menu acts on it.
+      if (this.touch) th.addEventListener('pointerdown', () => { if (!this.formulaEditing()) this.selectColumn(c); });
       hr.appendChild(th);
     }
     thead.appendChild(hr);
@@ -892,7 +935,7 @@ export class SpreadsheetEditor implements DocEditor {
       rh.className = 'sheet-rownum';
       rh.textContent = String(r + 1);
       rh.addEventListener('click', () => this.selectRow(r));
-      if (this.touch) this.onLongPress(rh, () => { this.selectRow(r); this.openMoreMenu(); });
+      if (this.touch) rh.addEventListener('pointerdown', () => { if (!this.formulaEditing()) this.selectRow(r); });
       tr.appendChild(rh);
       for (let c = 0; c < this.cols; c++) {
         const td = document.createElement('td');
@@ -904,7 +947,15 @@ export class SpreadsheetEditor implements DocEditor {
         if (boldSet.has(r + ',' + c)) td.classList.add('bold');
         if (this.touch) {
           // While typing a formula, keep the bar focused so a tap inserts a ref.
-          td.addEventListener('pointerdown', (e) => { if (this.formulaEditing()) e.preventDefault(); });
+          // Otherwise select on press (without opening the edit bar) so a
+          // long-press menu acts on this cell.
+          td.addEventListener('pointerdown', (e) => {
+            if (this.formulaEditing()) { e.preventDefault(); return; }
+            if (this.rangeMode || e.pointerType === 'mouse') return;
+            const rg = this.curRange();
+            const inside = r >= rg.r1 && r <= rg.r2 && c >= rg.c1 && c <= rg.c2;
+            if (!inside) this.select(r, c);
+          });
           td.addEventListener('click', () => this.touchTap(r, c));
           td.addEventListener('dblclick', () => this.focusBar());
           if (r === this.sel.r && c === this.sel.c) td.classList.add('sel');
@@ -974,8 +1025,11 @@ export class SpreadsheetEditor implements DocEditor {
     return !a || a === document.body || (!!this.root && this.root.contains(a));
   }
 
+  // Only for a focused contentEditable cell, which the shell leaves alone;
+  // with the grid/body focused the shell routes these actions via commands().
   private handleWindowKey(e: KeyboardEvent) {
     if (!this.isEditorFocused()) return;
+    if (!isNativeTextTarget(e.target) && actionForKey(e)) return;
     const mod = e.metaKey || e.ctrlKey;
     const key = e.key.toLowerCase();
     // The formula-bar input is a real <input>; never hijack its native editing.
@@ -992,8 +1046,8 @@ export class SpreadsheetEditor implements DocEditor {
       if (this.activelyTyping || inBar) return;
       e.preventDefault(); this.copy();
     } else if (mod && key === 'v') {
-      if (this.activelyTyping || inBar) return;
-      e.preventDefault(); void this.paste();
+      // Leave it to the native paste event (see onGridPaste) so clipboard
+      // data arrives without a permission prompt.
     } else if (mod && key === 'b') {
       if (inBar) return;
       e.preventDefault(); this.toggleBold();
@@ -1152,16 +1206,6 @@ export class SpreadsheetEditor implements DocEditor {
     this.statsEl.textContent = n
       ? `Sum ${f(sum)} · Average ${f(sum / n)} · Count ${filled}`
       : `Count ${filled}`;
-  }
-
-  private onLongPress(el: HTMLElement, fn: () => void) {
-    let timer = 0, x = 0, y = 0;
-    const clear = () => { window.clearTimeout(timer); timer = 0; };
-    el.addEventListener('pointerdown', (e) => { x = e.clientX; y = e.clientY; clear(); timer = window.setTimeout(() => { timer = 0; fn(); }, 500); });
-    el.addEventListener('pointermove', (e) => { if (timer && Math.hypot(e.clientX - x, e.clientY - y) > 10) clear(); });
-    el.addEventListener('pointerup', clear);
-    el.addEventListener('pointercancel', clear);
-    el.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   private openSheet(title: string, items: [string, () => void][]) {

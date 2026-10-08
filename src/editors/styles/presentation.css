@@ -59,7 +59,7 @@
   overflow-y: auto;
   padding: 4px 6px 4px 2px;
 }
-.pres-thumb { display: flex; gap: 6px; align-items: flex-start; cursor: pointer; }
+.pres-thumb { display: flex; gap: 6px; align-items: flex-start; cursor: pointer; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 .pres-thumb-num { font-size: 11px; color: var(--text-muted); min-width: 14px; text-align: right; padding-top: 2px; }
 .pres-thumb-frame {
   position: relative;

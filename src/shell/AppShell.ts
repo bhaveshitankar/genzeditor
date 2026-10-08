@@ -31,6 +31,7 @@ import { reportFailure, telemetryEnabled, setTelemetryEnabled } from '../telemet
 import { openFeedbackSheet } from '../ui/FeedbackSheet';
 import type { AiEditResult } from '../api/client';
 import { icon, iconNameForKind } from '../ui/icons';
+import { actionForKey, runAction, isNativeTextTarget, editOverride, showEditMenu, bindLongPress, type EditCommands } from '../editors/editCommands';
 
 /** Hooks a mobile chrome implements to mirror shell state (title, home screen). */
 export interface ShellChrome {
@@ -1148,6 +1149,67 @@ export class AppShell {
         e.preventDefault();
         this.palette.open();
       }
+    });
+    this.wireEditCommands();
+  }
+
+  // Commands of whatever has focus: an open tool overlay, else the open editor.
+  private activeCommands(target: EventTarget | null): EditCommands | null {
+    const ov = editOverride();
+    if (ov) return ov.root.contains(target as Node) || target === document.body ? ov.cmds : null;
+    const cmds = this.currentDoc?.commands?.();
+    if (!cmds) return null;
+    const el = target as HTMLElement | null;
+    // Only when the editor (or nothing in particular) has focus — not the file
+    // list, a modal, or the AI panel.
+    if (el && el !== document.body && !this.editorHost.contains(el)) return null;
+    if (this.root.querySelector('.modal-overlay')) return null;
+    return cmds;
+  }
+
+  // Shared shortcuts for every editor (web) + long-press edit menu (touch).
+  private wireEditCommands() {
+    let pendingPaste = 0;
+    document.addEventListener('keydown', (e) => {
+      if (e.defaultPrevented || e.isComposing || isNativeTextTarget(e.target)) return;
+      const action = actionForKey(e);
+      if (!action) return;
+      const cmds = this.activeCommands(e.target);
+      if (!cmds) return;
+      if (action === 'paste') {
+        // Let the native paste event deliver clipboard files/images; fall back
+        // to a data-less paste if the browser doesn't fire one.
+        if (!cmds.paste) return;
+        clearTimeout(pendingPaste);
+        pendingPaste = window.setTimeout(() => runAction(cmds, 'paste'), 80);
+        return;
+      }
+      if (runAction(cmds, action)) e.preventDefault();
+    });
+    document.addEventListener('paste', (e) => {
+      if (isNativeTextTarget(e.target)) return;
+      const cmds = this.activeCommands(e.target);
+      if (!cmds?.paste) return;
+      clearTimeout(pendingPaste);
+      e.preventDefault();
+      runAction(cmds, 'paste', e.clipboardData);
+    });
+
+    const inScope = (t: EventTarget | null): boolean => {
+      const ov = editOverride();
+      const node = t as Node;
+      return ov ? ov.root.contains(node) : this.editorHost.contains(node);
+    };
+    bindLongPress((e) => {
+      if (!inScope(e.target) || isNativeTextTarget(e.target)) return;
+      const cmds = this.activeCommands(e.target);
+      if (cmds) showEditMenu(cmds, e.clientX, e.clientY);
+    });
+    // Suppress the OS "save image / copy" callout where our menu takes over.
+    document.addEventListener('contextmenu', (e) => {
+      const pe = e as PointerEvent;
+      const touch = pe.pointerType ? pe.pointerType !== 'mouse' : matchMedia('(pointer: coarse)').matches;
+      if (touch && inScope(e.target) && !isNativeTextTarget(e.target) && this.activeCommands(e.target)) e.preventDefault();
     });
   }
 

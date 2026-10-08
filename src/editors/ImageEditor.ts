@@ -1,5 +1,5 @@
 import './styles/image.css';
-import { bindUndoKeys } from './undoKeys';
+import { setAppClipboard, getAppClipboard, type EditCommands } from './editCommands';
 import { copyBlob, pasteBlob, showClipboardFeedback } from '../utils/clipboard';
 
 // Picsart-inspired, fully client-side image editor (vanilla TS, no framework).
@@ -148,9 +148,6 @@ export class ImageEditor {
   private selBox: HTMLElement | null = null;
   private panelHost!: HTMLElement;
   private toolbar!: HTMLElement;
-
-  // Keyboard undo/redo cleanup.
-  private unbindKeys: (() => void) | null = null;
 
   // Crop rectangle in image coordinates (or null when not cropping).
   private crop: { x: number; y: number; w: number; h: number } | null = null;
@@ -852,12 +849,6 @@ export class ImageEditor {
 
     this.buildToolbar();
     this.rebuildPanel();
-
-    // Bind keyboard undo/redo.
-    this.unbindKeys = bindUndoKeys({
-      undo: () => this.undo(),
-      redo: () => this.redo(),
-    });
   }
 
   private activePanel: 'adjust' | 'filters' | 'transform' | 'reshape' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' | 'select' = 'adjust';
@@ -1846,23 +1837,11 @@ export class ImageEditor {
 
   private extractSelection(cut: boolean): void {
     const mask = this.effectiveMask();
-    const sb = this.selBounds;
-    if (!mask || !sb) return;
-    const pad = Math.ceil(this.feather * 2);
-    const W = this.state.base.width, H = this.state.base.height;
-    const x = Math.max(0, sb.x - pad), y = Math.max(0, sb.y - pad);
-    const b = { x, y, w: Math.min(W, sb.x + sb.w + pad) - x, h: Math.min(H, sb.y + sb.h + pad) - y };
-    const flat = this.selectionSource();
-    const piece = document.createElement('canvas');
-    piece.width = b.w; piece.height = b.h;
-    const pc = piece.getContext('2d')!;
-    pc.drawImage(flat, b.x, b.y, b.w, b.h, 0, 0, b.w, b.h);
-    pc.globalCompositeOperation = 'destination-in';
-    pc.drawImage(mask, b.x, b.y, b.w, b.h, 0, 0, b.w, b.h);
+    const layer = mask && this.selectionPiece();
+    if (!mask || !layer) return;
     this.commit();
     if (cut) this.clearPixels(mask);
     const target = this.targetLayer();
-    const layer: ImageLayer = { id: uid(), kind: 'image', canvas: piece, x: b.x, y: b.y, w: b.w, h: b.h };
     const at = target ? this.state.layers.indexOf(target) + 1 : this.state.layers.length;
     this.state.layers.splice(at, 0, layer);
     this.selectedId = layer.id;
@@ -1980,6 +1959,156 @@ export class ImageEditor {
 
   // ---- Public API ----
 
+  // ---- Edit commands (the shell owns shortcuts + the long-press menu) ----
+  // Priority: pixel selection (wand/lasso) > selected layer > whole image.
+
+  commands(): EditCommands {
+    return {
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      canUndo: () => this.undoStack.length > 0,
+      canRedo: () => this.redoStack.length > 0,
+      hasSelection: () => !!this.selMask || !!this.selected(),
+      canPaste: () => true,
+      delete: () => this.cmdDelete(),
+      copy: () => this.cmdCopy(),
+      cut: () => this.cmdCut(),
+      paste: (data) => this.cmdPaste(data),
+      duplicate: () => this.cmdDuplicate(),
+      selectAll: () => this.cmdSelectAll(),
+    };
+  }
+
+  // Deep copy with its own pixel canvas (image layers otherwise share one).
+  private detachLayer<T extends Layer>(l: T): T {
+    if (l.kind !== 'image') return cloneLayer(l);
+    const canvas = document.createElement('canvas');
+    canvas.width = l.canvas.width; canvas.height = l.canvas.height;
+    canvas.getContext('2d')!.drawImage(l.canvas, 0, 0);
+    return { ...l, canvas } as T;
+  }
+
+  private writePngToSystem(src: HTMLCanvasElement): void {
+    try {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return;
+      // A promised blob keeps the write inside the user gesture (Safari).
+      const blob = new Promise<Blob>((res, rej) => src.toBlob((b) => (b ? res(b) : rej(new Error('toBlob failed'))), 'image/png'));
+      void navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]).catch(() => {});
+    } catch { /* best effort */ }
+  }
+
+  // The selected pixels as a new (detached) image layer, without touching state.
+  private selectionPiece(): ImageLayer | null {
+    const mask = this.effectiveMask();
+    const sb = this.selBounds;
+    if (!mask || !sb) return null;
+    const pad = Math.ceil(this.feather * 2);
+    const W = this.state.base.width, H = this.state.base.height;
+    const x = Math.max(0, sb.x - pad), y = Math.max(0, sb.y - pad);
+    const b = { x, y, w: Math.min(W, sb.x + sb.w + pad) - x, h: Math.min(H, sb.y + sb.h + pad) - y };
+    const piece = document.createElement('canvas');
+    piece.width = b.w; piece.height = b.h;
+    const pc = piece.getContext('2d')!;
+    pc.drawImage(this.selectionSource(), b.x, b.y, b.w, b.h, 0, 0, b.w, b.h);
+    pc.globalCompositeOperation = 'destination-in';
+    pc.drawImage(mask, b.x, b.y, b.w, b.h, 0, 0, b.w, b.h);
+    return { id: uid(), kind: 'image', canvas: piece, x: b.x, y: b.y, w: b.w, h: b.h };
+  }
+
+  private cmdCopy(): void {
+    if (this.selMask) {
+      const piece = this.selectionPiece();
+      if (!piece) return;
+      setAppClipboard('image-layer', piece);
+      this.writePngToSystem(piece.canvas);
+      showClipboardFeedback('Selection copied');
+      return;
+    }
+    const l = this.selected();
+    if (l) {
+      setAppClipboard('image-layer', this.detachLayer(l));
+      if (l.kind === 'image') this.writePngToSystem(l.canvas);
+      else if (l.kind === 'text') void navigator.clipboard?.writeText(l.text).catch(() => {});
+      showClipboardFeedback('Layer copied');
+      return;
+    }
+    const flat = document.createElement('canvas');
+    this.composite(flat);
+    this.writePngToSystem(flat);
+    showClipboardFeedback('Image copied');
+  }
+
+  private cmdDelete(): void {
+    if (this.selMask) { this.deleteSelectionPixels(); return; }
+    const l = this.selected();
+    if (!l) return;
+    this.commit();
+    this.state.layers.splice(this.state.layers.indexOf(l), 1);
+    this.selectedId = null;
+    this.render();
+    this.rebuildPanel();
+  }
+
+  private cmdCut(): void {
+    if (this.selMask) {
+      const piece = this.selectionPiece();
+      if (!piece) return;
+      setAppClipboard('image-layer', piece);
+      this.writePngToSystem(piece.canvas);
+      this.deleteSelectionPixels();
+      this.clearSelectionState();
+      this.render();
+      this.rebuildPanel();
+      return;
+    }
+    if (!this.selected()) return;
+    this.cmdCopy();
+    this.cmdDelete();
+  }
+
+  private insertLayerCopy(src: Layer, offset: number): void {
+    const l = this.detachLayer(src);
+    l.id = uid();
+    this.moveLayer(l, src, offset, offset);
+    this.commit();
+    this.state.layers.push(l);
+    this.selectedId = l.id;
+    this.clearSelectionState();
+    this.setTool('select');
+    this.render();
+    this.rebuildPanel();
+  }
+
+  private cmdDuplicate(): void {
+    if (this.selMask) { this.extractSelection(false); return; }
+    const l = this.selected();
+    if (l) this.insertLayerCopy(l, Math.max(10, Math.round(this.state.base.width * 0.02)));
+  }
+
+  private async cmdPaste(data?: DataTransfer | null): Promise<void> {
+    if (data) {
+      const file = [...data.files].find((f) => f.type.startsWith('image/'))
+        ?? [...data.items].find((it) => it.kind === 'file' && it.type.startsWith('image/'))?.getAsFile();
+      if (file) { await this.addImageLayer(file); return; }
+    }
+    const clip = getAppClipboard<Layer>('image-layer');
+    if (clip) { this.insertLayerCopy(clip, Math.max(10, Math.round(this.state.base.width * 0.02))); return; }
+    if (data) return; // a real paste event without an image: nothing to do
+    await this.pasteImage();
+  }
+
+  private cmdSelectAll(): void {
+    this.pickTarget(false);
+    const m = this.newMask();
+    const c = m.getContext('2d')!;
+    c.fillStyle = '#fff';
+    c.fillRect(0, 0, m.width, m.height);
+    this.setMask(m);
+    this.activePanel = 'select';
+    this.rebuildPanel();
+    this.syncToolbar();
+  }
+
   async copyImage(): Promise<void> {
     try {
       const blob = await this.export();
@@ -2020,8 +2149,6 @@ export class ImageEditor {
   destroy(): void {
     clearInterval(this.antsTimer);
     this.antsTimer = 0;
-    this.unbindKeys?.();
-    this.unbindKeys = null;
     // `this.canvas` is only created in buildUi(); the decode-failure stub skips it.
     this.canvas?.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas?.removeEventListener('pointermove', this.onPointerMove);

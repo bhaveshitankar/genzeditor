@@ -2,7 +2,7 @@ import './styles/video.css';
 import type { FFmpeg } from '@ffmpeg/ffmpeg';
 import type { DocEditor } from './registry';
 import { getFfmpeg } from './ffmpegLoader';
-import { bindUndoKeys } from './undoKeys';
+import { type EditCommands, getAppClipboard, setAppClipboard } from './editCommands';
 
 // Multi-clip, client-side video editor.
 //  - Main track: clips played back-to-back (add video/image, split, trim, reorder, delete).
@@ -72,6 +72,7 @@ type Fmt = 'mp4' | 'webm';
 type ResPreset = 'original' | '1080p' | '720p' | '480p' | 'square' | 'vertical';
 type Layout = 'full' | 'side' | 'stack' | 'pip';
 type Sel = { track: Track; id: string } | null;
+interface VideoClipboard { track: Track; item: Clip | Overlay | AudioClip | TextClip; }
 interface Snapshot { main: Clip[]; overlays: Overlay[]; audios: AudioClip[]; texts: TextClip[]; mainBox: Rect; mainFit: Fit; }
 type Drag =
   | { kind: 'scrub' }
@@ -177,7 +178,6 @@ export class VideoEditor implements DocEditor {
   private ovFile!: HTMLInputElement;
   private auFile!: HTMLInputElement;
   private resizeObs: ResizeObserver | null = null;
-  private unbindUndo: (() => void) | null = null;
 
   private constructor(host: HTMLElement, blob: Blob, name: string, private opts: VideoEditorOptions = {}) {
     this.host = host;
@@ -205,7 +205,6 @@ export class VideoEditor implements DocEditor {
     document.removeEventListener('pointermove', this.onDocMove);
     document.removeEventListener('pointerup', this.onDocUp);
     document.removeEventListener('keydown', this.onKey);
-    this.unbindUndo?.();
     this.resizeObs?.disconnect();
     for (const el of this.media.values()) {
       if (el instanceof HTMLVideoElement) { el.pause(); el.removeAttribute('src'); el.load(); }
@@ -450,6 +449,75 @@ export class VideoEditor implements DocEditor {
     else if (f.track === 'au') this.audios = this.audios.filter((c) => c.id !== f.item.id);
     else this.texts = this.texts.filter((c) => c.id !== f.item.id);
     this.sel = null;
+    this.structureChanged();
+  }
+
+  // ---- Shared edit commands (shell owns shortcuts + long-press menu) --------
+
+  commands(): EditCommands {
+    return {
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      canUndo: () => this.undoStack.length > 0,
+      canRedo: () => this.redoStack.length > 0,
+      hasSelection: () => !!this.sel && !!this.find(this.sel.id),
+      canPaste: () => true,
+      copy: () => { this.copySelected(); },
+      cut: () => { if (this.copySelected()) this.deleteSelected(); },
+      delete: () => this.deleteSelected(),
+      duplicate: () => this.duplicateSelected(),
+      paste: (data) => this.pasteFrom(data),
+    };
+  }
+
+  private copySelected(): boolean {
+    const f = this.sel ? this.find(this.sel.id) : null;
+    if (!f) return false;
+    const item = f.track === 'main' ? { ...f.item, crop: f.item.crop && { ...f.item.crop } } : cloneTimed(f.item as Timed, f.item.id);
+    setAppClipboard('video-item', { track: f.track, item } satisfies VideoClipboard);
+    if (f.track === 'tx') void navigator.clipboard?.writeText((f.item as TextClip).text).catch(() => {});
+    this.setStatus('Copied.');
+    return true;
+  }
+
+  private async pasteFrom(data?: DataTransfer | null): Promise<void> {
+    const files = data ? Array.from(data.files) : [];
+    const visual = files.filter((f) => f.type.startsWith('video/') || f.type.startsWith('image/'));
+    const sound = files.filter((f) => f.type.startsWith('audio/'));
+    if (visual.length || sound.length) {
+      if (visual.length) await this.addMainClips(visual);
+      if (sound.length) await this.addAudioClips(sound);
+      return;
+    }
+    const clip = getAppClipboard<VideoClipboard>('video-item');
+    let text = data ? data.getData('text/plain') : '';
+    // A copied text clip also lands on the system clipboard; keep its styling.
+    if (clip && (!text || (clip.track === 'tx' && (clip.item as TextClip).text === text))) { this.pasteItem(clip); return; }
+    if (!data && !text) text = await navigator.clipboard?.readText().catch(() => '') ?? '';
+    text = text.trim();
+    if (text) { this.addText(text.slice(0, 500)); return; }
+    this.setStatus('Nothing to paste — copy a clip first.');
+  }
+
+  private pasteItem(cb: VideoClipboard): void {
+    this.pushHistory();
+    const T = this.total();
+    if (cb.track === 'main') {
+      const src = cb.item as Clip;
+      const c: Clip = { ...src, id: uid(), crop: src.crop && { ...src.crop } };
+      const cur = this.mainAt(this.t);
+      const at = cur ? cur.index + 1 : this.main.length;
+      this.main.splice(at, 0, c);
+      this.sel = { track: 'main', id: c.id };
+      this.t = this.startOf(c);
+    } else {
+      const c = cloneTimed(cb.item as Timed, uid());
+      c.start = this.t >= T - 0.05 ? 0 : this.t;
+      (this.listOf(cb.track) as Timed[]).push(c);
+      this.sel = { track: cb.track, id: c.id };
+      this.t = Math.min(c.start + 0.01, T);
+    }
+    this.setStatus('Pasted.');
     this.structureChanged();
   }
 
@@ -1107,7 +1175,6 @@ export class VideoEditor implements DocEditor {
     document.addEventListener('pointermove', this.onDocMove);
     document.addEventListener('pointerup', this.onDocUp);
     document.addEventListener('keydown', this.onKey);
-    this.unbindUndo = bindUndoKeys({ undo: () => this.undo(), redo: () => this.redo(), isActive: () => this.host.isConnected });
     this.resizeObs = new ResizeObserver(() => { this.tlDirty = true; });
     this.resizeObs.observe(this.tlScroll);
 
@@ -1815,7 +1882,6 @@ export class VideoEditor implements DocEditor {
     if (e.key === ' ') { e.preventDefault(); this.setPlaying(!this.playing); }
     else if (e.key === 's' || e.key === 'S') { e.preventDefault(); this.split(); }
     else if (e.key === 'd' || e.key === 'D') { e.preventDefault(); this.duplicateSelected(); }
-    else if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel) { e.preventDefault(); this.deleteSelected(); }
   };
 
   // ---- Playback engine ----------------------------------------------------------

@@ -5,6 +5,7 @@ import PdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import type { PDFImage } from 'pdf-lib';
 import type { DocEditor } from './registry';
+import { getAppClipboard, setAppClipboard, type EditCommands } from './editCommands';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = PdfWorkerUrl;
 
@@ -71,7 +72,6 @@ export class PdfEditor implements DocEditor {
 
   private undoStack: Snapshot[] = [];
   private redoStack: Snapshot[] = [];
-  private undoRedoHandler: ((e: KeyboardEvent) => void) | null = null;
 
   private name: string;
 
@@ -99,11 +99,126 @@ export class PdfEditor implements DocEditor {
     for (const t of this.loadingTasks) { try { t.destroy(); } catch { /* ignore */ } }
     this.loadingTasks = [];
     this.pdfDocs.clear();
-    // Clean up window-level undo/redo listener.
-    if (this.undoRedoHandler) {
-      window.removeEventListener('keydown', this.undoRedoHandler);
-      this.undoRedoHandler = null;
+  }
+
+  // ---- Shared edit commands (shell owns shortcuts + long-press menu) -------
+  // Objects are annotations. Pages are not deleted from here (no confirmation);
+  // use the page controls for that.
+
+  commands(): EditCommands {
+    return {
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      canUndo: () => this.undoStack.length > 0,
+      canRedo: () => this.redoStack.length > 0,
+      hasSelection: () => !!this.selectedAnnot(),
+      canPaste: () => true,
+      delete: () => {
+        const a = this.selectedAnnot();
+        if (!a) return;
+        this.pushHistory();
+        this.deleteAnnotation(a.id);
+      },
+      copy: () => this.copyAnnot(),
+      cut: () => {
+        const a = this.selectedAnnot();
+        if (!a) return;
+        this.copyAnnot();
+        this.pushHistory();
+        this.deleteAnnotation(a.id);
+      },
+      paste: (data) => this.pasteInto(data),
+      duplicate: () => {
+        const a = this.selectedAnnot();
+        if (a) this.insertAnnotCopy(a);
+      },
+    };
+  }
+
+  private selectedAnnot(): Annotation | null {
+    return (this.selectedId && this.annotations.find((a) => a.id === this.selectedId)) || null;
+  }
+
+  private copyAnnot(): void {
+    const a = this.selectedAnnot();
+    if (!a) return;
+    const text = (a.type === 'text' || a.type === 'box') ? (a.text ?? '') : '';
+    setAppClipboard('pdf-annot', { annot: structuredClone(a), text });
+    if (text) navigator.clipboard?.writeText(text).catch(() => {});
+  }
+
+  // Insert a copy of `src` on the active page (offset when it's the same page),
+  // with history, and select it.
+  private insertAnnotCopy(src: Annotation): void {
+    const pm = this.pages.find((p) => p.id === this.activePageId) ?? this.pages.find((p) => p.id === src.pageId) ?? this.pages[0];
+    if (!pm) return;
+    const off = pm.id === src.pageId ? 0.02 : 0;
+    const a: Annotation = structuredClone(src);
+    a.id = uid();
+    a.pageId = pm.id;
+    a.ocr = undefined;
+    const dx = Math.min(off, Math.max(0, 0.999 - a.xR)), dy = Math.min(off, Math.max(0, 0.999 - a.yR));
+    a.xR += dx; a.yR += dy;
+    if (a.points) a.points = a.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+    this.pushHistory();
+    this.annotations.push(a);
+    this.selectedId = a.id; this.activePageId = pm.id; this.mode = 'select';
+    this.changed(); void this.render();
+  }
+
+  private addAnnotOnActivePage(partial: Omit<Annotation, 'id' | 'pageId'>): void {
+    const pm = this.pages.find((p) => p.id === this.activePageId) ?? this.pages[0];
+    if (!pm) return;
+    this.pushHistory();
+    const a: Annotation = { ...partial, id: uid(), pageId: pm.id };
+    this.annotations.push(a);
+    this.selectedId = a.id; this.activePageId = pm.id; this.mode = 'select';
+    this.changed(); void this.render();
+  }
+
+  private async addImageAnnot(blob: Blob): Promise<void> {
+    let dataUrl = await this.fileToDataUrl(blob as File);
+    const img = await this.loadImage(dataUrl);
+    // Export only embeds PNG/JPG; convert anything else to PNG.
+    if (!/^image\/(png|jpe?g)$/.test(blob.type)) {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth || img.width; c.height = img.naturalHeight || img.height;
+      c.getContext('2d')?.drawImage(img, 0, 0);
+      dataUrl = c.toDataURL('image/png');
     }
+    const wR = 0.4, hR = wR * (img.height / img.width) * 0.75; // same rough aspect as Insert image
+    this.addAnnotOnActivePage({ type: 'image', xR: 0.3, yR: 0.3, wR, hR, dataUrl });
+  }
+
+  private addTextAnnot(text: string): void {
+    this.addAnnotOnActivePage({ type: 'text', xR: 0.1, yR: 0.1, wR: 0.5, hR: 0.05, text, fontSize: 14 });
+  }
+
+  // Paste: image from the paste event → image annotation; else the copied
+  // annotation; else plain text → text annotation; with no event data, try
+  // the system clipboard.
+  private async pasteInto(data?: DataTransfer | null): Promise<void> {
+    const clip = getAppClipboard<{ annot: Annotation; text: string }>('pdf-annot');
+    if (data) {
+      const file = Array.from(data.files ?? []).find((f) => f.type.startsWith('image/'));
+      if (file) return this.addImageAnnot(file);
+      const text = data.getData('text/plain');
+      if (clip && (!text || text === clip.text)) return this.insertAnnotCopy(clip.annot);
+      if (text.trim()) return this.addTextAnnot(text);
+      return;
+    }
+    if (clip) return this.insertAnnotCopy(clip.annot);
+    try {
+      const items = await navigator.clipboard.read();
+      for (const it of items) {
+        const type = it.types.find((t) => t.startsWith('image/'));
+        if (type) return this.addImageAnnot(await it.getType(type));
+      }
+    } catch { /* not supported / denied */ }
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text.trim()) this.addTextAnnot(text);
+    } catch { /* denied */ }
   }
 
   private changed() { this.onChange?.(); }
@@ -206,31 +321,8 @@ export class PdfEditor implements DocEditor {
     }
     main.scrollTop = scrollTop;
 
-    // Set up window-level undo/redo handler (once) so it works even when focus leaves the host.
-    if (!this.undoRedoHandler) {
-      this.undoRedoHandler = (e: KeyboardEvent) => {
-        const t = e.target as HTMLElement;
-        // Ignore when typing in an editable field.
-        if (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') return;
-        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
-          e.preventDefault();
-          if (e.shiftKey) this.redo(); else this.undo();
-        }
-      };
-      window.addEventListener('keydown', this.undoRedoHandler);
-    }
-
-    // Delete handler for selected annotations (host-level is fine since we refocus after toolbar clicks).
+    // Focusable so the shell's shortcuts (undo/redo/delete/copy/paste) apply here.
     this.host.tabIndex = 0;
-    this.host.addEventListener('keydown', (e) => {
-      const t = e.target as HTMLElement;
-      if ((e.key === 'Delete' || e.key === 'Backspace') && this.selectedId) {
-        if (t.isContentEditable) return;
-        this.pushHistory();
-        this.deleteAnnotation(this.selectedId);
-        e.preventDefault();
-      }
-    });
   }
 
   private buildToolbar(): HTMLElement {
@@ -598,6 +690,7 @@ export class PdfEditor implements DocEditor {
     shape.addEventListener('pointerdown', (e) => {
       e.preventDefault(); e.stopPropagation();
       this.selectAnnot(a.id, false);
+      this.host.focus({ preventScroll: true });
       this.pushHistory();
       const startX = e.clientX, startY = e.clientY;
       const orig = (a.points ?? []).map((p) => ({ ...p }));
@@ -651,7 +744,11 @@ export class PdfEditor implements DocEditor {
     handle.style.touchAction = 'none';
     handle.addEventListener('pointerdown', (e) => {
       e.preventDefault(); e.stopPropagation();
+      // Select on press (long-press menu / shortcuts act on it) and keep
+      // keyboard focus in the editor so the shell's shortcuts apply.
+      const wasSelected = this.selectedId === a.id;
       this.selectAnnot(a.id, false);
+      this.host.focus({ preventScroll: true });
       this.pushHistory();
       const startX = e.clientX, startY = e.clientY;
       const ox = a.xR, oy = a.yR;
@@ -665,6 +762,7 @@ export class PdfEditor implements DocEditor {
         document.removeEventListener('pointermove', move);
         document.removeEventListener('pointerup', up);
         this.changed();
+        if (!wasSelected) void this.render(); // show selection chrome
       };
       document.addEventListener('pointermove', move);
       document.addEventListener('pointerup', up);

@@ -1,4 +1,5 @@
 import './styles/thumbnail.css';
+import { pushEditOverride, setAppClipboard, getAppClipboard, type EditCommands } from './editCommands';
 
 // YouTube-style thumbnail maker. Opens as a full-screen overlay over the video
 // editor: pick a frame (or upload a background), add bold text / emoji / image
@@ -45,11 +46,39 @@ let seq = 0;
 
 export function openThumbnailMaker(o: ThumbnailOptions): { close(): void } {
   let W = 1280, H = 720;
-  let bg: CanvasImageSource & { width: number; height: number } = o.frame;
+  type Bg = CanvasImageSource & { width: number; height: number };
+  let bg: Bg = o.frame;
   const look = { zoom: 1, panX: 0, panY: 0, bright: 105, contrast: 115, sat: 125, overlay: 'gradient' as 'none' | 'gradient' | 'vignette' | 'tint', tint: '#000000', tintA: 35, border: 0, borderColor: '#ffffff' };
   const layers: Layer[] = [newText('YOUR TITLE HERE')];
   let sel: Layer | null = layers[0]!;
   let frameT = o.time;
+
+  // ---- Undo / redo: snapshots of the layers + look settings ------------------
+  interface Snap { layers: Layer[]; look: typeof look; W: number; H: number; bg: Bg; selId: number | null }
+  const undoStack: Snap[] = [];
+  const redoStack: Snap[] = [];
+  const snap = (): Snap => ({ layers: layers.map((l) => ({ ...l })), look: { ...look }, W, H, bg, selId: sel?.id ?? null });
+  function restore(s: Snap): void {
+    layers.splice(0, layers.length, ...s.layers.map((l) => ({ ...l })));
+    Object.assign(look, s.look); W = s.W; H = s.H; bg = s.bg;
+    sel = layers.find((l) => l.id === s.selId) ?? null;
+    buildPanel(); render();
+  }
+  // Call before every change.
+  function checkpoint(): void {
+    undoStack.push(snap());
+    if (undoStack.length > 100) undoStack.shift();
+    redoStack.length = 0;
+  }
+  function undo(): void { const s = undoStack.pop(); if (!s) return; redoStack.push(snap()); restore(s); }
+  function redo(): void { const s = redoStack.pop(); if (!s) return; undoStack.push(snap()); restore(s); }
+  // Continuous inputs (sliders, colors, text) snapshot once on the first input
+  // and commit on 'change'.
+  function liveEdit(inp: HTMLElement, apply: () => void, commitEvent = 'change'): void {
+    let dirty = false;
+    inp.addEventListener('input', () => { if (!dirty) { checkpoint(); dirty = true; } apply(); });
+    inp.addEventListener(commitEvent, () => { dirty = false; });
+  }
 
   function newText(text: string): TextLayer {
     return { kind: 'text', id: ++seq, x: 0.5, y: 0.78, rot: 0, text, font: 'Impact', size: 0.13, color: '#ffe500',
@@ -173,8 +202,10 @@ export function openThumbnailMaker(o: ThumbnailOptions): { close(): void } {
     canvas.setPointerCapture(e.pointerId);
     const start = p;
     const orig = hit ? { x: hit.x, y: hit.y } : { x: look.panX, y: look.panY };
+    let moved = false;
     const move = (ev: PointerEvent): void => {
       const q = toCanvas(ev);
+      if (!moved) { checkpoint(); moved = true; }
       const dx = (q.x - start.x) / W, dy = (q.y - start.y) / H;
       if (hit) { hit.x = orig.x + dx; hit.y = orig.y + dy; } else { look.panX = orig.x + dx; look.panY = orig.y + dy; }
       render();
@@ -209,14 +240,14 @@ export function openThumbnailMaker(o: ThumbnailOptions): { close(): void } {
     const val = document.createElement('span'); val.textContent = String(get());
     const inp = document.createElement('input');
     inp.type = 'range'; inp.min = String(min); inp.max = String(max); inp.step = String(step); inp.value = String(get());
-    inp.addEventListener('input', () => { set(Number(inp.value)); val.textContent = inp.value; render(); });
+    liveEdit(inp, () => { set(Number(inp.value)); val.textContent = inp.value; render(); });
     lab.append(document.createTextNode(label + ' '), val, inp);
     host.appendChild(lab);
   }
   function color(host: HTMLElement, label: string, get: () => string, set: (v: string) => void): void {
     const lab = document.createElement('label'); lab.className = 'thumb-color';
     const inp = document.createElement('input'); inp.type = 'color'; inp.value = get();
-    inp.addEventListener('input', () => { set(inp.value); render(); });
+    liveEdit(inp, () => { set(inp.value); render(); });
     lab.append(inp, document.createTextNode(' ' + label));
     host.appendChild(lab);
   }
@@ -236,18 +267,18 @@ export function openThumbnailMaker(o: ThumbnailOptions): { close(): void } {
       inp.addEventListener('input', () => { val.textContent = fmt(Number(inp.value)); });
       inp.addEventListener('change', () => {
         frameT = Number(inp.value);
-        void o.grabFrame(frameT).then((f) => { bg = f; render(); });
+        void o.grabFrame(frameT).then((f) => { checkpoint(); bg = f; render(); });
       });
       lab.append(document.createTextNode('Pick frame '), val, inp);
       fr.appendChild(lab);
     }
     const fb = row(fr);
     btn(fb, 'Upload background…', () => bgFile.click());
-    btn(fb, 'Reset zoom/pan', () => { look.zoom = 1; look.panX = 0; look.panY = 0; buildPanel(); render(); });
+    btn(fb, 'Reset zoom/pan', () => { checkpoint(); look.zoom = 1; look.panX = 0; look.panY = 0; buildPanel(); render(); });
     range(fr, 'Zoom', 1, 3, 0.05, () => look.zoom, (v) => { look.zoom = v; });
 
     const sz = row(section('Size'));
-    for (const s of SIZES) btn(sz, s.label, () => { W = s.w; H = s.h; buildPanel(); render(); }, W === s.w && H === s.h);
+    for (const s of SIZES) btn(sz, s.label, () => { checkpoint(); W = s.w; H = s.h; buildPanel(); render(); }, W === s.w && H === s.h);
 
     const lk = section('Background look');
     range(lk, 'Brightness', 50, 160, 1, () => look.bright, (v) => { look.bright = v; });
@@ -255,7 +286,7 @@ export function openThumbnailMaker(o: ThumbnailOptions): { close(): void } {
     range(lk, 'Saturation', 0, 250, 1, () => look.sat, (v) => { look.sat = v; });
     const ov = row(lk);
     for (const k of ['none', 'gradient', 'vignette', 'tint'] as const) {
-      btn(ov, k[0]!.toUpperCase() + k.slice(1), () => { look.overlay = k; buildPanel(); render(); }, look.overlay === k);
+      btn(ov, k[0]!.toUpperCase() + k.slice(1), () => { checkpoint(); look.overlay = k; buildPanel(); render(); }, look.overlay === k);
     }
     if (look.overlay !== 'none') range(lk, 'Overlay strength', 0, 100, 1, () => look.tintA, (v) => { look.tintA = v; });
     if (look.overlay === 'tint') color(lk, 'Tint color', () => look.tint, (v) => { look.tint = v; });
@@ -264,11 +295,12 @@ export function openThumbnailMaker(o: ThumbnailOptions): { close(): void } {
 
     const ad = section('Add');
     const ar = row(ad);
-    btn(ar, '+ Text', () => { const t = newText('NEW TEXT'); t.y = 0.25; t.size = 0.09; layers.push(t); sel = t; buildPanel(); render(); });
+    btn(ar, '+ Text', () => { checkpoint(); const t = newText('NEW TEXT'); t.y = 0.25; t.size = 0.09; layers.push(t); sel = t; buildPanel(); render(); });
     btn(ar, '+ Image / face…', () => imgFile.click());
     const er = row(ad);
     for (const e of EMOJI) {
       btn(er, e, () => {
+        checkpoint();
         const t = newText(e); Object.assign(t, { x: 0.85, y: 0.25, size: 0.2, strokeW: 0, shadow: true, upper: false });
         layers.push(t); sel = t; buildPanel(); render();
       });
@@ -280,14 +312,14 @@ export function openThumbnailMaker(o: ThumbnailOptions): { close(): void } {
       if (l.kind === 'text') {
         const ta = document.createElement('textarea');
         ta.className = 'thumb-text'; ta.rows = 2; ta.value = l.text;
-        ta.addEventListener('input', () => { l.text = ta.value; render(); });
+        liveEdit(ta, () => { l.text = ta.value; render(); }, 'blur');
         ls.appendChild(ta);
         const st = row(ls);
-        for (const p of STYLES) btn(st, p.label, () => { Object.assign(l, p.s); buildPanel(); render(); });
+        for (const p of STYLES) btn(st, p.label, () => { checkpoint(); Object.assign(l, p.s); buildPanel(); render(); });
         const fsel = document.createElement('select');
         fsel.className = 'thumb-select';
         for (const f of FONTS) { const op = document.createElement('option'); op.value = f; op.textContent = f; op.selected = f === l.font; fsel.appendChild(op); }
-        fsel.addEventListener('change', () => { l.font = fsel.value; render(); });
+        fsel.addEventListener('change', () => { checkpoint(); l.font = fsel.value; render(); });
         ls.appendChild(fsel);
         range(ls, 'Size', 0.03, 0.35, 0.005, () => l.size, (v) => { l.size = v; });
         range(ls, 'Outline', 0, 24, 1, () => l.strokeW, (v) => { l.strokeW = v; });
@@ -296,17 +328,17 @@ export function openThumbnailMaker(o: ThumbnailOptions): { close(): void } {
         color(cr, 'Outline', () => l.stroke, (v) => { l.stroke = v; });
         if (l.pill) color(cr, 'Box', () => l.pillColor, (v) => { l.pillColor = v; });
         const tg = row(ls);
-        btn(tg, 'Shadow', () => { l.shadow = !l.shadow; buildPanel(); render(); }, l.shadow);
-        btn(tg, 'Box', () => { l.pill = !l.pill; buildPanel(); render(); }, l.pill);
-        btn(tg, 'ALL CAPS', () => { l.upper = !l.upper; buildPanel(); render(); }, l.upper);
+        btn(tg, 'Shadow', () => { checkpoint(); l.shadow = !l.shadow; buildPanel(); render(); }, l.shadow);
+        btn(tg, 'Box', () => { checkpoint(); l.pill = !l.pill; buildPanel(); render(); }, l.pill);
+        btn(tg, 'ALL CAPS', () => { checkpoint(); l.upper = !l.upper; buildPanel(); render(); }, l.upper);
       } else {
         range(ls, 'Scale', 0.05, 1.5, 0.01, () => l.scale, (v) => { l.scale = v; });
       }
       range(ls, 'Rotate', -30, 30, 1, () => l.rot, (v) => { l.rot = v; });
       const ac = row(ls);
-      btn(ac, 'Bring to front', () => { layers.splice(layers.indexOf(l), 1); layers.push(l); render(); });
-      btn(ac, 'Duplicate', () => { const d = { ...l, id: ++seq, x: l.x + 0.03, y: l.y + 0.03 }; layers.push(d); sel = d; buildPanel(); render(); });
-      btn(ac, 'Delete', () => { layers.splice(layers.indexOf(l), 1); sel = null; buildPanel(); render(); });
+      btn(ac, 'Bring to front', () => { checkpoint(); layers.splice(layers.indexOf(l), 1); layers.push(l); render(); });
+      btn(ac, 'Duplicate', () => duplicateSel());
+      btn(ac, 'Delete', () => deleteSel());
     } else {
       const hint = document.createElement('p'); hint.className = 'thumb-hint';
       hint.textContent = 'Tap a text or image on the thumbnail to edit it. Drag empty space to pan the background.';
@@ -322,15 +354,81 @@ export function openThumbnailMaker(o: ThumbnailOptions): { close(): void } {
   bgFile.addEventListener('change', async () => {
     const f = bgFile.files?.[0]; bgFile.value = '';
     const img = f && await loadImage(f);
-    if (img) { bg = img; look.zoom = 1; look.panX = 0; look.panY = 0; render(); }
+    if (img) { checkpoint(); bg = img; look.zoom = 1; look.panX = 0; look.panY = 0; render(); }
   });
   imgFile.addEventListener('change', async () => {
     const f = imgFile.files?.[0]; imgFile.value = '';
     const img = f && await loadImage(f);
-    if (!img) return;
-    const l: ImageLayer = { kind: 'image', id: ++seq, x: 0.75, y: 0.55, rot: 0, img, w: 1, h: img.height / img.width, scale: 0.4 };
-    layers.push(l); sel = l; buildPanel(); render();
+    if (img) addImageLayer(img, 0.75, 0.55);
   });
+  function addImageLayer(img: ImageBitmap, x: number, y: number): void {
+    checkpoint();
+    const l: ImageLayer = { kind: 'image', id: ++seq, x, y, rot: 0, img, w: 1, h: img.height / img.width, scale: 0.4 };
+    layers.push(l); sel = l; buildPanel(); render();
+  }
+
+  // ---- Edit commands (shell routes shortcuts + long-press menu here) ----------
+
+  function deleteSel(): void {
+    if (!sel) return;
+    checkpoint();
+    layers.splice(layers.indexOf(sel), 1); sel = null; buildPanel(); render();
+  }
+  function insertCopies(src: Layer, dx: number): void {
+    checkpoint();
+    const d: Layer = { ...src, id: ++seq, x: src.x + dx, y: src.y + dx };
+    layers.push(d); sel = d; buildPanel(); render();
+  }
+  function duplicateSel(): void { if (sel) insertCopies(sel, 0.03); }
+  function copySel(): void {
+    if (!sel) return;
+    setAppClipboard('thumb-layer', { ...sel });
+    if (sel.kind === 'text') void navigator.clipboard?.writeText(sel.text).catch(() => {});
+  }
+  async function pasteImageBlob(blob: Blob): Promise<boolean> {
+    try { addImageLayer(await createImageBitmap(blob), 0.5, 0.5); return true; } catch { return false; }
+  }
+  async function paste(data?: DataTransfer | null): Promise<void> {
+    if (data) {
+      const files = [...data.files].filter((f) => f.type.startsWith('image/'));
+      const item = [...data.items].find((it) => it.kind === 'file' && it.type.startsWith('image/'))?.getAsFile();
+      const img = files[0] ?? item;
+      if (img && await pasteImageBlob(img)) return;
+    }
+    const clip = getAppClipboard<Layer>('thumb-layer');
+    if (clip) { insertCopies(clip, 0.03); return; }
+    const text = data?.getData('text/plain')?.trim();
+    if (text) { insertText(text); return; }
+    if (data) return;
+    try {
+      for (const it of await navigator.clipboard.read()) {
+        const t = it.types.find((x) => x.startsWith('image/'));
+        if (t && await pasteImageBlob(await it.getType(t))) return;
+      }
+    } catch { /* permission denied / unsupported */ }
+    try {
+      const t = (await navigator.clipboard.readText()).trim();
+      if (t) insertText(t);
+    } catch { /* ignore */ }
+  }
+  function insertText(text: string): void {
+    checkpoint();
+    const t = newText(text.slice(0, 200)); t.y = 0.25; t.size = 0.09;
+    layers.push(t); sel = t; buildPanel(); render();
+  }
+  const cmds: EditCommands = {
+    undo, redo,
+    canUndo: () => undoStack.length > 0,
+    canRedo: () => redoStack.length > 0,
+    hasSelection: () => !!sel,
+    canPaste: () => true,
+    delete: deleteSel,
+    copy: copySel,
+    cut: () => { copySel(); deleteSel(); },
+    paste,
+    duplicate: duplicateSel,
+  };
+  const disposeOverride = pushEditOverride(overlay, cmds);
 
   async function exportBlob(type: string): Promise<Blob | null> {
     const out = document.createElement('canvas');
@@ -363,13 +461,11 @@ export function openThumbnailMaker(o: ThumbnailOptions): { close(): void } {
 
   const onKey = (e: KeyboardEvent): void => {
     if (e.key === 'Escape') close();
-    else if ((e.key === 'Delete' || e.key === 'Backspace') && sel && !(e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement)) {
-      layers.splice(layers.indexOf(sel), 1); sel = null; buildPanel(); render();
-    }
   };
   document.addEventListener('keydown', onKey);
   function close(): void {
     document.removeEventListener('keydown', onKey);
+    disposeOverride();
     overlay.remove();
   }
 

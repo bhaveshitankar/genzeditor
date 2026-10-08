@@ -14,11 +14,12 @@ import {
 } from './floorplan/model';
 import { CATALOG, CATALOG_CATEGORIES, catalogItem } from './floorplan/catalog';
 import { mount3D, type View3D } from './floorplan/view3d';
-import { bindUndoKeys } from './undoKeys';
+import { getAppClipboard, setAppClipboard, type EditCommands } from './editCommands';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 type Tool = 'select' | 'wall';
 type Selection = { kind: 'wall' | 'furniture'; id: string } | null;
+type FpClip = { kind: 'wall'; item: Wall } | { kind: 'furniture'; item: FurniturePlacement };
 
 export class FloorPlanEditor {
   private container: HTMLElement;
@@ -48,9 +49,6 @@ export class FloorPlanEditor {
   private view3d: View3D | null = null;
   private threeHost: HTMLElement | null = null;
 
-  // Keyboard undo/redo cleanup.
-  private unbindKeys: (() => void) | null = null;
-
   private constructor(container: HTMLElement, plan: FloorPlan, onChange?: () => void) {
     this.container = container;
     this.plan = plan;
@@ -74,8 +72,6 @@ export class FloorPlanEditor {
   }
 
   destroy(): void {
-    this.unbindKeys?.();
-    this.unbindKeys = null;
     this.view3d?.dispose();
     this.view3d = null;
     this.container.replaceChildren();
@@ -117,21 +113,75 @@ export class FloorPlanEditor {
     this.container.replaceChildren(this.root);
     this.redraw();
 
-    // Keyboard: Delete removes selection, Esc finishes wall drawing.
+    // Keyboard: Esc finishes wall drawing. (Delete/copy/paste/undo are routed
+    // by the shell through commands().)
     this.root.tabIndex = 0;
     this.root.addEventListener('keydown', (e) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && this.selection) {
-        e.preventDefault(); this.deleteSelected();
-      } else if (e.key === 'Escape') {
-        this.wallStart = null; this.redraw();
-      }
+      if (e.key === 'Escape') { this.wallStart = null; this.redraw(); }
     });
+  }
 
-    // Bind keyboard undo/redo.
-    this.unbindKeys = bindUndoKeys({
+  // ---- Edit commands (shell owns shortcuts + long-press menu) ----
+  commands(): EditCommands {
+    return {
       undo: () => this.undo(),
       redo: () => this.redo(),
-    });
+      canUndo: () => this.undoStack.length > 0,
+      canRedo: () => this.redoStack.length > 0,
+      hasSelection: () => !!this.selectedClip(),
+      canPaste: () => !!getAppClipboard<FpClip>('floorplan'),
+      delete: () => this.deleteSelected(),
+      copy: () => { this.copySelected(); },
+      cut: () => { if (this.copySelected()) this.deleteSelected(); },
+      paste: () => {
+        const clip = getAppClipboard<FpClip>('floorplan');
+        if (!clip) return;
+        const placed = this.insertClip(clip);
+        setAppClipboard('floorplan', placed); // repeated pastes cascade
+      },
+      duplicate: () => { const c = this.selectedClip(); if (c) this.insertClip(c); },
+    };
+  }
+
+  private selectedClip(): FpClip | null {
+    const sel = this.selection;
+    if (!sel) return null;
+    if (sel.kind === 'furniture') {
+      const f = this.plan.furniture.find((x) => x.id === sel.id);
+      return f ? { kind: 'furniture', item: { ...f } } : null;
+    }
+    const w = this.plan.walls.find((x) => x.id === sel.id);
+    return w ? { kind: 'wall', item: { ...w } } : null;
+  }
+
+  private copySelected(): boolean {
+    const c = this.selectedClip();
+    if (c) setAppClipboard('floorplan', c);
+    return !!c;
+  }
+
+  /** Insert a copy offset by one grid step; selects it and returns the inserted clip. */
+  private insertClip(clip: FpClip): FpClip {
+    const off = this.plan.settings.gridSize || 0.5;
+    this.snapshot();
+    let placed: FpClip;
+    if (clip.kind === 'furniture') {
+      const f = { ...clip.item, id: newId('f'), x: clip.item.x + off, y: clip.item.y + off };
+      this.plan.furniture.push(f);
+      this.selection = { kind: 'furniture', id: f.id };
+      placed = { kind: 'furniture', item: { ...f } };
+    } else {
+      const w = { ...clip.item, id: newId('w'), x1: clip.item.x1 + off, y1: clip.item.y1 + off, x2: clip.item.x2 + off, y2: clip.item.y2 + off };
+      this.plan.walls.push(w);
+      this.selection = { kind: 'wall', id: w.id };
+      placed = { kind: 'wall', item: { ...w } };
+    }
+    this.tool = 'select';
+    this.wallStart = null;
+    this.syncToolButtons();
+    this.emitChange();
+    this.redraw();
+    return placed;
   }
 
   private toolBtn(tool: Tool, label: string): HTMLButtonElement {
