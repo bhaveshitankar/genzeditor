@@ -689,26 +689,28 @@ export class AppShell {
     });
   }
 
-  // Templates for the "New file" flow. Each entry maps to a FileKind plus a
-  // default extension and starter content (Mermaid ships a ready-to-edit graph).
+  // Templates for the "New file" flow, ordered by how often most people reach for them
+  // (documents → spreadsheets → slides → scan → images → notes → creative → developer).
+  // Each entry maps to a FileKind plus a default extension and starter content
+  // (Mermaid ships a ready-to-edit graph).
   private static readonly NEW_FILE_TEMPLATES: Array<{
     id: string; label: string; icon: string; kind: FileKind; ext: string; content: string;
   }> = [
-    { id: 'text', label: 'Text', icon: '📄', kind: 'text', ext: 'txt', content: '' },
-    { id: 'markdown', label: 'Markdown', icon: '📝', kind: 'markdown', ext: 'md', content: '# Title\n\nStart writing…\n' },
-    { id: 'mermaid', label: 'Mermaid diagram', icon: '🕸', kind: 'mermaid', ext: 'mmd',
-      content: 'graph TD\n  A[Start] --> B{Decision}\n  B -->|Yes| C[Do this]\n  B -->|No| D[Do that]\n  C --> E[End]\n  D --> E\n' },
-    { id: 'json', label: 'JSON', icon: '{ }', kind: 'json', ext: 'json', content: '{\n  \n}\n' },
-    { id: 'csv', label: 'Spreadsheet (CSV)', icon: '📊', kind: 'spreadsheet', ext: 'csv', content: 'Column A,Column B,Column C\n,,\n' },
-    { id: 'code', label: 'Code', icon: '⌘', kind: 'code', ext: 'txt', content: '' },
-    { id: 'document', label: 'Word document', icon: '📘', kind: 'document', ext: 'docx', content: '' },
+    { id: 'document', label: 'Document', icon: '📘', kind: 'document', ext: 'docx', content: '' },
+    { id: 'csv', label: 'Spreadsheet', icon: '📊', kind: 'spreadsheet', ext: 'csv', content: 'Column A,Column B,Column C\n,,\n' },
     { id: 'presentation', label: 'Presentation', icon: '📽', kind: 'presentation', ext: 'pptx', content: '' },
     { id: 'scan', label: 'Scan document → PDF', icon: '📷', kind: 'pdf', ext: 'pdf', content: '' },
     { id: 'image', label: 'Image (blank)', icon: '🖼', kind: 'image', ext: 'png', content: '' },
-    { id: 'audio', label: 'Audio (record)', icon: '🎙', kind: 'audio', ext: 'wav', content: '' },
+    { id: 'text', label: 'Text note', icon: '📄', kind: 'text', ext: 'txt', content: '' },
+    { id: 'markdown', label: 'Markdown', icon: '📝', kind: 'markdown', ext: 'md', content: '# Title\n\nStart writing…\n' },
     { id: 'sketch', label: 'Sketch', icon: '✏️', kind: 'sketch', ext: 'excalidraw', content: '' },
+    { id: 'audio', label: 'Audio (record)', icon: '🎙', kind: 'audio', ext: 'wav', content: '' },
     { id: 'floorplan', label: 'Interior design', icon: '🏠', kind: 'floorplan', ext: 'floorplan', content: '' },
     { id: 'game', label: 'Game (build & play)', icon: '🎮', kind: 'game', ext: 'game', content: '' },
+    { id: 'mermaid', label: 'Mermaid diagram', icon: '🕸', kind: 'mermaid', ext: 'mmd',
+      content: 'graph TD\n  A[Start] --> B{Decision}\n  B -->|Yes| C[Do this]\n  B -->|No| D[Do that]\n  C --> E[End]\n  D --> E\n' },
+    { id: 'json', label: 'JSON', icon: '{ }', kind: 'json', ext: 'json', content: '{\n  \n}\n' },
+    { id: 'code', label: 'Code', icon: '⌘', kind: 'code', ext: 'txt', content: '' },
   ];
 
   /** Modal to pick a file type + name, then create and open a blank document. */
