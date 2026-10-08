@@ -1437,7 +1437,7 @@ export class AppShell {
     for (const sh of record?.shares ?? []) {
       await deleteShare(sh.shareId, this.meState.csrfToken).catch(() => {});
     }
-    await this.removeFile(id);
+    await this.store.remove(id);
   }
 
   private shareNote(records: { shares?: ShareLink[] }[]): string {
