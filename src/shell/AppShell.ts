@@ -1245,6 +1245,38 @@ export class AppShell {
   // live in the single top header now — not a second toolbar row — so the editing
   // surface reclaims that vertical space. Returns the cleared header slot; every
   // openFile branch fills it in place of the old per-editor `.toolbar` element.
+  // Thin position indicator under a top-bar tool strip that scrolls sideways, so
+  // users can tell there's more. Click the bar to jump; removed with the editor.
+  private watchStripScroll(strip: HTMLElement): void {
+    const group = this.root.querySelector('[data-role="edit-group"]') as HTMLElement | null;
+    if (!group) return;
+    group.querySelector('.scroll-hint')?.remove();
+    const bar = document.createElement('div');
+    bar.className = 'scroll-hint';
+    const thumb = document.createElement('span');
+    bar.appendChild(thumb);
+    group.appendChild(bar);
+    const update = () => {
+      const max = strip.scrollWidth - strip.clientWidth;
+      bar.hidden = max <= 2;
+      if (bar.hidden) return;
+      const w = Math.max(0.12, strip.clientWidth / strip.scrollWidth);
+      thumb.style.width = `${w * 100}%`;
+      thumb.style.left = `${(strip.scrollLeft / max) * (1 - w) * 100}%`;
+    };
+    strip.addEventListener('scroll', update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(strip);
+    for (const c of Array.from(strip.children)) ro.observe(c);
+    bar.addEventListener('click', (e) => {
+      const r = bar.getBoundingClientRect();
+      const f = (e.clientX - r.left) / r.width;
+      strip.scrollTo({ left: f * (strip.scrollWidth - strip.clientWidth), behavior: 'smooth' });
+    });
+    this.editorAbort?.signal.addEventListener('abort', () => { ro.disconnect(); bar.remove(); });
+    requestAnimationFrame(update);
+  }
+
   private editorToolbar(): HTMLElement {
     this.editorTools.innerHTML = '';
     this.editorTools.classList.add('active');
@@ -2043,6 +2075,7 @@ export class AppShell {
         // The editor loads async, so the rAF reveal in editorToolbar() already ran.
         const group = this.root.querySelector('[data-role="edit-group"]') as HTMLElement | null;
         if (group) group.hidden = false;
+        this.watchStripScroll(strip);
       }
       this.currentDoc = doc;
       this.currentDocKind = 'ImageEditor';
@@ -2093,6 +2126,13 @@ export class AppShell {
       this.editorHost.appendChild(body);
       const { DocxEditor } = await import('../editors/DocxEditor');
       const doc = await DocxEditor.open(body, blob, () => this.scheduleSaveDoc(), record.name);
+      // Formatting toolbar goes in the top bar (more vertical room for the page).
+      const strip = doc.toolbarElement();
+      strip.classList.add('in-ribbon');
+      toolbar.appendChild(strip);
+      const editGroup = this.root.querySelector('[data-role="edit-group"]') as HTMLElement | null;
+      if (editGroup) editGroup.hidden = false;
+      this.watchStripScroll(strip);
       this.currentDoc = doc;
       this.currentDocKind = 'DocxEditor';
       this.addToolbarActions(toolbar, record);

@@ -113,7 +113,7 @@
   margin-top: 6px;
   align-self: flex-start;
   background: var(--brand-500);
-  color: var(--ink);
+  color: var(--on-brand-ink, var(--ink));
   font-weight: 800;
   font-size: 13px;
   padding: 4px 12px;

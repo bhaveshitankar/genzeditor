@@ -103,7 +103,9 @@ export class AudioEditor implements DocEditor {
   private raf = 0;
   private recorder: MediaRecorder | null = null;
   private recStream: MediaStream | null = null;
-  private recInsert = false;    // insert at playhead vs append at end
+  private recInsert = true;     // insert at the cursor vs append at end
+  private recPending = false;   // waiting on the mic permission prompt
+  private recCancelled = false;
 
   private exportFmt: ExportFmt = 'wav';
 
@@ -196,14 +198,13 @@ export class AudioEditor implements DocEditor {
   private setBuffer(buf: AudioBuffer, pushHistory = true) {
     if (pushHistory) this.pushHistory();
     const c = this.selClip();
+    this.stopMix();
     if (c) {
-      const wasWhole = c.offset < 1e-6 && Math.abs(c.dur - c.buffer.duration) < 1e-3;
+      // The clip editor works on the clip's visible window (see clipView), so the
+      // edited buffer simply becomes the whole clip.
       c.buffer = buf;
-      if (wasWhole) { c.offset = 0; c.dur = buf.duration; }
-      else {
-        c.offset = Math.min(c.offset, Math.max(0, buf.duration - 0.05));
-        c.dur = Math.max(0.05, Math.min(c.dur, buf.duration - c.offset));
-      }
+      c.offset = 0;
+      c.dur = buf.duration;
     } else {
       if (!this.tracks.length) this.tracks.push(this.newTrack());
       const nc = this.newClip(buf, 'Clip 1', 0);
@@ -217,8 +218,28 @@ export class AudioEditor implements DocEditor {
     this.redraw();
     this.updateButtons();
     this.setStatus(`${fmt(buf.duration)} · ${buf.numberOfChannels}ch · ${(buf.sampleRate / 1000).toFixed(1)}kHz`);
-    if (this.mtInner) { this.renderTimeline(); this.renderProps(); }
+    this.mixT = Math.min(this.mixT, this.mixTotal());
+    this.renderTimeline();
+    this.renderProps();
     this.onChange();
+  }
+
+  // What the clip editor (lower waveform) shows for a clip: the part of its
+  // buffer that is actually audible after splits/trims, not the raw source.
+  private clipView(c: MClip | null): AudioBuffer | null {
+    if (!c) return null;
+    const whole = c.offset < 1e-6 && Math.abs(c.dur - c.buffer.duration) < 1e-3;
+    return whole ? c.buffer : sliceBuffer(this.ctx, c.buffer, c.offset, c.offset + c.dur);
+  }
+
+  // Re-point the clip editor at the selected clip's current window and redraw.
+  private syncView() {
+    this.buffer = this.clipView(this.selClip());
+    const d = this.buffer?.duration ?? 0;
+    if (this.selEnd > d) { this.selStart = 0; this.selEnd = 0; }
+    this.playhead = Math.min(this.playhead, d);
+    this.fitZoom();
+    this.redraw();
   }
 
   private fitZoom() {
@@ -303,7 +324,7 @@ export class AudioEditor implements DocEditor {
           <div class="aud-group">
             <span class="aud-group-label">Record</span>
             <button type="button" class="aud-btn aud-rec" data-act="rec">● Record</button>
-            <button type="button" class="aud-btn" data-act="recmode" title="Toggle append/insert">Append</button>
+            <button type="button" class="aud-btn" data-act="recmode" title="Record at the cursor (Insert) or after the end (Append)">Insert</button>
           </div>
           <div class="aud-group">
             <span class="aud-group-label">Export</span>
@@ -358,7 +379,7 @@ export class AudioEditor implements DocEditor {
     switch (act) {
       case 'play': this.togglePlay(); break;
       case 'stop': this.stopPlayback(); break;
-      case 'loop': this.looping = !this.looping; this.updateButtons(); break;
+      case 'loop': this.setLooping(!this.looping); break;
       case 'undo': this.undo(); break;
       case 'redo': this.redo(); break;
       case 'cut': this.cut(); break;
@@ -558,10 +579,9 @@ export class AudioEditor implements DocEditor {
     this.stopPlayback();
     this.tracks = s.tracks;
     this.selId = s.sel && this.findClip(s.sel) ? s.sel : null;
-    this.buffer = this.selClip()?.buffer ?? null;
     this.selStart = this.selEnd = 0;
     this.playhead = 0;
-    this.fitZoom(); this.redraw(); this.updateButtons();
+    this.syncView(); this.updateButtons();
     this.renderTimeline(); this.renderProps();
     this.onChange();
   }
@@ -809,35 +829,69 @@ export class AudioEditor implements DocEditor {
     if (!this.buffer) return;
     void this.ctx.resume();
     const region = this.selEnd - this.selStart > 0.01;
-    const from = region ? this.selStart : this.playhead;
-    const to = region ? this.selEnd : this.buffer.duration;
+    const from = region ? this.selStart : (this.playhead >= this.buffer.duration - 0.02 ? 0 : this.playhead);
     const src = this.ctx.createBufferSource();
     src.buffer = this.buffer;
-    src.loop = this.looping && region;
-    if (src.loop) { src.loopStart = from; src.loopEnd = to; }
     src.connect(this.ctx.destination);
     src.onended = () => { if (this.source === src) this.stopPlayback(); };
-    src.start(0, from, src.loop ? undefined : Math.max(0.02, to - from));
     this.source = src;
+    src.start(0, from);
     this.playCtxStart = this.ctx.currentTime;
     this.playOffset = from;
+    this.applyLoop(src, from);
     this.setPlayLabel('❚❚ Pause');
     this.animate();
+  }
+
+  // Playback range: the selection if there is one, else the whole clip.
+  private playRange(): { a: number; b: number } {
+    const d = this.buffer?.duration ?? 0;
+    return this.selEnd - this.selStart > 0.01 ? { a: this.selStart, b: Math.min(this.selEnd, d) } : { a: 0, b: d };
+  }
+
+  // Configure loop points on the running source (also used when toggling live).
+  private applyLoop(src: AudioBufferSourceNode, pos: number) {
+    const { a, b } = this.playRange();
+    src.loop = this.looping;
+    if (this.looping) { src.loopStart = a; src.loopEnd = b; }
+    // Without looping, stop at the end of the range (re-calling stop() reschedules it).
+    try { src.stop(this.ctx.currentTime + (this.looping ? 86400 : Math.max(0.01, b - pos))); } catch { /* not started */ }
+  }
+
+  private setLooping(on: boolean) {
+    this.looping = on;
+    this.updateButtons();
+    if (this.source && this.buffer) {
+      // Re-anchor the clock at the current position so the playhead stays right.
+      this.playOffset = this.currentPlayPos();
+      this.playCtxStart = this.ctx.currentTime;
+      this.applyLoop(this.source, this.playOffset);
+    }
+    this.setStatus(on ? 'Loop on' : 'Loop off');
+  }
+
+  private currentPlayPos(): number {
+    let t = this.playOffset + (this.ctx.currentTime - this.playCtxStart);
+    const src = this.source;
+    if (src?.loop && src.loopEnd > src.loopStart && t >= src.loopEnd) {
+      t = src.loopStart + ((t - src.loopStart) % (src.loopEnd - src.loopStart));
+    }
+    return t;
   }
 
   private stopPlayback() {
     if (this.source) { try { this.source.stop(); } catch { /* already stopped */ } this.source.disconnect(); this.source = null; }
     cancelAnimationFrame(this.raf);
-    this.setPlayLabel('▶ Play');
+    this.setPlayLabel('▶ Play clip');
     this.redraw();
   }
 
   private animate = () => {
     if (!this.source || !this.buffer) return;
-    let t = this.playOffset + (this.ctx.currentTime - this.playCtxStart);
-    if (this.source.loop) {
-      const span = this.source.loopEnd - this.source.loopStart;
-      if (span > 0) t = this.source.loopStart + ((t - this.source.loopStart) % span);
+    const t = this.currentPlayPos();
+    if (!this.source.loop) {
+      const { b } = this.playRange();
+      if (t >= b - 0.005) { this.playhead = b; this.stopPlayback(); return; }
     }
     this.playhead = Math.min(t, this.buffer.duration);
     this.redraw();
@@ -848,44 +902,87 @@ export class AudioEditor implements DocEditor {
 
   // ---- recording -----------------------------------------------------------
 
+  private pickRecMime(): string {
+    // Chrome/Firefox prefer webm/ogg; Safari only records audio/mp4.
+    const cands = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg'];
+    return cands.find((m) => { try { return MediaRecorder.isTypeSupported(m); } catch { return false; } }) ?? '';
+  }
+
+  private setRecUi(on: boolean) {
+    const b = this.btn('rec');
+    if (b) { b.textContent = on ? '■ Stop' : '● Record'; b.classList.toggle('active', on); }
+  }
+
   private async toggleRecord() {
     if (this.recorder) { this.stopRecording(); return; }
-    try {
-      this.recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      this.setStatus('Microphone access denied.');
+    if (this.recPending) { this.recCancelled = true; this.setRecUi(false); this.setStatus('Recording cancelled.'); return; }
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      this.setStatus('Recording needs a microphone and a secure (https) page — not available here.');
       return;
     }
+    if (typeof MediaRecorder === 'undefined') {
+      this.setStatus('This browser does not support audio recording (MediaRecorder).');
+      return;
+    }
+    this.recPending = true; this.recCancelled = false;
+    this.setStatus('Requesting microphone… allow access in your browser prompt.');
+    this.setRecUi(true);
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      this.recPending = false;
+      this.setRecUi(false);
+      const name = (err as DOMException)?.name;
+      this.setStatus(
+        name === 'NotAllowedError' || name === 'SecurityError' ? 'Microphone access was blocked — allow it in the browser address bar / site settings, then try again.'
+        : name === 'NotFoundError' || name === 'OverconstrainedError' ? 'No microphone found. Connect one and try again.'
+        : name === 'NotReadableError' ? 'The microphone is in use by another app or tab.'
+        : `Could not start the microphone (${name || 'error'}).`);
+      return;
+    }
+    this.recPending = false;
+    if (this.recCancelled || !this.host.isConnected) { stream.getTracks().forEach((t) => t.stop()); this.setRecUi(false); return; }
+    this.recStream = stream;
+
+    // Cursor to record into: selection start, else the playhead (existing audio only).
+    const cursor = this.buffer ? (this.selEnd - this.selStart > 0.001 ? this.selStart : this.playhead) : 0;
     const chunks: BlobPart[] = [];
-    const rec = new MediaRecorder(this.recStream);
+    const mime = this.pickRecMime();
+    let rec: MediaRecorder;
+    try { rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); }
+    catch { stream.getTracks().forEach((t) => t.stop()); this.recStream = null; this.setRecUi(false); this.setStatus('Could not start the recorder for this microphone.'); return; }
     rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    rec.onerror = () => { this.setStatus('Recording failed.'); this.stopRecording(); };
     rec.onstop = async () => {
-      const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+      const type = rec.mimeType || mime || 'audio/webm';
+      const blob = new Blob(chunks, { type });
+      if (!blob.size) { this.setStatus('Nothing was recorded.'); return; }
       try {
-        const buf = await this.ctx.decodeAudioData(await blob.arrayBuffer());
+        let buf = await this.ctx.decodeAudioData(await blob.arrayBuffer());
         if (!this.buffer) { this.setBuffer(buf); return; }
-        if (this.recInsert) {
-          const at = this.playhead;
-          const before = sliceBuffer(this.ctx, this.buffer, 0, at);
-          const after = sliceBuffer(this.ctx, this.buffer, at, this.buffer.duration);
-          this.setBuffer(concatBuffers(this.ctx, [before, buf, after]));
-        } else {
-          this.setBuffer(concatBuffers(this.ctx, [this.buffer, buf]));
-        }
-      } catch { this.setStatus('Recording could not be decoded.'); }
+        if (buf.sampleRate !== this.buffer.sampleRate) buf = await resample(buf, this.buffer.sampleRate);
+        const at = this.recInsert ? Math.min(cursor, this.buffer.duration) : this.buffer.duration;
+        const before = sliceBuffer(this.ctx, this.buffer, 0, at);
+        const after = sliceBuffer(this.ctx, this.buffer, at, this.buffer.duration);
+        this.playhead = at;
+        this.selStart = this.selEnd = 0;
+        this.setBuffer(concatBuffers(this.ctx, [before, buf, after]));
+        this.setStatus(`Recorded ${fmt(buf.duration)} at ${fmt(at)}.`);
+      } catch { this.setStatus(`Recording (${type}) could not be decoded by this browser.`); }
     };
-    rec.start();
+    rec.start(250);
     this.recorder = rec;
-    const b = this.btn('rec'); if (b) { b.textContent = '■ Stop'; b.classList.add('active'); }
-    this.setStatus('Recording…');
+    this.setStatus('Recording… press Stop when done.');
   }
 
   private stopRecording() {
-    if (this.recorder && this.recorder.state !== 'inactive') this.recorder.stop();
+    const rec = this.recorder;
     this.recorder = null;
+    if (rec && rec.state !== 'inactive') { try { rec.requestData(); } catch { /* ignore */ } rec.stop(); }
     this.recStream?.getTracks().forEach(t => t.stop());
     this.recStream = null;
-    const b = this.btn('rec'); if (b) { b.textContent = '● Record'; b.classList.remove('active'); }
+    this.setRecUi(false);
   }
 
   // ---- zoom + pointer ------------------------------------------------------
@@ -973,11 +1070,9 @@ export class AudioEditor implements DocEditor {
     this.stopPlayback();
     this.selId = id;
     const c = this.selClip();
-    this.buffer = c?.buffer ?? null;
     this.selStart = this.selEnd = 0;
     this.playhead = 0;
-    this.fitZoom();
-    this.redraw();
+    this.syncView();
     this.renderProps();
     this.mtInner.querySelectorAll<HTMLElement>('.amt-clip').forEach((n) => n.classList.toggle('sel', n.dataset.id === id));
   }
@@ -1018,6 +1113,22 @@ export class AudioEditor implements DocEditor {
     return out;
   }
 
+  // Loop range for mix playback: the clip-editor selection (mapped onto the
+  // timeline) if there is one, else the whole mix.
+  private mixLoopRange(): { a: number; b: number; region: boolean } {
+    const c = this.selClip();
+    if (c && this.hasRegion()) return { a: c.start + this.selStart, b: c.start + Math.min(this.selEnd, c.dur), region: true };
+    return { a: 0, b: this.mixTotal(), region: false };
+  }
+
+  private startMixSources(from: number) {
+    for (const s of this.mixSources) { try { s.stop(); } catch { /* not started */ } s.disconnect(); }
+    const t0 = this.ctx.currentTime + 0.05;
+    this.mixSources = this.scheduleMix(this.ctx, this.ctx.destination, from, t0);
+    this.mixCtxStart = t0;
+    this.mixFrom = from;
+  }
+
   private playMix() {
     if (this.mixPlaying) { this.stopMix(); return; }
     this.stopPlayback();
@@ -1025,17 +1136,23 @@ export class AudioEditor implements DocEditor {
     if (!total) return;
     void this.ctx.resume();
     if (this.mixT >= total - 0.02) this.mixT = 0;
-    const t0 = this.ctx.currentTime + 0.05;
-    this.mixSources = this.scheduleMix(this.ctx, this.ctx.destination, this.mixT, t0);
-    this.mixCtxStart = t0;
-    this.mixFrom = this.mixT;
+    if (this.looping) {
+      const r = this.mixLoopRange();
+      if (r.region && (this.mixT < r.a || this.mixT >= r.b)) this.mixT = r.a;
+    }
+    this.startMixSources(this.mixT);
     this.mixPlaying = true;
     const b = this.host.querySelector('[data-mt="play"]');
     if (b) b.textContent = '❚❚ Pause';
     const loop = () => {
       if (!this.mixPlaying) return;
       this.mixT = this.mixFrom + Math.max(0, this.ctx.currentTime - this.mixCtxStart);
-      if (this.mixT >= this.mixTotal()) { this.mixT = this.mixTotal(); this.stopMix(); }
+      // Read the loop flag every frame so toggling it live takes effect.
+      const r = this.mixLoopRange();
+      if (this.looping && r.b - r.a > 0.05 && this.mixT >= r.b - 0.005) {
+        this.mixT = r.a;
+        this.startMixSources(r.a);
+      } else if (this.mixT >= this.mixTotal()) { this.mixT = this.mixTotal(); this.stopMix(); }
       this.updateMixPlayhead(true);
       this.mixRaf = requestAnimationFrame(loop);
     };
@@ -1147,6 +1264,7 @@ export class AudioEditor implements DocEditor {
       this.selectClip(selectId);
     }
     this.mixT = Math.min(this.mixT, this.mixTotal());
+    this.syncView();
     this.renderTimeline();
     this.renderProps();
     this.updateButtons();

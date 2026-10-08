@@ -32,6 +32,11 @@ export class DocxEditor implements DocEditor {
   private editable!: HTMLElement;
   private zoom = 100;
   private name: string;
+  private bar!: HTMLElement;
+  private abort = new AbortController();
+  private menus = new Map<HTMLElement, HTMLElement>(); // trigger button -> detached menu panel
+  private openScroll = 0;
+  private openMenu: { btn: HTMLElement; menu: HTMLElement } | null = null;
 
   private constructor(host: HTMLElement, onChange: () => void, name: string) {
     this.host = host;
@@ -57,7 +62,15 @@ export class DocxEditor implements DocEditor {
     return ed;
   }
 
-  destroy(): void { /* host clears its own DOM */ }
+  /** The formatting toolbar; the shell mounts it in the top bar. */
+  toolbarElement(): HTMLElement { return this.bar; }
+
+  destroy(): void {
+    this.abort.abort();
+    this.closeMenus();
+    this.menus.forEach((m) => m.remove());
+    this.bar.remove();
+  }
 
   // Build a docx ImageRun from an inline data-URL <img>. Returns null for
   // external images (the docx lib can't fetch them here). `ImageRun` is passed
@@ -440,46 +453,69 @@ export class DocxEditor implements DocEditor {
       </div>`;
     this.editable = this.host.querySelector('[data-role="editable"]') as HTMLElement;
     const bar = this.host.querySelector('[data-role="fmt"]') as HTMLElement;
+    this.bar = bar;
+    const signal = this.abort.signal;
     const hiliteIcon = bar.querySelector('.docx-hilite-icon') as HTMLElement;
-    bar.addEventListener('mousedown', (e) => e.preventDefault()); // keep selection
+
+    // Dropdown panels live in a fixed layer on <body> so no scrolling/overflow
+    // ancestor (the top bar) can clip them.
+    bar.querySelectorAll<HTMLElement>('.docx-dropdown').forEach((dd) => {
+      const btn = dd.querySelector('.docx-menu-btn') as HTMLElement;
+      const menu = dd.querySelector('.docx-menu') as HTMLElement;
+      menu.remove();
+      this.menus.set(btn, menu);
+      menu.addEventListener('mousedown', (e) => e.preventDefault()); // keep selection
+      menu.addEventListener('click', (e) => {
+        const item = (e.target as HTMLElement).closest('button');
+        if (!item) return;
+        this.closeMenus();
+        this.runAction(item);
+      });
+    });
+    const closeOnOutside = (e: Event) => {
+      if (!this.openMenu) return;
+      const t = e.target as Node;
+      if (this.openMenu.menu.contains(t) || this.openMenu.btn.contains(t)) return;
+      this.closeMenus();
+    };
+    document.addEventListener('mousedown', closeOnOutside, { capture: true, signal });
+    document.addEventListener('touchstart', closeOnOutside, { capture: true, passive: true, signal });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.closeMenus(); }, { signal });
+    window.addEventListener('scroll', (e) => {
+      const t = e.target as Node;
+      if (this.openMenu?.menu.contains(t) || this.bar.contains(t)) return; // the bar has its own check
+      this.closeMenus();
+    }, { capture: true, signal });
+    let lastW = window.innerWidth;
+    window.addEventListener('resize', () => { // ignore mobile URL-bar height jitter
+      if (window.innerWidth !== lastW) { lastW = window.innerWidth; this.closeMenus(); }
+    }, { signal });
+    bar.addEventListener('scroll', () => { // only when the bar actually moved under the open menu
+      if (this.openMenu && Math.abs(bar.scrollLeft - this.openScroll) > 2) this.closeMenus();
+    }, { signal });
+
+    // Keep the editor selection: don't let toolbar buttons take focus
+    // (selects/colour inputs save + restore the selection themselves).
+    bar.addEventListener('mousedown', (e) => {
+      if ((e.target as HTMLElement).closest('select')) return;
+      e.preventDefault();
+    });
     bar.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest('button');
       if (!btn) return;
-      const menuBtn = btn.closest('.docx-dropdown')?.querySelector('.docx-menu-btn');
-      if (menuBtn && btn === menuBtn) {
-        const menu = btn.parentElement?.querySelector('.docx-menu') as HTMLElement;
-        if (menu) {
-          const isOpen = menu.style.display === 'block';
-          bar.querySelectorAll('.docx-menu').forEach(m => (m as HTMLElement).style.display = 'none');
-          menu.style.display = isOpen ? 'none' : 'block';
-        }
-        return;
-      }
-      // Close menus when clicking menu items
-      bar.querySelectorAll('.docx-menu').forEach(m => (m as HTMLElement).style.display = 'none');
-
-      if (btn.getAttribute('data-role') === 'save-pdf') { void this.exportPdf(btn as HTMLButtonElement); return; }
-      const clipboard = btn.getAttribute('data-clipboard');
-      if (clipboard === 'copy') { void this.copyContent(); return; }
-      if (clipboard === 'paste') { void this.pasteContent(); return; }
-      const ins = btn.getAttribute('data-ins');
-      if (ins) { void this.insertAction(ins); return; }
-      const cmd = btn.getAttribute('data-cmd');
-      const block = btn.getAttribute('data-block');
-      this.editable.focus();
-      if (cmd === 'undo') { document.execCommand('undo', false); this.onChange(); }
-      else if (cmd === 'redo') { document.execCommand('redo', false); this.onChange(); }
-      else if (cmd) { document.execCommand(cmd, false); this.onChange(); }
-      else if (block) { document.execCommand('formatBlock', false, block === 'p' ? 'p' : block); this.onChange(); }
+      if (this.menus.has(btn)) { this.toggleMenu(btn); return; }
+      this.closeMenus();
+      this.runAction(btn);
     });
 
-    document.addEventListener('keydown', (e) => {
+    const onKey = (e: KeyboardEvent) => {
       if (!this.editable.contains(document.activeElement)) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); document.execCommand('undo', false); this.onChange(); }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); document.execCommand('redo', false); this.onChange(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'c') { e.preventDefault(); void this.copyContent(); }
       if ((e.ctrlKey || e.metaKey) && e.key === 'v') { e.preventDefault(); void this.pasteContent(); }
-    });
+    };
+    document.addEventListener('keydown', onKey, { signal });
 
     // Color pickers (text + highlight): apply on input, keep selection.
     bar.querySelectorAll<HTMLInputElement>('input[data-color]').forEach((inp) => {
@@ -541,10 +577,57 @@ export class DocxEditor implements DocEditor {
     // Track the last selection so toolbar controls that steal focus can restore it.
     document.addEventListener('selectionchange', () => {
       const sel = window.getSelection();
+      if (!this.editable.contains(document.activeElement)) return; // focus is in a toolbar control
       if (sel && sel.rangeCount && this.editable.contains(sel.anchorNode)) {
         this.savedRange = sel.getRangeAt(0).cloneRange();
       }
-    });
+    }, { signal });
+  }
+
+  private toggleMenu(btn: HTMLElement): void {
+    const wasOpen = this.openMenu?.btn === btn;
+    this.closeMenus();
+    if (wasOpen) return;
+    const menu = this.menus.get(btn)!;
+    document.body.appendChild(menu);
+    menu.classList.add('open');
+    const r = btn.getBoundingClientRect();
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    const vw = window.innerWidth, vh = window.innerHeight, pad = 6;
+    let left = Math.max(pad, Math.min(r.left, vw - mw - pad));
+    let top = r.bottom + 4;
+    if (top + mh > vh - pad) top = Math.max(pad, r.top - mh - 4); // flip above
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.style.maxHeight = `${vh - 2 * pad}px`;
+    btn.setAttribute('aria-expanded', 'true');
+    this.openMenu = { btn, menu };
+    this.openScroll = this.bar.scrollLeft;
+  }
+
+  private closeMenus(): void {
+    if (!this.openMenu) return;
+    const { btn, menu } = this.openMenu;
+    menu.classList.remove('open');
+    menu.remove();
+    btn.removeAttribute('aria-expanded');
+    this.openMenu = null;
+  }
+
+  // Run a toolbar / menu item.
+  private runAction(btn: HTMLElement): void {
+    if (btn.getAttribute('data-role') === 'save-pdf') { void this.exportPdf(btn as HTMLButtonElement); return; }
+    const clipboard = btn.getAttribute('data-clipboard');
+    if (clipboard === 'copy') { void this.copyContent(); return; }
+    if (clipboard === 'paste') { void this.pasteContent(); return; }
+    const ins = btn.getAttribute('data-ins');
+    if (ins) { void this.insertAction(ins); return; }
+    const cmd = btn.getAttribute('data-cmd');
+    const block = btn.getAttribute('data-block');
+    this.editable.focus();
+    this.restoreSelection();
+    if (cmd) { document.execCommand(cmd, false); this.onChange(); }
+    else if (block) { document.execCommand('formatBlock', false, block === 'p' ? 'p' : block); this.onChange(); }
   }
 
   private savedRange: Range | null = null;
@@ -666,7 +749,7 @@ export class DocxEditor implements DocEditor {
         <div style="display: flex; flex-direction: column; gap: 8px;">
           <div>
             <label>Paper Size:</label>
-            <select class="ps-size" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+            <select class="ps-size">
               <option value="letter">Letter (8.5" × 11")</option>
               <option value="a4" selected>A4 (210 × 297mm)</option>
               <option value="legal">Legal (8.5" × 14")</option>
@@ -675,7 +758,7 @@ export class DocxEditor implements DocEditor {
           </div>
           <div>
             <label>Orientation:</label>
-            <select class="ps-orient" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+            <select class="ps-orient">
               <option value="portrait" selected>Portrait</option>
               <option value="landscape">Landscape</option>
             </select>
@@ -683,22 +766,22 @@ export class DocxEditor implements DocEditor {
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
             <div>
               <label>Top Margin (in):</label>
-              <input type="number" class="ps-mt" value="1" min="0" max="3" step="0.1" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+              <input type="number" class="ps-mt" value="1" min="0" max="3" step="0.1">
             </div>
             <div>
               <label>Bottom Margin (in):</label>
-              <input type="number" class="ps-mb" value="1" min="0" max="3" step="0.1" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+              <input type="number" class="ps-mb" value="1" min="0" max="3" step="0.1">
             </div>
             <div>
               <label>Left Margin (in):</label>
-              <input type="number" class="ps-ml" value="1" min="0" max="3" step="0.1" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+              <input type="number" class="ps-ml" value="1" min="0" max="3" step="0.1">
             </div>
             <div>
               <label>Right Margin (in):</label>
-              <input type="number" class="ps-mr" value="1" min="0" max="3" step="0.1" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+              <input type="number" class="ps-mr" value="1" min="0" max="3" step="0.1">
             </div>
           </div>
-          <div style="display: flex; gap: 8px;">
+          <div class="modal-actions">
             <button type="button" class="btn-confirm" data-act="apply">Apply</button>
             <button type="button" class="btn-cancel" data-act="cancel">Close</button>
           </div>
@@ -731,9 +814,9 @@ export class DocxEditor implements DocEditor {
       <div class="modal" role="dialog" aria-modal="true">
         <h3>Find and Replace</h3>
         <div style="display: flex; flex-direction: column; gap: 8px;">
-          <input type="text" placeholder="Find text" class="fr-find" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
-          <input type="text" placeholder="Replace with" class="fr-replace" style="padding: 6px; border: 1px solid #ccc; border-radius: 4px;">
-          <div style="display: flex; gap: 8px;">
+          <input type="text" placeholder="Find text" class="fr-find" aria-label="Find text">
+          <input type="text" placeholder="Replace with" class="fr-replace">
+          <div class="modal-actions">
             <button type="button" class="btn-confirm" data-act="replace">Replace</button>
             <button type="button" class="btn-confirm" data-act="replace-all">Replace All</button>
             <button type="button" class="btn-cancel" data-act="cancel">Close</button>

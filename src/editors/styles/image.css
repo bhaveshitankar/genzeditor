@@ -278,7 +278,7 @@
 .img-crop.rounded { border-radius: 18%; }
 
 /* Tool strip mounted in the app's top bar (AppShell). */
-.img-toolbar.in-ribbon { padding: 0; border: 0; background: none; gap: 4px; flex-wrap: nowrap; }
+.img-toolbar.in-ribbon { padding: 0 0 4px; border: 0; background: none; gap: 4px; flex-wrap: nowrap; overflow-x: auto; max-width: 100%; }
 .img-toolbar.in-ribbon .img-spacer { flex: 0 0 8px; }
 
 /* Crop: Apply / Cancel under the box */

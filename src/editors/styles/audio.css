@@ -11,13 +11,12 @@
 .aud-toolbar {
   display: flex;
   gap: 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  /* Wrap instead of scrolling a hidden scrollbar: Record/Export used to sit
+     off-screen to the right and looked like missing buttons. */
+  overflow: visible;
   padding-bottom: 4px;
-  flex-wrap: nowrap;
-  scrollbar-width: none;
+  flex-wrap: wrap;
 }
-.aud-toolbar::-webkit-scrollbar { display: none; }
 .aud-group {
   display: flex;
   align-items: center;

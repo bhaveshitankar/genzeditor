@@ -168,9 +168,17 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   gap: 0.5rem;
   min-width: 0;
   overflow-x: auto;
-  scrollbar-width: none;
+  /* Thin always-visible bar so it's obvious the tool strip scrolls. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
-.ribbon-commands::-webkit-scrollbar { display: none; }
+.ribbon-commands::-webkit-scrollbar { height: 6px; }
+.ribbon-commands::-webkit-scrollbar-track { background: transparent; }
+.ribbon-commands::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--border-strong) 55%, transparent);
+  border-radius: 999px;
+}
+.ribbon-commands::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 .ribbon-global {
   display: flex;
   align-items: center;
@@ -221,7 +229,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--ink);
+  color: var(--on-brand-ink, var(--ink));
   font-family: var(--font-display);
   font-size: 13px;
   font-weight: 800;
@@ -864,7 +872,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   align-items: center;
   justify-content: center;
   font-size: 2rem;
-  color: var(--ink);
+  color: var(--on-brand-ink, var(--ink));
   box-shadow: var(--shadow-pop);
   transform: rotate(-5deg);
 }
@@ -878,7 +886,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 .empty-state p { color: var(--text-muted); max-width: 44ch; font-size: 0.95rem; }
 .empty-state .browse-btn {
   background: var(--brand-500);
-  color: var(--ink);
+  color: var(--on-brand-ink, var(--ink));
   border: 2.5px solid var(--ink);
   padding: 0.75rem 1.6rem;
   border-radius: var(--r-full);
@@ -1265,6 +1273,17 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 }
 .docx-toolbar button:hover { background: var(--surface-hover); border-color: var(--border); }
 .docx-toolbar button:active { background: var(--brand-500); color: var(--on-brand, #fff); border-color: var(--brand-500); }
+/* Toolbar mounted in the app's top bar (AppShell): one scrolling row. */
+.docx-toolbar.in-ribbon {
+  position: static; padding: 0; border: 0; background: none;
+  flex: 1 1 auto; min-width: 0; gap: 0.3rem; flex-wrap: nowrap;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+}
+.docx-toolbar.in-ribbon::-webkit-scrollbar { display: none; }
+.docx-toolbar.in-ribbon button { padding: 0.3rem 0.55rem; min-width: 0; }
+.docx-toolbar.in-ribbon .docx-dropdown { flex: 0 0 auto; }
+.docx-toolbar.in-ribbon .docx-color { flex: 0 0 auto; min-width: 32px; height: 32px; }
+.docx-toolbar.in-ribbon select[data-role="fontsize"] { flex: 0 0 auto; height: 32px; min-width: 84px; color: var(--text); }
 .docx-sep { width: 1px; height: 22px; background: var(--border); margin: 0 0.2rem; flex-shrink: 0; }
 
 /* Toolbar dropdowns */
@@ -1279,18 +1298,20 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 }
 .docx-menu {
   display: none;
-  position: absolute;
-  top: 100%;
+  position: fixed; /* attached to <body>, positioned from the trigger rect */
+  top: 0;
   left: 0;
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 4px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  z-index: 1000;
-  min-width: 140px;
-  margin-top: 2px;
+  z-index: 10000;
+  min-width: 160px;
 }
+.docx-menu.open { display: block; }
 .docx-menu button {
+  color: var(--text);
   display: block;
   width: 100%;
   text-align: left;
@@ -1354,7 +1375,6 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 
 @media (max-width: 768px) {
   .docx-mobile-only { display: inline-flex !important; }
-  .docx-menu-btn::after { content: ' ▼'; }
   .docx-dropdown { display: inline-block; }
   .docx-menu { min-width: 160px; }
 }
@@ -2384,7 +2404,7 @@ html[data-theme="mono-light"] {
   --border: #d6d6d6; --border-strong: #000000; --ink: #000000;
   --text: #000000; --text-muted: #444444; --text-faint: #8a8a8a;
   --brand-500: #000000; --brand-600: #1a1a1a; --brand-700: #333333; --blue: #000000; --sun: #000000;
-  --brand-gradient: linear-gradient(#000000, #000000); --on-brand: #ffffff;
+  --brand-gradient: linear-gradient(#000000, #000000); --on-brand: #ffffff; --on-brand-ink: #ffffff;
   --shadow-sm: none; --shadow-md: 0 2px 8px rgba(0,0,0,0.12); --shadow-lg: 0 12px 32px rgba(0,0,0,0.18);
   --shadow-pop: 2px 2px 0 #000000; --shadow-pop-lg: 3px 3px 0 #000000;
   --cm-bg: transparent; --cm-fg: #000000; --cm-gutter-fg: #8a8a8a;
@@ -2396,13 +2416,12 @@ html[data-theme="mono-dark"] {
   --border: #2e2e2e; --border-strong: #ffffff; --ink: #ffffff;
   --text: #ffffff; --text-muted: #bdbdbd; --text-faint: #7a7a7a;
   --brand-500: #ffffff; --brand-600: #e6e6e6; --brand-700: #cccccc; --blue: #ffffff; --sun: #ffffff;
-  --brand-gradient: linear-gradient(#ffffff, #ffffff); --on-brand: #000000;
+  --brand-gradient: linear-gradient(#ffffff, #ffffff); --on-brand: #000000; --on-brand-ink: #000000;
   --shadow-sm: none; --shadow-md: 0 2px 8px rgba(0,0,0,0.6); --shadow-lg: 0 12px 32px rgba(0,0,0,0.7);
   --shadow-pop: 2px 2px 0 #3a3a3a; --shadow-pop-lg: 3px 3px 0 #3a3a3a;
   --cm-bg: transparent; --cm-fg: #ffffff; --cm-gutter-fg: #7a7a7a;
   --cm-active-line: rgba(255,255,255,0.06); --cm-cursor: #ffffff; --cm-selection: rgba(255,255,255,0.22);
 }
-html[data-theme="mono-dark"] .brand-mark { color: #000000; box-shadow: 2px 2px 0 #3a3a3a; }
 html[data-theme="dracula"] {
   --bg: #21222c; --surface: #282a36; --surface-2: #2f3140; --surface-hover: #383a4a;
   --border: #383a4a; --border-strong: #4b4e63;
@@ -2575,67 +2594,87 @@ li.selecting .delete-btn { display: none; }
 .cm-cursor { border-left-color: var(--brand-500); }
 .cm-selectionBackground { background: color-mix(in srgb, var(--brand-500) 25%, transparent); }
 
-/* Improve search panel in CodeMirror */
-.cm-search {
-  display: flex !important;
-  gap: 0.5rem;
-  align-items: center;
+/* Find / replace panel (CodeMirror) — themed with the app tokens. */
+.cm-panels {
   background: var(--surface) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: var(--r-md);
-  padding: 0.5rem !important;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  flex-wrap: wrap;
-}
-
-.cm-search input,
-.cm-search .cm-searchfield {
-  background: var(--bg) !important;
-  border: 1px solid var(--border) !important;
   color: var(--text) !important;
-  padding: 0.4rem 0.6rem !important;
-  border-radius: var(--r-sm);
-  font-size: 0.85rem !important;
-  flex: 1;
-  min-width: 150px;
+  border-color: var(--border) !important;
 }
-
-.cm-search input:focus,
-.cm-search .cm-searchfield:focus {
-  border-color: var(--brand-500) !important;
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-500) 20%, transparent) !important;
-}
-
-.cm-search button {
-  padding: 0.35rem 0.65rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  font-size: 0.8rem;
-  transition: all 0.12s var(--ease);
-}
-
-.cm-search button:hover {
-  color: var(--text);
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
-}
-
-.cm-search .cm-close-button {
-  padding: 0.3rem 0.5rem;
-}
-
-/* Ensure search panel is visible */
-.cm-search {
-  visibility: visible !important;
-  opacity: 1 !important;
+.cm-panels.cm-panels-bottom { border-top: 1px solid var(--border) !important; }
+.cm-panels.cm-panels-top { border-bottom: 1px solid var(--border) !important; }
+.cm-panel.cm-search {
+  position: relative;
   display: flex !important;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 8px 40px 8px 12px !important;
+  font-size: 0.8rem;
 }
+.cm-panel.cm-search br { flex-basis: 100%; height: 0; margin: 0; }
+.cm-panel.cm-search input.cm-textfield {
+  flex: 1 1 160px;
+  min-width: 120px;
+  max-width: 320px;
+  margin: 0 !important;
+  padding: 6px 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  font: inherit;
+  font-size: 0.85rem;
+}
+.cm-panel.cm-search input.cm-textfield:focus {
+  outline: none;
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-500) 22%, transparent);
+}
+.cm-panel.cm-search button.cm-button {
+  margin: 0 !important;
+  padding: 5px 12px;
+  background: var(--surface-2) !important;
+  background-image: none !important;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+.cm-panel.cm-search button.cm-button:hover { background: var(--surface-hover) !important; border-color: var(--border-strong); }
+.cm-panel.cm-search label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 4px 0 0 !important;
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-transform: capitalize;
+}
+.cm-panel.cm-search label input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--brand-500); }
+.cm-panel.cm-search button[name="close"] {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+.cm-panel.cm-search button[name="close"]:hover { background: var(--surface-hover); color: var(--text); }
+.cm-searchMatch { background: color-mix(in srgb, var(--sun, #ffc53d) 40%, transparent) !important; outline: none !important; }
+.cm-searchMatch.cm-searchMatch-selected { background: color-mix(in srgb, var(--brand-500) 38%, transparent) !important; }
 
 /* Modal input improvements */
 .fr-find, .fr-replace { width: 100%; padding: 0.6rem 0.75rem; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg); color: var(--text); font-size: 0.85rem; }
@@ -2739,3 +2778,17 @@ button, input, select, a { transition-property: background-color, border-color, 
 .edit-menu button:disabled { opacity: .35; }
 .edit-menu button.danger { color: #ff8a8a; }
 .editor-area canvas, .editor-area img, .editor-area svg { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+
+/* Scroll indicator under a top-bar tool strip that overflows sideways (AppShell.watchStripScroll). */
+[data-role="edit-group"] { position: relative; }
+.scroll-hint {
+  position: absolute; left: 0.55rem; right: 0.55rem; bottom: 1px; height: 4px;
+  border-radius: 999px; background: color-mix(in srgb, var(--border-strong) 14%, transparent);
+  cursor: pointer; z-index: 2;
+}
+.scroll-hint[hidden] { display: none; }
+.scroll-hint > span {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 30%;
+  border-radius: 999px; background: color-mix(in srgb, var(--text) 45%, transparent);
+}
+.scroll-hint:hover > span { background: var(--text); }
