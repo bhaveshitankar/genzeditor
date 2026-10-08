@@ -2548,9 +2548,11 @@ html[data-theme-animated] .editor-area {
 
 .selection-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
+  flex-direction: column;
+  align-items: stretch;
+  box-sizing: border-box;
+  min-width: 0;
+  gap: 0.4rem;
   padding: 0.4rem 0.6rem;
   margin: 0 0.5rem 0.4rem;
   background: color-mix(in srgb, var(--brand-500) 8%, var(--surface-2));
@@ -2559,7 +2561,9 @@ html[data-theme-animated] .editor-area {
   font-size: 0.8rem;
   color: var(--text-muted);
 }
-.selection-bar-actions { display: flex; gap: 0.4rem; }
+.selection-bar > span { white-space: nowrap; font-weight: 600; }
+.selection-bar-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; min-width: 0; }
+.selection-bar-actions button { flex: 1 1 auto; white-space: nowrap; text-align: center; }
 .selection-bar .btn-cancel,
 .selection-bar .btn-danger,
 .selection-bar .btn-select-all {

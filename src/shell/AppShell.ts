@@ -1,6 +1,7 @@
 import { FileStore } from '../store/opfs';
 import type { FileRecord, FileKind } from '../store/types';
 import { handleUpload } from '../upload/uploadHandler';
+import { detectKind } from '../detect/fileKind';
 import { TextEditor } from '../editors/TextEditor';
 import type { ImageEditor } from '../editors/ImageEditor';
 import { renderMarkdown } from '../editors/MarkdownPreview';
@@ -766,6 +767,16 @@ export class AppShell {
     };
     confirm.addEventListener('click', submit);
     nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    // Typing an extension re-selects the matching type, so what you see is what you get.
+    nameInput.addEventListener('input', () => {
+      if (!/\.[^.]+$/.test(nameInput.value)) return;
+      const k = detectKind(nameInput.value.trim());
+      const match = templates.find((t) => t.kind === k && t.id !== 'scan');
+      if (!match || match === selected) return;
+      selected = match;
+      const chips = typesEl.querySelectorAll('.new-file-type');
+      chips.forEach((chip, i) => chip.classList.toggle('selected', templates[i] === match));
+    });
 
     this.root.appendChild(overlay);
     nameInput.focus();
@@ -775,10 +786,51 @@ export class AppShell {
   private async createNewFile(name: string, kind: FileKind, content: string, ext: string): Promise<void> {
     // Ensure the name carries an extension so re-detection on reload is stable.
     if (!/\.[^.]+$/.test(name)) name = `${name}.${ext}`;
+    else {
+      // The extension in the name wins over the type chip that was selected:
+      // "Untitled.csv" is a spreadsheet no matter what was highlighted.
+      const detected = detectKind(name);
+      if (detected !== kind) {
+        kind = detected === 'binary' ? 'text' : detected; // unknown extension → plain text
+        content = AppShell.NEW_FILE_TEMPLATES.find((t) => t.kind === kind)?.content ?? '';
+      }
+    }
+    const fileExt = /\.([^.]+)$/.exec(name)?.[1]?.toLowerCase() ?? ext;
 
-    // Blank image: generate a real white PNG so the image editor has a canvas.
+    if (kind === 'video') {
+      this.toast('Can’t create an empty video — upload one, or use the Video editor on an existing clip.', 'info', 5000);
+      return;
+    }
+    // Legacy / odd presentation extensions can't be written; the editor saves .pptx.
+    if (kind === 'presentation' && fileExt !== 'pptx') name = name.replace(/\.[^.]+$/, '.pptx');
+    // Real, valid files for formats that can't start as empty bytes.
+    if (kind === 'pdf') {
+      const { PDFDocument } = await import('pdf-lib');
+      const doc = await PDFDocument.create();
+      doc.addPage([595, 842]);
+      const rec = await this.store.save(name, new Blob([await doc.save() as BlobPart], { type: 'application/pdf' }), kind);
+      await this.refreshLibrary();
+      await this.openFile(rec.id);
+      this.toast(`Created “${name}”`, 'success', 2500);
+      return;
+    }
+    if (kind === 'spreadsheet' && (fileExt === 'xlsx' || fileExt === 'xls')) {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Column A', 'Column B', 'Column C'], ['', '', '']]), 'Sheet1');
+      const out = XLSX.write(wb, { type: 'array', bookType: fileExt === 'xls' ? 'biff8' : 'xlsx' }) as ArrayBuffer;
+      const rec = await this.store.save(name, new Blob([out], { type: 'application/octet-stream' }), kind);
+      await this.refreshLibrary();
+      await this.openFile(rec.id);
+      this.toast(`Created “${name}”`, 'success', 2500);
+      return;
+    }
+
+    // Blank image: generate a real white image in the format the name asks for.
     if (kind === 'image') {
-      const blob = await this.blankPng(1280, 720);
+      const mime = fileExt === 'jpg' || fileExt === 'jpeg' ? 'image/jpeg' : fileExt === 'webp' ? 'image/webp' : 'image/png';
+      if (mime === 'image/png' && fileExt !== 'png') name = name.replace(/\.[^.]+$/, '.png'); // gif/bmp can't be encoded here
+      const blob = await this.blankPng(1280, 720, mime);
       const rec = await this.store.save(name, blob, kind);
       await this.refreshLibrary();
       await this.openFile(rec.id);
@@ -852,13 +904,13 @@ export class AppShell {
   }
 
   // Generate a blank white PNG blob for a new image document.
-  private async blankPng(w: number, h: number): Promise<Blob> {
+  private async blankPng(w: number, h: number, mime = 'image/png'): Promise<Blob> {
     const canvas = document.createElement('canvas');
     canvas.width = w; canvas.height = h;
     const g = canvas.getContext('2d')!;
     g.fillStyle = '#ffffff';
     g.fillRect(0, 0, w, h);
-    return new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b ?? new Blob()), 'image/png'));
+    return new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b ?? new Blob()), mime));
   }
 
   private wirePalette() {
