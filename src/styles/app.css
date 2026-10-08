@@ -813,6 +813,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 
 /* ---------- Editor area ---------- */
 .editor-area {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -2316,12 +2317,27 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0.4rem 0.8rem;
+  gap: 0.9rem;
+  padding: 0.45rem 0.8rem;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
-.compare-split-title { font-weight: 600; font-size: 0.9rem; }
+.compare-split-title { font-weight: 700; font-size: 0.9rem; margin-right: auto; }
+.compare-legend { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.74rem; color: var(--text-muted); }
+.compare-legend .lg { width: 12px; height: 12px; border-radius: 3px; display: inline-block; margin-left: 0.4rem; border: 1px solid var(--border-strong); }
+.compare-legend .lg:first-child { margin-left: 0; }
+.lg-del { background: color-mix(in srgb, var(--danger) 35%, var(--surface)); }
+.lg-add { background: color-mix(in srgb, var(--success) 35%, var(--surface)); }
+.lg-chg { background: color-mix(in srgb, var(--warning) 35%, var(--surface)); }
+.compare-nav { display: inline-flex; align-items: center; gap: 0.35rem; }
+.compare-nav-btn {
+  width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--border-strong);
+  background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 0.7rem; line-height: 1;
+}
+.compare-nav-btn:hover { background: var(--surface-hover); }
+.compare-count { font-size: 0.78rem; font-variant-numeric: tabular-nums; color: var(--text-muted); min-width: 4.2em; text-align: center; }
+.compare-sync { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.78rem; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
+.compare-sync input { accent-color: var(--brand-500); }
 .compare-split-close {
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
@@ -2335,64 +2351,62 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 .compare-split-body {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 90px 1fr;
+  grid-template-columns: minmax(0, 1fr) 76px minmax(0, 1fr);
   min-height: 0;
 }
 .compare-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-.compare-pane[data-role="right"] { border-left: 1px solid var(--border); }
-.compare-pane-head { flex-shrink: 0; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); background: var(--surface); }
+.compare-pane-head, .compare-gutter-head {
+  flex-shrink: 0; box-sizing: border-box; height: 46px; padding: 0.5rem; display: flex; align-items: center;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+}
 .compare-pane-head select {
   width: 100%;
   background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  padding: 0.35rem 0.5rem;
+  border-radius: var(--r-full);
+  padding: 0.35rem 0.8rem;
   font-size: 0.82rem;
+  font-weight: 600;
   cursor: pointer;
 }
 .compare-pane-host { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.compare-pane-host .cm-editor { flex: 1; }
+.compare-pane-host .cm-editor { flex: 1; min-height: 0; }
+.compare-pane-host .cm-scroller { overflow: auto; }
 .compare-gutter {
-  border-left: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-  background: var(--surface);
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  padding: 0.5rem 0.3rem;
-  align-items: center;
+  display: flex; flex-direction: column; min-height: 0;
+  border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+  background: var(--surface-2);
 }
+.compare-gutter-track { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .compare-hunk {
-  display: flex;
-  align-items: center;
-  gap: 0.2rem;
-  width: 100%;
-  justify-content: center;
+  position: absolute; left: 0; right: 0; top: 0;
+  height: 22px; display: flex; align-items: center; justify-content: center; gap: 2px;
+  will-change: transform;
 }
 .compare-apply {
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border-strong);
-  color: var(--brand-500);
-  width: 26px; height: 24px;
-  border-radius: var(--r-sm);
+  color: var(--text);
+  width: 22px; height: 20px;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 0.78rem;
+  font-size: 0.62rem;
   line-height: 1;
+  padding: 0;
 }
-.compare-apply:hover { background: color-mix(in srgb, var(--brand-500) 14%, transparent); border-color: var(--brand-500); }
+.compare-apply:hover { background: var(--brand-500); border-color: var(--brand-500); color: var(--on-brand, #fff); }
 .compare-hunk-label {
-  font-size: 0.68rem; color: var(--text-muted); font-family: var(--mono);
-  white-space: nowrap; background: transparent; border: none; cursor: pointer; padding: 0.15rem 0.2rem;
+  min-width: 18px; text-align: center; font-size: 0.66rem; font-weight: 700; color: var(--text-muted); font-family: var(--mono);
+  white-space: nowrap; background: transparent; border: none; cursor: pointer; padding: 0;
 }
-.compare-hunk-label:hover { color: var(--text); text-decoration: underline; }
-.compare-identical { font-size: 0.78rem; color: var(--text-muted); text-align: center; padding: 1rem 0.4rem; }
+.compare-hunk-label:hover { color: var(--text); }
+.compare-identical { font-size: 0.74rem; color: var(--text-muted); text-align: center; padding: 1rem 0.4rem; line-height: 1.35; }
 
 /* Per-line diff highlighting inside the compare editors. */
-.cm-diff-add { background: color-mix(in srgb, #16a34a 22%, transparent); }
-.cm-diff-del { background: color-mix(in srgb, #dc2626 20%, transparent); }
-.cm-diff-chg { background: color-mix(in srgb, #d97706 22%, transparent); }
+.cm-diff-add { background: color-mix(in srgb, var(--success) 24%, transparent); }
+.cm-diff-del { background: color-mix(in srgb, var(--danger) 22%, transparent); }
+.cm-diff-chg { background: color-mix(in srgb, var(--warning) 26%, transparent); }
 
 /* ============================================================
    Themes — token overrides applied via html[data-theme]
@@ -2792,3 +2806,40 @@ button, input, select, a { transition-property: background-color, border-color, 
   border-radius: 999px; background: color-mix(in srgb, var(--text) 45%, transparent);
 }
 .scroll-hint:hover > span { background: var(--text); }
+
+/* ---- Spreadsheet compare ---- */
+.sc-summary { font-size: 0.78rem; color: var(--text-muted); margin-right: auto; }
+.sheet-compare .compare-split-title { margin-right: 0.4rem; }
+.sc-controls {
+  flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+  padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--border); background: var(--surface);
+}
+.sc-side { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+.sc-tag { font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; padding: 0.15rem 0.5rem; border-radius: 999px; border: 1px solid var(--border-strong); }
+.sc-tag-l { background: color-mix(in srgb, var(--danger) 18%, var(--surface)); }
+.sc-tag-r { background: color-mix(in srgb, var(--success) 18%, var(--surface)); }
+.sc-controls select {
+  max-width: 200px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--r-full); padding: 0.3rem 0.7rem; font-size: 0.8rem; cursor: pointer;
+}
+.sc-controls select[hidden] { display: none; }
+.sc-opt { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; color: var(--text-muted); white-space: nowrap; }
+.sc-opt input { accent-color: var(--brand-500); }
+.sc-table-host { flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
+.sc-table { border-collapse: separate; border-spacing: 0; font-size: 0.82rem; min-width: 100%; font-variant-numeric: tabular-nums; }
+.sc-table th, .sc-table td { padding: 0.28rem 0.6rem; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); white-space: pre; max-width: 320px; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+.sc-table th { position: sticky; top: 0; z-index: 2; background: var(--surface-2); color: var(--text-muted); font-weight: 700; text-align: center; font-size: 0.72rem; }
+.sc-table .sc-rn { position: sticky; left: 0; z-index: 1; width: 34px; min-width: 34px; max-width: 34px; padding-left: 0.2rem; padding-right: 0.4rem; background: var(--surface-2); color: var(--text-faint); text-align: right; font-size: 0.7rem; }
+.sc-table th.sc-rn { z-index: 3; }
+.sc-table td.sc-rn + td.sc-rn { left: 34px; }
+.sc-added td:not(.sc-rn) { background: color-mix(in srgb, var(--success) 20%, transparent); }
+.sc-removed td:not(.sc-rn) { background: color-mix(in srgb, var(--danger) 18%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--danger) 60%, transparent); }
+.sc-cell-chg { background: color-mix(in srgb, var(--warning) 24%, transparent); }
+.sc-cell-chg del { display: block; color: var(--danger); text-decoration: line-through; font-size: 0.74rem; opacity: 0.85; }
+.sc-cell-chg ins { display: block; color: var(--success); text-decoration: none; font-weight: 600; }
+.sc-row.sc-current td { outline: 2px solid var(--brand-500); outline-offset: -2px; }
+.sc-more { display: block; margin: 0.8rem auto; }
+@media (max-width: 719px) {
+  .sheet-compare .compare-split-head { flex-wrap: wrap; gap: 0.4rem 0.6rem; }
+  .sc-summary { order: 9; flex-basis: 100%; margin: 0; }
+}

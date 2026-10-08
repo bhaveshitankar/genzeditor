@@ -94,6 +94,7 @@ export class AppShell {
   private editorHost!: HTMLElement;
   private editorTools!: HTMLElement;
   private compareView?: CompareView;
+  private sheetCompare?: { close(): void };
   private drawer!: HTMLElement;
   private uploadInput!: HTMLInputElement;
   private palette!: CommandPalette;
@@ -1005,6 +1006,20 @@ export class AppShell {
   // Compare entry point: on laptop/desktop open the live side-by-side split with
   // git-style merge; on narrow screens fall back to the compact diff modal.
   private async startCompare() {
+    // Spreadsheets (CSV / Excel) get a cell-level compare at any screen width.
+    if (this.currentFileKind === 'spreadsheet' || this.sheetCompare) {
+      if (this.sheetCompare) { this.sheetCompare.close(); return; }
+      const files = (await this.store.list()).filter((f) => f.kind === 'spreadsheet');
+      if (files.length < 1) { this.toast('Add a spreadsheet to compare', 'info', 4000); return; }
+      const { SheetCompare } = await import('../diff/SheetCompare');
+      const area = this.root.querySelector('.editor-area') as HTMLElement;
+      this.sheetCompare = new SheetCompare(area, this.store, files, {
+        initialLeftId: this.currentFileId,
+        onClose: () => { this.sheetCompare = undefined; },
+        toast: (m, k) => this.toast(m, k),
+      });
+      return;
+    }
     const wide = typeof matchMedia !== 'undefined' && matchMedia('(min-width: 720px)').matches;
     if (!wide) return this.openCompare();
 

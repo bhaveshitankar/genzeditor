@@ -21,6 +21,12 @@ export class CompareView {
   private right: Pane;
   private center: HTMLElement;
   private recomputeTimer?: number;
+  private hunks: Hunk[] = [];
+  private rows: HTMLElement[] = [];
+  private cur = -1;
+  private syncing = false;
+  private layoutRaf = 0;
+  private resizeObs?: ResizeObserver;
 
   constructor(
     private parent: HTMLElement,
@@ -33,6 +39,15 @@ export class CompareView {
     this.el.innerHTML = `
       <div class="compare-split-head">
         <span class="compare-split-title">⇄ Compare & merge</span>
+        <span class="compare-legend">
+          <i class="lg lg-del"></i>only left <i class="lg lg-add"></i>only right <i class="lg lg-chg"></i>changed
+        </span>
+        <span class="compare-nav">
+          <button type="button" class="compare-nav-btn" data-act="prev" aria-label="Previous change" title="Previous change">▲</button>
+          <span class="compare-count" data-role="count">—</span>
+          <button type="button" class="compare-nav-btn" data-act="next" aria-label="Next change" title="Next change">▼</button>
+        </span>
+        <label class="compare-sync"><input type="checkbox" data-role="sync" checked> Sync scroll</label>
         <button type="button" class="compare-split-close" aria-label="Close compare">✕ Close</button>
       </div>
       <div class="compare-split-body">
@@ -40,7 +55,10 @@ export class CompareView {
           <div class="compare-pane-head"><select data-role="sel"></select></div>
           <div class="compare-pane-host" data-role="host"></div>
         </div>
-        <div class="compare-gutter" data-role="gutter"></div>
+        <div class="compare-gutter">
+          <div class="compare-gutter-head" aria-hidden="true"></div>
+          <div class="compare-gutter-track" data-role="gutter"></div>
+        </div>
         <div class="compare-pane" data-role="right">
           <div class="compare-pane-head"><select data-role="sel"></select></div>
           <div class="compare-pane-host" data-role="host"></div>
@@ -60,6 +78,10 @@ export class CompareView {
     this.center = this.el.querySelector('[data-role="gutter"]') as HTMLElement;
 
     this.el.querySelector('.compare-split-close')?.addEventListener('click', () => this.close());
+    this.el.querySelector('[data-act="prev"]')?.addEventListener('click', () => this.step(-1));
+    this.el.querySelector('[data-act="next"]')?.addEventListener('click', () => this.step(1));
+    this.resizeObs = new ResizeObserver(() => this.scheduleLayout());
+    this.resizeObs.observe(this.center);
     this.populateSelect(this.left);
     this.populateSelect(this.right);
 
@@ -129,7 +151,62 @@ export class CompareView {
         this.scheduleRecompute();
       },
     });
+    this.bindScroll(pane);
     this.recompute();
+  }
+
+  // Keep the two panes scrolled together (when enabled) and the hunk buttons
+  // glued to their lines.
+  private bindScroll(pane: Pane) {
+    const sc = pane.editor?.scroller;
+    if (!sc) return;
+    sc.addEventListener('scroll', () => {
+      const sync = (this.el.querySelector('[data-role="sync"]') as HTMLInputElement | null)?.checked;
+      const other = this.other(pane).editor?.scroller;
+      if (sync && other && !this.syncing) {
+        this.syncing = true;
+        other.scrollTop = sc.scrollTop;
+        requestAnimationFrame(() => { this.syncing = false; });
+      }
+      this.scheduleLayout();
+    }, { passive: true });
+  }
+
+  private scheduleLayout() {
+    if (this.layoutRaf) return;
+    this.layoutRaf = requestAnimationFrame(() => { this.layoutRaf = 0; this.layoutHunks(); });
+  }
+
+  // Place each hunk's controls at the y of its first line in the left pane.
+  private layoutHunks() {
+    const ed = this.left.editor;
+    if (!ed) return;
+    const trackTop = this.center.getBoundingClientRect().top;
+    const scTop = ed.scroller.getBoundingClientRect().top;
+    const off = scTop - trackTop;
+    const max = this.center.clientHeight;
+    this.rows.forEach((row, i) => {
+      const h = this.hunks[i]!;
+      const { top } = ed.lineViewportTop(h.aStart + 1);
+      const y = top + off;
+      row.style.transform = `translateY(${Math.round(y)}px)`;
+      row.style.visibility = y < -30 || y > max ? 'hidden' : 'visible';
+    });
+  }
+
+  private step(dir: number) {
+    if (!this.hunks.length) return;
+    this.cur = (this.cur + dir + this.hunks.length) % this.hunks.length;
+    const h = this.hunks[this.cur]!;
+    this.left.editor?.scrollToLine(h.aStart + 1);
+    this.right.editor?.scrollToLine(h.bStart + 1);
+    this.paintCount();
+  }
+
+  private paintCount() {
+    const el = this.el.querySelector('[data-role="count"]') as HTMLElement;
+    const n = this.hunks.length;
+    el.textContent = n === 0 ? 'no changes' : `${this.cur >= 0 ? this.cur + 1 : '–'} / ${n}`;
   }
 
   private autosaveTimers = new WeakMap<Pane, number>();
@@ -155,6 +232,10 @@ export class CompareView {
     this.center.innerHTML = '';
     if (a === undefined || b === undefined) return;
     const hunks = diffHunks(a, b);
+    this.hunks = hunks;
+    this.rows = [];
+    this.cur = Math.min(this.cur, hunks.length - 1);
+    this.paintCount();
 
     // Paint whole-line highlights in each pane. A hunk with lines on both sides
     // is a change (chg); a pure deletion/insertion is del/add.
@@ -171,11 +252,17 @@ export class CompareView {
     if (hunks.length === 0) {
       const ok = document.createElement('div');
       ok.className = 'compare-identical';
-      ok.textContent = 'No differences ✓';
+      const same = this.left.fileId && this.left.fileId === this.right.fileId;
+      ok.textContent = same ? 'Same file on both sides — pick another file to compare' : 'No differences ✓';
       this.center.appendChild(ok);
       return;
     }
-    for (const h of hunks) this.center.appendChild(this.renderHunk(h));
+    for (const h of hunks) {
+      const row = this.renderHunk(h);
+      this.rows.push(row);
+      this.center.appendChild(row);
+    }
+    this.layoutHunks();
   }
 
   private renderHunk(h: Hunk): HTMLElement {
@@ -199,9 +286,11 @@ export class CompareView {
     label.className = 'compare-hunk-label';
     const del = h.aLines.length;
     const add = h.bLines.length;
-    label.textContent = `−${del} / +${add}`;
-    label.title = 'Jump to this change';
+    label.textContent = del && add ? '~' : del ? `−${del}` : `+${add}`;
+    label.title = `${del} line${del === 1 ? '' : 's'} left / ${add} line${add === 1 ? '' : 's'} right — click to jump`;
     label.addEventListener('click', () => {
+      this.cur = this.hunks.indexOf(h);
+      this.paintCount();
       this.left.editor?.scrollToLine(h.aStart + 1);
       this.right.editor?.scrollToLine(h.bStart + 1);
     });
@@ -223,6 +312,8 @@ export class CompareView {
   }
 
   close() {
+    this.resizeObs?.disconnect();
+    cancelAnimationFrame(this.layoutRaf);
     this.left.editor?.destroy();
     this.right.editor?.destroy();
     this.el.remove();

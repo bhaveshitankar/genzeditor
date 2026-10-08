@@ -249,5 +249,13 @@ export class TextEditor {
     const pos = this.view.state.doc.line(n).from;
     this.view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: 'center' }) });
   }
+  /** The scrolling element (for scroll syncing / measuring). */
+  get scroller(): HTMLElement { return this.view.scrollDOM; }
+  /** Pixel top of a 1-based line relative to the scroller's visible top (can be negative). */
+  lineViewportTop(line: number): { top: number; height: number } {
+    const n = Math.max(1, Math.min(line, this.view.state.doc.lines));
+    const b = this.view.lineBlockAt(this.view.state.doc.line(n).from);
+    return { top: b.top + this.view.documentPadding.top - this.view.scrollDOM.scrollTop, height: b.height };
+  }
   destroy() { this.view.destroy(); }
 }
