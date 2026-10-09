@@ -5,6 +5,7 @@ import { deriveBaseName, versionedName } from './store/naming';
 import { getMe } from './api/client';
 import { initTheme } from './theme/themes';
 import { reportFailure } from './telemetry';
+import { handleProtocolLaunch, registerPeriodicSync, onRetrySave } from './pwa/capabilities';
 
 // Shared startup for the desktop (index.html) and mobile (mobile.html) apps:
 // open share links, restore the last file, accept OS "Open with" launches.
@@ -139,6 +140,13 @@ export async function bootstrap(
   };
   void importSharedInbox();
 
+  // web+genz: links (manifest "protocol_handlers") reopen as normal share links.
+  const protocolOpened = handleProtocolLaunch();
+  if (protocolOpened) void openShared();
+
+  // A save to shared links that failed offline is retried by background sync.
+  onRetrySave(() => { void shell.retrySaveShares(); });
+
   // App-icon shortcuts open /?new=<template> (see manifest "shortcuts").
   const wanted = new URLSearchParams(location.search).get('new');
   if (wanted) {
@@ -149,7 +157,9 @@ export async function bootstrap(
 
   // Offline + installable: register the service worker in production builds only.
   if ('serviceWorker' in navigator && import.meta.env.PROD) {
-    const register = () => { void navigator.serviceWorker.register('/sw.js').catch(() => {}); };
+    const register = () => {
+      void navigator.serviceWorker.register('/sw.js').then((reg) => registerPeriodicSync(reg)).catch(() => {});
+    };
     // bootstrap usually finishes after `load` has already fired.
     if (document.readyState === 'complete') register(); else window.addEventListener('load', register);
   }

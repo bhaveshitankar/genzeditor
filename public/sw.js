@@ -74,3 +74,67 @@ self.addEventListener('fetch', (e) => {
     return net;
   })());
 });
+
+/* ---- PWA capabilities -------------------------------------------------- */
+
+// Widgets (Windows 11 widgets board): render the "Quick create" card and open
+// the app on the chosen template.
+async function renderWidget(widget) {
+  if (!self.widgets || !widget || !widget.definition) return;
+  const def = widget.definition;
+  const [tpl, data] = await Promise.all([fetch(def.msAcTemplate).then((r) => r.text()), fetch(def.data).then((r) => r.text())]);
+  await self.widgets.updateByTag(def.tag, { template: tpl, data });
+}
+self.addEventListener('widgetinstall', (e) => e.waitUntil(renderWidget(e.widget)));
+self.addEventListener('widgetresume', (e) => e.waitUntil(renderWidget(e.widget)));
+self.addEventListener('widgetclick', (e) => {
+  if (e.action !== 'new') return;
+  const t = e.data && e.data.json ? e.data.json() : null;
+  e.waitUntil((async () => {
+    const data = t ? await t : {};
+    const tpl = (data && data.template) || 'document';
+    await self.clients.openWindow('/?new=' + encodeURIComponent(tpl));
+  })());
+});
+
+// Periodic background sync: keep the offline shell fresh so the app opens on
+// the latest build even after weeks of offline-first use.
+self.addEventListener('periodicsync', (e) => {
+  if (e.tag !== 'gz-refresh-shell') return;
+  e.waitUntil((async () => {
+    try {
+      const res = await fetch('/', { cache: 'no-cache' });
+      if (res.ok) (await caches.open(STATIC)).put(new Request(location.origin + '/'), res);
+    } catch (err) { /* offline — try again next period */ }
+  })());
+});
+
+// Background sync: when a "Save to shared links" failed offline, the page asks
+// for this tag; once connectivity returns we wake the app to retry.
+self.addEventListener('sync', (e) => {
+  if (e.tag !== 'gz-retry-save') return;
+  e.waitUntil((async () => {
+    const all = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
+    if (all.length) all.forEach((c) => c.postMessage({ type: 'gz-retry-save' }));
+    else await self.clients.openWindow('/?retry=save');
+  })());
+});
+
+// Web Push: payload is JSON { title, body, url }. (Delivery needs a push
+// backend + VAPID keys; the handlers are ready for when it is enabled.)
+self.addEventListener('push', (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (err) { d = { body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'GenZ Editor', {
+    body: d.body || '', icon: '/icon-192.png', badge: '/favicon-32.png', data: { url: d.url || '/' },
+  }));
+});
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || '/';
+  e.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const c of all) { if ('focus' in c) { await c.focus(); if ('navigate' in c) await c.navigate(url).catch(() => {}); return; } }
+    await self.clients.openWindow(url);
+  })());
+});

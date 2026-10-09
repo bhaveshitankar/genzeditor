@@ -2912,3 +2912,20 @@ button, input, select, a { transition-property: background-color, border-color, 
 .sheet-compare .sc-summary { flex: 1 1 200px; min-width: 0; }
 
 .share-link-input { width: 100%; box-sizing: border-box; padding: 0.7rem 0.8rem; margin-bottom: 0.8rem; border: 1px solid var(--border, #cbd5e1); border-radius: 10px; background: var(--surface-2, transparent); color: inherit; font: inherit; font-size: 16px; }
+
+/* ---------- Window Controls Overlay (installed desktop PWA) ----------
+   The title bar is merged into our ribbon: it becomes the drag area and
+   stays clear of the OS min/max/close buttons. */
+@media (display-mode: window-controls-overlay) {
+  .app-ribbon {
+    height: env(titlebar-area-height, var(--header-h));
+    min-height: env(titlebar-area-height, var(--header-h));
+    padding-left: max(0.6rem, env(titlebar-area-x, 0px));
+    padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 0.6rem);
+    -webkit-app-region: drag; app-region: drag;
+  }
+  .app-ribbon button, .app-ribbon input, .app-ribbon select, .app-ribbon a,
+  .app-ribbon [role="button"], .app-ribbon [role="tab"], .ribbon-tools {
+    -webkit-app-region: no-drag; app-region: no-drag;
+  }
+}

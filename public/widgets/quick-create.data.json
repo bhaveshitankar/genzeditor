@@ -1,0 +1,21 @@
+{
+  "title": "GenZ Editor",
+  "actions": [
+    {
+      "id": "document",
+      "label": "New doc"
+    },
+    {
+      "id": "csv",
+      "label": "New sheet"
+    },
+    {
+      "id": "scan",
+      "label": "Scan"
+    },
+    {
+      "id": "sketch",
+      "label": "Sketch"
+    }
+  ]
+}

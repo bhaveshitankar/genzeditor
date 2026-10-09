@@ -23,6 +23,7 @@ import { getMe, signOut, type MeState, deleteShare } from '../api/client';
 import { renderAuthBar, openSignInModal } from '../auth/authUi';
 import { shareFile } from '../share/shareFlow';
 import { copyText } from '../utils/clipboard';
+import { requestRetrySync } from '../pwa/capabilities';
 import { saveBackShared } from '../share/openShared';
 import type { ShareLink } from '../store/types';
 import { CompareView } from '../diff/CompareView';
@@ -142,6 +143,9 @@ export class AppShell {
       if (!this.currentFileId) this.renderEmptyState();
     }
   }
+
+  /** Retry pushing the open file to its share links (called after a background-sync wake-up). */
+  retrySaveShares(): Promise<void> { return this.handleSaveShares(); }
 
   /** Create a new file from a template id ('document', 'csv', 'scan'…) — used by app shortcuts. */
   async newFromTemplate(id: string): Promise<void> { await this.api().createFromTemplate(id); }
@@ -1719,7 +1723,11 @@ export class AppShell {
       this.toast(`Saved to ${count} shared link${count === 1 ? '' : 's'}`, 'success');
     } catch (err) {
       reportFailure('save-shares', err, this.currentFileKind);
-      this.toast(`Save failed: ${err}`, 'error');
+      if (!navigator.onLine && await requestRetrySync()) {
+        this.toast('Offline — your changes will sync to the shared link when you’re back online', 'info', 5000);
+      } else {
+        this.toast(`Save failed: ${err}`, 'error');
+      }
     }
   }
 

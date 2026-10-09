@@ -305,5 +305,17 @@
         }
       ]
     }
-  ]
+  ],
+  "protocol_handlers": [
+    {
+      "protocol": "web+genz",
+      "url": "/?protocol=%s"
+    }
+  ],
+  "note_taking": {
+    "new_note_url": "/?new=document"
+  },
+  "edge_side_panel": {
+    "preferred_width": 420
+  }
 }

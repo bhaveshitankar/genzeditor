@@ -303,5 +303,62 @@
         }
       ]
     }
+  ],
+  "id": "/",
+  "display_override": [
+    "window-controls-overlay",
+    "tabbed",
+    "standalone"
+  ],
+  "tab_strip": {
+    "home_tab": {
+      "scope_patterns": [
+        {
+          "pathname": "/"
+        }
+      ]
+    },
+    "new_tab_button": {
+      "url": "/?new=document"
+    }
+  },
+  "protocol_handlers": [
+    {
+      "protocol": "web+genz",
+      "url": "/?protocol=%s"
+    }
+  ],
+  "note_taking": {
+    "new_note_url": "/?new=document"
+  },
+  "edge_side_panel": {
+    "preferred_width": 420
+  },
+  "widgets": [
+    {
+      "name": "Quick create",
+      "short_name": "Quick create",
+      "description": "Start a new document, sheet, sketch or scan in one tap.",
+      "tag": "gz-quick-create",
+      "ms_ac_template": "/widgets/quick-create.template.json",
+      "data": "/widgets/quick-create.data.json",
+      "type": "application/json",
+      "screenshots": [
+        {
+          "src": "/og.png",
+          "sizes": "1200x630",
+          "label": "Quick create widget"
+        }
+      ],
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ],
+      "auth": false,
+      "update": 86400
+    }
   ]
 }
