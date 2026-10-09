@@ -7,6 +7,7 @@ import type { FileRecord } from '../store/types';
 import { TextEditor, type DiffLine } from '../editors/TextEditor';
 import { editorKindFor } from '../editors/registry';
 import { diffHunks, applyToA, applyToB, type Hunk } from './hunks';
+import { askText } from '../ui/dialog';
 
 interface Pane {
   fileId?: string;
@@ -114,7 +115,7 @@ export class CompareView {
   }
 
   private async createAndLoad(pane: Pane) {
-    const name = (prompt('New file name', 'Untitled.txt') || '').trim();
+    const name = ((await askText({ title: 'New file', message: 'File name', value: 'Untitled.txt', confirmLabel: 'Create' })) || '').trim();
     if (!name) { this.syncSelect(pane); return; }
     const rec = await this.store.save(/\.[^.]+$/.test(name) ? name : `${name}.txt`, new Blob([''], { type: 'text/plain' }), 'text');
     this.files = await this.store.list();

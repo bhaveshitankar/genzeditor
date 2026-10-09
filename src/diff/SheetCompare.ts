@@ -11,6 +11,7 @@
 import type { FileStore } from '../store/opfs';
 import type { FileRecord } from '../store/types';
 import { diffSheets, diffToCsv, colName, cellsDiffer, type Grid, type SheetDiff, type DiffRow } from './sheetDiff';
+import { askConfirm } from '../ui/dialog';
 
 interface Side {
   fileId?: string;
@@ -352,7 +353,7 @@ export class SheetCompare {
         { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     }
     if (overwrite) {
-      if (!window.confirm(`Overwrite “${rec.name}” with the merged result? This can’t be undone.`)) return;
+      if (!(await askConfirm({ title: 'Overwrite file?', message: `Overwrite “${rec.name}” with the merged result? This can’t be undone.`, confirmLabel: 'Overwrite', danger: true }))) return;
       await this.store.update(leftId, blob);
       this.opts.toast?.(`Updated “${rec.name}”`, 'success');
       this.close();

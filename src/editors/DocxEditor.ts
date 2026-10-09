@@ -1,5 +1,6 @@
 import type { DocEditor } from './registry';
 import { copyText, pasteText, showClipboardFeedback } from '../utils/clipboard';
+import { askText } from '../ui/dialog';
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -690,13 +691,15 @@ export class DocxEditor implements DocEditor {
       this.openFindReplace();
       return;
     } else if (kind === 'link') {
-      const url = prompt('Link URL (https://…)');
+      const url = await askText({ title: 'Insert link', placeholder: 'https://…', inputMode: 'url', confirmLabel: 'Insert' });
+      this.editable.focus(); this.restoreSelection();
       if (url) document.execCommand('createLink', false, url);
     } else if (kind === 'image') {
       this.pickImage();
       return; // onChange fires after the file loads
     } else if (kind === 'table') {
-      const spec = prompt('Table size as rows x columns (e.g. 3x3)', '3x3');
+      const spec = await askText({ title: 'Insert table', message: 'Size as rows × columns, e.g. 3x3', value: '3x3', confirmLabel: 'Insert' });
+      this.editable.focus(); this.restoreSelection();
       if (!spec) return;
       const m = /(\d+)\s*[x×]\s*(\d+)/i.exec(spec);
       const rows = Math.min(50, Math.max(1, Number(m?.[1]) || 2));

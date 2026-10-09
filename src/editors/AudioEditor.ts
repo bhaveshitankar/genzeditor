@@ -1,6 +1,7 @@
 import './styles/audio.css';
 import type { DocEditor } from './registry';
 import { type EditCommands, getAppClipboard, setAppClipboard } from './editCommands';
+import { askNumber } from '../ui/dialog';
 
 // Client-side, audiomass.co-inspired audio editor built on the Web Audio API —
 // no heavy dependencies. It keeps one editable in-memory AudioBuffer that all
@@ -390,7 +391,7 @@ export class AudioEditor implements DocEditor {
       case 'trim': this.trim(); break;
       case 'silence': this.silence(); break;
       case 'insil': this.insertSilence(1); break;
-      case 'gain': this.gain(); break;
+      case 'gain': void this.gain(); break;
       case 'normalize': this.normalize(); break;
       case 'fadein': this.fade(true); break;
       case 'fadeout': this.fade(false); break;
@@ -604,9 +605,9 @@ export class AudioEditor implements DocEditor {
 
   // ---- sample-domain effects ----------------------------------------------
 
-  private gain() {
+  private async gain() {
     if (!this.buffer) return;
-    const g = promptNum('Gain multiplier (e.g. 1.5, 0.5)', 1.5);
+    const g = await promptNum('Gain multiplier (e.g. 1.5, 0.5)', 1.5);
     if (g == null) return;
     this.mapRegion((v) => v * g);
     this.setStatus(`Applied gain ×${g}`);
@@ -758,7 +759,7 @@ export class AudioEditor implements DocEditor {
   // ---- node-graph effects (rendered offline over the active region) --------
 
   private async reverb() {
-    const secs = promptNum('Reverb decay seconds', 2);
+    const secs = await promptNum('Reverb decay seconds', 2);
     if (secs == null) return;
     await this.processRegion((oac, src) => {
       const conv = oac.createConvolver();
@@ -772,7 +773,7 @@ export class AudioEditor implements DocEditor {
   }
 
   private async echo() {
-    const time = promptNum('Echo delay seconds', 0.3);
+    const time = await promptNum('Echo delay seconds', 0.3);
     if (time == null) return;
     await this.processRegion((oac, src) => {
       const delay = oac.createDelay(5); delay.delayTime.value = time;
@@ -785,7 +786,7 @@ export class AudioEditor implements DocEditor {
   }
 
   private async filter(type: 'lowpass' | 'highpass') {
-    const freq = promptNum(`${type} cutoff Hz`, type === 'lowpass' ? 3000 : 500);
+    const freq = await promptNum(`${type} cutoff Hz`, type === 'lowpass' ? 3000 : 500);
     if (freq == null) return;
     await this.processRegion((oac, src) => {
       const biq = oac.createBiquadFilter();
@@ -796,7 +797,7 @@ export class AudioEditor implements DocEditor {
   }
 
   private async speed() {
-    const rate = promptNum('Speed factor (2 = 2× faster)', 1.5);
+    const rate = await promptNum('Speed factor (2 = 2× faster)', 1.5);
     if (rate == null || rate <= 0) return;
     await this.speedBy(rate);
     this.setStatus(`Speed ×${rate}`);
@@ -1648,11 +1649,8 @@ function niceStep(raw: number): number {
   return Math.max(0.01, m * pow);
 }
 
-function promptNum(label: string, def: number): number | null {
-  const v = window.prompt(label, String(def));
-  if (v == null) return null;
-  const n = Number(v);
-  return isFinite(n) ? n : null;
+function promptNum(label: string, def: number): Promise<number | null> {
+  return askNumber({ title: label, value: def, confirmLabel: 'Apply' });
 }
 
 function fmt(sec: number): string {

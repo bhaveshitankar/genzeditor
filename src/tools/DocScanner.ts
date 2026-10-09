@@ -1,4 +1,5 @@
 import './scanner.css';
+import { askConfirm } from '../ui/dialog';
 import {
   applyFilter, detectQuad, fullQuad, isValidQuad, rotateQuadCW, scaleQuad, warpPerspective,
   type Img, type Pt, type Quad, type ScanFilter,
@@ -632,21 +633,30 @@ export function openDocScanner(opts: ScannerOptions): { close(): void } {
 
   // ------------------------------------------------------- close / nav
 
-  function requestClose() {
-    if (pages.length && !confirm('Discard scanned pages?')) return;
-    close();
+  let confirming = false;
+  async function confirmDiscard(): Promise<boolean> {
+    if (!pages.length) return true;
+    if (confirming) return false;
+    confirming = true;
+    const ok = await askConfirm({ title: 'Discard scanned pages?', message: 'Your scanned pages haven’t been saved.', confirmLabel: 'Discard', danger: true });
+    confirming = false;
+    return ok;
+  }
+  async function requestClose() {
+    if (await confirmDiscard()) close();
   }
 
   const onKey = (e: KeyboardEvent) => {
     if (e.key !== 'Escape') return;
     e.preventDefault(); e.stopPropagation();
-    if (sheet) { sheet.remove(); sheet = null; } else requestClose();
+    if (confirming) return;
+    if (sheet) { sheet.remove(); sheet = null; } else void requestClose();
   };
   // Back button closes the scanner (with a confirm if there's unsaved work).
   const onPop = () => {
-    if (pages.length && !confirm('Discard scanned pages?')) { history.pushState({ docScanner: true }, ''); return; }
-    window.removeEventListener('popstate', onPop);
-    close();
+    if (!pages.length) { window.removeEventListener('popstate', onPop); close(); return; }
+    history.pushState({ docScanner: true }, ''); // stay put while we ask
+    void confirmDiscard().then((ok) => { if (ok) { window.removeEventListener('popstate', onPop); close(); } });
   };
   window.addEventListener('keydown', onKey, true);
   history.pushState({ docScanner: true }, '');

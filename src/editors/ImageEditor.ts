@@ -2,6 +2,7 @@ import './styles/image.css';
 import { setAppClipboard, getAppClipboard, type EditCommands } from './editCommands';
 import { applyTone, needsTonePass, computeHistogram, exportSize, formatBytes, type ExportOptions } from './image/pixels';
 import { copyBlob, pasteBlob, showClipboardFeedback } from '../utils/clipboard';
+import { askText } from '../ui/dialog';
 
 // Picsart-inspired, fully client-side image editor (vanilla TS, no framework).
 // open() builds the entire UI inside a container; export() flattens all layers
@@ -581,15 +582,15 @@ export class ImageEditor {
     }
 
     if (this.tool === 'text') {
-      const text = prompt('Text:', 'Double-click to edit');
-      if (text) {
+      void askText({ title: 'Add text', value: 'Double-click to edit', confirmLabel: 'Add' }).then((text) => {
+        if (!text) return;
         this.commit('Text');
         const l: TextLayer = { id: uid(), kind: 'text', x: p.x, y: p.y, text, size: this.textSize, color: this.color, bold: this.fontBold };
         this.state.layers.push(l);
         this.selectedId = l.id;
         this.render();
         this.rebuildPanel();
-      }
+      });
       return;
     }
 
