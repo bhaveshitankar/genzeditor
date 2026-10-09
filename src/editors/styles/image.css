@@ -239,7 +239,8 @@
 .img-zoom {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  gap: 10px;
   padding: 8px 12px;
   background: var(--surface);
   border-top: 1px solid var(--border);
@@ -248,19 +249,29 @@
   flex: 0 0 auto;
 }
 .img-zoom-btn {
-  padding: 4px 8px !important;
-  font-size: 12px;
-  min-width: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 34px; height: 34px; padding: 0 10px !important;
+  border: 1.5px solid var(--border-strong); border-radius: var(--r-full);
+  background: var(--surface-2); color: var(--text);
+  font: inherit; font-size: 16px; font-weight: 700; line-height: 1; cursor: pointer;
+  box-shadow: 2px 2px 0 var(--border-strong);
+  transition: transform 0.12s var(--ease), background 0.12s, box-shadow 0.12s;
 }
+.img-zoom-btn:hover { background: var(--surface-hover); transform: translateY(-1px); }
+.img-zoom-btn:active { transform: translate(2px, 2px); box-shadow: none; background: var(--brand-500); color: var(--on-brand, #fff); }
+.img-zoom-btn:focus-visible { outline: 2px solid var(--brand-500); outline-offset: 2px; }
+.img-zoom-btn[data-zoom="reset"] { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
 .img-zoom-slider {
-  width: 100px;
+  width: 140px;
   cursor: pointer;
   flex: 0 0 auto;
 }
 .img-zoom-value {
-  min-width: 35px;
+  min-width: 44px;
   text-align: center;
-  font-weight: 500;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
   flex: 0 0 auto;
 }
 
