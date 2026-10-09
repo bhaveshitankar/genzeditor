@@ -959,6 +959,12 @@ export class ImageEditor {
     const zoomReset = button('Reset', 'img-zoom-btn'); zoomReset.title = 'Reset zoom'; zoomReset.dataset.zoom = 'reset';
     zoomBar.append(zoomOut, zoomSlider, zoomValue, zoomIn, zoomReset);
     root.appendChild(zoomBar);
+    // Phones: the full zoom bar is hidden (pinch to zoom); this small chip shows
+    // the level and resets to 100% on tap.
+    const zoomChip = button('100%', 'img-zoom-chip');
+    zoomChip.title = 'Reset zoom';
+    zoomChip.onclick = (): void => this.setZoom(100);
+    stage.appendChild(zoomChip);
 
     this.container.appendChild(root);
 
@@ -972,6 +978,7 @@ export class ImageEditor {
       this.zoom = Math.max(25, Math.min(400, Math.round(val)));
       zoomSlider.value = String(this.zoom);
       zoomValue.textContent = `${this.zoom}%`;
+      zoomChip.textContent = `${this.zoom}%`;
       this.wrap.style.transform = `scale(${this.zoom / 100})`;
       this.wrap.style.transformOrigin = 'top left';
     };
@@ -1040,7 +1047,9 @@ export class ImageEditor {
   toolbarElement(): HTMLElement { return this.toolbar; }
 
   // null = side panel hidden (click the active tab again to collapse it).
-  private activePanel: 'adjust' | 'filters' | 'transform' | 'reshape' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' | 'select' | 'history' | 'export' | null = 'adjust';
+  // Phones start with every panel closed so the canvas gets the whole screen.
+  private activePanel: 'adjust' | 'filters' | 'transform' | 'reshape' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' | 'select' | 'history' | 'export' | null =
+    (typeof matchMedia === 'function' && matchMedia('(max-width: 720px)').matches) || document.documentElement.classList.contains('is-mobile') ? null : 'adjust';
 
   private buildToolbar(): void {
     this.toolbar.innerHTML = '';
@@ -1326,6 +1335,15 @@ export class ImageEditor {
     const host = this.panelHost;
     host.innerHTML = '';
     host.hidden = this.activePanel === null;
+    // Phones: a close button so the sheet can be dismissed to free the canvas.
+    const closeBtn = button('✕', 'img-panel-close');
+    closeBtn.setAttribute('aria-label', 'Close panel');
+    closeBtn.onclick = (): void => {
+      this.activePanel = null;
+      if (this.tool !== 'select' && this.tool !== 'crop') this.tool = 'select';
+      this.rebuildPanel(); this.syncToolbar();
+    };
+    host.appendChild(closeBtn);
     switch (this.activePanel) {
       case 'adjust': this.buildAdjustPanel(host); break;
       case 'filters': this.buildFiltersPanel(host); break;
