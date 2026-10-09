@@ -1,5 +1,6 @@
 import './styles/image.css';
 import { setAppClipboard, getAppClipboard, type EditCommands } from './editCommands';
+import { applyTone, needsTonePass, computeHistogram, exportSize, formatBytes, type ExportOptions } from './image/pixels';
 import { copyBlob, pasteBlob, showClipboardFeedback } from '../utils/clipboard';
 
 // Picsart-inspired, fully client-side image editor (vanilla TS, no framework).
@@ -66,6 +67,13 @@ interface Adjustments {
   sharpness: number;  // 0..100
   blur: number;       // 0..20 px
   vignette: number;   // 0..100
+  highlights: number; // -100..100
+  shadows: number;    // -100..100
+  vibrance: number;   // -100..100
+  grain: number;      // 0..100
+  fade: number;       // 0..100
+  blackPoint: number; // 0..100 (levels)
+  whitePoint: number; // 0..100 (levels)
   grayscale: number;  // 0..1
   sepia: number;      // 0..1
   invert: number;     // 0..1
@@ -75,6 +83,7 @@ function neutralAdjustments(): Adjustments {
   return {
     brightness: 100, contrast: 100, saturation: 100, exposure: 0,
     temperature: 0, tint: 0, hue: 0, sharpness: 0, blur: 0, vignette: 0,
+    highlights: 0, shadows: 0, vibrance: 0, grain: 0, fade: 0, blackPoint: 0, whitePoint: 0,
     grayscale: 0, sepia: 0, invert: 0,
   };
 }
@@ -106,6 +115,14 @@ const PRESETS: { name: string; adj: Partial<Adjustments> }[] = [
   { name: 'Dramatic', adj: { contrast: 140, saturation: 120, brightness: 95, vignette: 30 } },
   { name: 'Fade', adj: { contrast: 88, saturation: 80, brightness: 108 } },
   { name: 'Invert', adj: { invert: 1 } },
+  // LUT-style looks built from the tone stack.
+  { name: 'Film', adj: { contrast: 108, saturation: 92, fade: 22, grain: 28, temperature: 12, vignette: 25 } },
+  { name: 'Teal-Orange', adj: { contrast: 112, saturation: 118, temperature: 18, tint: -10, shadows: 18, highlights: -12 } },
+  { name: 'Matte', adj: { fade: 45, contrast: 94, saturation: 88, shadows: 15 } },
+  { name: 'Punch', adj: { contrast: 118, vibrance: 55, highlights: -20, shadows: 25, blackPoint: 6 } },
+  { name: 'Moody', adj: { brightness: 92, contrast: 120, saturation: 82, temperature: -15, vignette: 45, shadows: -10 } },
+  { name: 'B&W Film', adj: { grayscale: 1, contrast: 120, grain: 40, fade: 12, vignette: 30 } },
+  { name: 'Golden Hour', adj: { temperature: 55, tint: 8, saturation: 115, highlights: -15, vibrance: 30 } },
 ];
 
 const STICKERS = ['😀', '😎', '❤️', '⭐', '🔥', '🎉', '👍', '💯', '✅'];
@@ -126,6 +143,14 @@ export class ImageEditor {
   private onChange?: () => void;
   private contentType: string;
   private zoom = 100;
+  private comparing = false; // hold-to-compare: show the unadjusted original
+  private labels: string[] = []; // history labels, parallel to undoStack
+  private redoLabels: string[] = [];
+  private exportOpts: ExportOptions = { format: 'image/png', quality: 0.92, maxDim: 0 };
+  private histCanvas: HTMLCanvasElement | null = null;
+  private renderRaf = 0;
+  private pinching = false;
+  private setZoom: (v: number) => void = () => undefined;
 
   private state: EditorState;
   private undoStack: EditorState[] = [];
@@ -247,10 +272,13 @@ export class ImageEditor {
   }
 
   // Snapshot BEFORE a mutation so undo restores the prior state.
-  private commit(): void {
+  private commit(label = 'Edit'): void {
     this.undoStack.push(this.cloneState());
-    if (this.undoStack.length > 40) this.undoStack.shift();
+    this.labels.push(label);
+    if (this.undoStack.length > 40) { this.undoStack.shift(); this.labels.shift(); }
     this.redoStack = [];
+    this.redoLabels = [];
+    if (this.activePanel === 'history') this.rebuildPanel();
     this.onChange?.();
     this.syncToolbar();
   }
@@ -258,6 +286,7 @@ export class ImageEditor {
   private undo(): void {
     const prev = this.undoStack.pop();
     if (!prev) return;
+    this.redoLabels.push(this.labels.pop() ?? 'Edit');
     this.redoStack.push(this.cloneState());
     this.state = prev;
     this.selectedId = null;
@@ -270,6 +299,7 @@ export class ImageEditor {
   private redo(): void {
     const next = this.redoStack.pop();
     if (!next) return;
+    this.labels.push(this.redoLabels.pop() ?? 'Edit');
     this.undoStack.push(this.cloneState());
     this.state = next;
     this.selectedId = null;
@@ -287,7 +317,14 @@ export class ImageEditor {
     target.width = base.width;
     target.height = base.height;
     const ctx = target.getContext('2d')!;
+    this.paintBase(ctx, base, this.comparing ? neutralAdjustments() : a);
+    // Overlay layers, in stacking order.
+    for (const l of layers) this.drawLayer(ctx, l);
+  }
 
+  // Base pixels + the whole non-destructive adjustment stack (also used for thumbnails).
+  private paintBase(ctx: CanvasRenderingContext2D, base: HTMLCanvasElement, a: Adjustments): void {
+    const w = base.width, h = base.height;
     // Base image with CSS filters (exposure folded into brightness).
     const brightness = Math.max(0, a.brightness * (1 + a.exposure / 100));
     ctx.filter = [
@@ -304,13 +341,16 @@ export class ImageEditor {
     ctx.filter = 'none';
 
     // Temperature / tint color grade.
-    this.applyColorGrade(ctx, target.width, target.height, a);
+    this.applyColorGrade(ctx, w, h, a);
+    // Tone stack: levels, fade, shadows/highlights, vibrance, grain.
+    if (needsTonePass(a)) {
+      const img = ctx.getImageData(0, 0, w, h);
+      applyTone(img.data, a);
+      ctx.putImageData(img, 0, 0);
+    }
     // Sharpen (per-pixel convolution) then vignette.
-    if (a.sharpness > 0) this.applySharpen(ctx, target.width, target.height, a.sharpness / 100);
-    if (a.vignette > 0) this.applyVignette(ctx, target.width, target.height, a.vignette / 100);
-
-    // Overlay layers, in stacking order.
-    for (const l of layers) this.drawLayer(ctx, l);
+    if (a.sharpness > 0) this.applySharpen(ctx, w, h, a.sharpness / 100);
+    if (a.vignette > 0) this.applyVignette(ctx, w, h, a.vignette / 100);
   }
 
   private applyColorGrade(ctx: CanvasRenderingContext2D, w: number, h: number, a: Adjustments): void {
@@ -428,6 +468,7 @@ export class ImageEditor {
     this.drawGroupOutlines();
     this.positionCropBox();
     this.positionSelBox();
+    if (this.activePanel === 'adjust' && !this.comparing) this.drawHistogram();
   }
 
   // Dashed outline around each layer of a multi-selection (display canvas only).
@@ -503,7 +544,7 @@ export class ImageEditor {
   // ---- Pointer handling ----
 
   private onPointerDown = (e: PointerEvent): void => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || this.pinching) return;
     const p = this.toImage(e);
     this.canvas.setPointerCapture(e.pointerId);
 
@@ -520,7 +561,7 @@ export class ImageEditor {
     }
 
     if (this.tool === 'brush' || this.tool === 'eraser') {
-      this.commit();
+      this.commit(this.tool === 'eraser' ? 'Eraser' : 'Brush');
       const l: StrokeLayer = { id: uid(), kind: this.tool, points: [p], color: this.color, size: this.brushSize };
       this.state.layers.push(l);
       this.selectedId = l.id;
@@ -530,7 +571,7 @@ export class ImageEditor {
     }
 
     if (this.tool === 'rect' || this.tool === 'ellipse' || this.tool === 'arrow') {
-      this.commit();
+      this.commit('Shape');
       const l: ShapeLayer = { id: uid(), kind: this.tool, x: p.x, y: p.y, w: 0, h: 0, color: this.color, strokeWidth: this.brushSize, fill: false };
       this.state.layers.push(l);
       this.selectedId = l.id;
@@ -542,7 +583,7 @@ export class ImageEditor {
     if (this.tool === 'text') {
       const text = prompt('Text:', 'Double-click to edit');
       if (text) {
-        this.commit();
+        this.commit('Text');
         const l: TextLayer = { id: uid(), kind: 'text', x: p.x, y: p.y, text, size: this.textSize, color: this.color, bold: this.fontBold };
         this.state.layers.push(l);
         this.selectedId = l.id;
@@ -561,14 +602,14 @@ export class ImageEditor {
       this.selectedId = this.multi.has(hit.id) ? hit.id : [...this.multi].pop() ?? null;
       this.drag = null;
     } else if (hit && this.isGroup() && this.multi.has(hit.id)) {
-      this.commit();
+      this.commit('Move');
       this.selectedId = hit.id;
       this.groupOrig = new Map(this.selectedLayers().map((l) => [l.id, cloneLayer(l)]));
       this.drag = { mode: 'move-group', start: p };
     } else if (hit) {
       this.multi.clear();
       this.selectedId = hit.id;
-      this.commit();
+      this.commit('Move');
       this.drag = { mode: 'move', start: p, orig: cloneLayer(hit) };
     } else {
       if (!e.shiftKey) { this.multi.clear(); this.selectedId = null; }
@@ -687,7 +728,7 @@ export class ImageEditor {
   }
 
   private flip(axis: 'h' | 'v'): void {
-    this.commit();
+    this.commit('Flip');
     const b = this.flatten();
     const out = document.createElement('canvas');
     out.width = b.width; out.height = b.height;
@@ -699,7 +740,7 @@ export class ImageEditor {
   }
 
   private rotate90(deg: 90 | 180 | 270): void {
-    this.commit();
+    this.commit('Rotate');
     const b = this.flatten();
     const size = computeRotatedSize(b.width, b.height, deg);
     const out = document.createElement('canvas');
@@ -725,7 +766,7 @@ export class ImageEditor {
 
   private rotateFree(angleDeg: number): void {
     // Rotate the *composited* image so overlays come along, then reset overlays.
-    this.commit();
+    this.commit('Straighten');
     const flat = document.createElement('canvas');
     this.composite(flat);
     const rad = (angleDeg * Math.PI) / 180;
@@ -744,7 +785,7 @@ export class ImageEditor {
   }
 
   private resizeBase(maxDim: number): void {
-    this.commit();
+    this.commit('Resize');
     const flat = document.createElement('canvas');
     this.composite(flat);
     const s = computeResize(flat.width, flat.height, maxDim);
@@ -758,7 +799,7 @@ export class ImageEditor {
 
   private applyCrop(): void {
     if (!this.crop) return;
-    this.commit();
+    this.commit('Crop');
     const flat = document.createElement('canvas');
     this.composite(flat);
     const cr = this.crop;
@@ -774,7 +815,7 @@ export class ImageEditor {
   }
 
   private resetAll(): void {
-    this.commit();
+    this.commit('Reset');
     this.state.adjustments = neutralAdjustments();
     this.state.layers = [];
     this.render();
@@ -786,12 +827,12 @@ export class ImageEditor {
   private applyPresetByName(name: string): void {
     const p = PRESETS.find((x) => x.name.toLowerCase() === name.toLowerCase());
     if (!p) return;
-    this.commit();
+    this.commit('Preset');
     this.state.adjustments = { ...neutralAdjustments(), ...p.adj };
   }
 
   private applyAdjust(a: Record<string, number>): void {
-    this.commit();
+    this.commit('Adjust');
     const adj = this.state.adjustments;
     if (a.brightness != null) adj.brightness = 100 + a.brightness;
     if (a.contrast != null) adj.contrast = 100 + a.contrast;
@@ -804,6 +845,9 @@ export class ImageEditor {
     if (a.grayscale != null) adj.grayscale = a.grayscale;
     if (a.sepia != null) adj.sepia = a.sepia;
     if (a.invert != null) adj.invert = a.invert;
+    for (const k of ['highlights', 'shadows', 'vibrance', 'grain', 'tint', 'fade'] as const) {
+      if (a[k] != null) adj[k] = a[k]!;
+    }
   }
 
   /** Apply a batch of AI-generated image ops. Returns a human summary. */
@@ -908,7 +952,7 @@ export class ImageEditor {
     // Zoom controls
     const zoomBar = el('div', 'img-zoom');
     const zoomOut = button('−', 'img-zoom-btn'); zoomOut.title = 'Zoom out'; zoomOut.dataset.zoom = 'out';
-    const zoomSlider = document.createElement('input'); zoomSlider.type = 'range'; zoomSlider.min = '50'; zoomSlider.max = '200'; zoomSlider.value = '100'; zoomSlider.step = '10'; zoomSlider.className = 'img-zoom-slider';
+    const zoomSlider = document.createElement('input'); zoomSlider.type = 'range'; zoomSlider.min = '25'; zoomSlider.max = '400'; zoomSlider.value = '100'; zoomSlider.step = '10'; zoomSlider.className = 'img-zoom-slider';
     const zoomValue = document.createElement('span'); zoomValue.className = 'img-zoom-value'; zoomValue.textContent = '100%';
     const zoomIn = button('+', 'img-zoom-btn'); zoomIn.title = 'Zoom in'; zoomIn.dataset.zoom = 'in';
     const zoomReset = button('Reset', 'img-zoom-btn'); zoomReset.title = 'Reset zoom'; zoomReset.dataset.zoom = 'reset';
@@ -924,7 +968,7 @@ export class ImageEditor {
 
     // Zoom controls
     const updateZoom = (val: number) => {
-      this.zoom = Math.max(50, Math.min(200, val));
+      this.zoom = Math.max(25, Math.min(400, Math.round(val)));
       zoomSlider.value = String(this.zoom);
       zoomValue.textContent = `${this.zoom}%`;
       this.wrap.style.transform = `scale(${this.zoom / 100})`;
@@ -939,17 +983,63 @@ export class ImageEditor {
       else if (action === 'reset') updateZoom(100);
     });
     zoomSlider.addEventListener('input', () => updateZoom(Number(zoomSlider.value)));
+    this.setZoom = updateZoom;
+
+    // Pinch-zoom + two-finger pan (touch), Ctrl/Cmd+wheel zoom (desktop).
+    const touches = new Map<number, { x: number; y: number }>();
+    let pinch: { dist: number; zoom: number; mx: number; my: number } | null = null;
+    const pinchState = (): { dist: number; mx: number; my: number } => {
+      const [a, b] = [...touches.values()] as [{ x: number; y: number }, { x: number; y: number }];
+      return { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+    };
+    stage.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch') return;
+      touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touches.size === 2) {
+        // Abort any one-finger stroke/shape/move that the first finger started.
+        if (this.drag && (this.drag.mode === 'draw' || this.drag.mode === 'shape')) this.undo();
+        this.drag = null;
+        this.pinching = true;
+        pinch = { ...pinchState(), zoom: this.zoom };
+        e.stopPropagation();
+      } else if (touches.size > 2) e.stopPropagation();
+    }, true);
+    stage.addEventListener('pointermove', (e) => {
+      if (!touches.has(e.pointerId)) return;
+      touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (!this.pinching || !pinch || touches.size < 2) return;
+      e.stopPropagation();
+      const now = pinchState();
+      updateZoom(pinch.zoom * (now.dist / pinch.dist));
+      stage.scrollLeft -= now.mx - pinch.mx;
+      stage.scrollTop -= now.my - pinch.my;
+      pinch.mx = now.mx; pinch.my = now.my;
+      this.positionCropBox(); this.positionSelBox();
+    }, true);
+    const endTouch = (e: PointerEvent): void => {
+      if (!touches.delete(e.pointerId)) return;
+      if (touches.size < 2) { pinch = null; if (this.pinching) { e.stopPropagation(); setTimeout(() => { this.pinching = false; }, 60); } }
+    };
+    stage.addEventListener('pointerup', endTouch, true);
+    stage.addEventListener('pointercancel', endTouch, true);
+    stage.addEventListener('wheel', (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      updateZoom(this.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+    }, { passive: false });
 
     this.buildToolbar();
     this.rebuildPanel();
     document.addEventListener('keydown', this.onCropKey);
+    document.addEventListener('keydown', this.onShortcut);
+    document.addEventListener('keyup', this.onShortcutUp);
   }
 
   /** The tool strip, so the host can mount it in its own header bar. */
   toolbarElement(): HTMLElement { return this.toolbar; }
 
   // null = side panel hidden (click the active tab again to collapse it).
-  private activePanel: 'adjust' | 'filters' | 'transform' | 'reshape' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' | 'select' | null = 'adjust';
+  private activePanel: 'adjust' | 'filters' | 'transform' | 'reshape' | 'draw' | 'text' | 'shapes' | 'layers' | 'bg' | 'select' | 'history' | 'export' | null = 'adjust';
 
   private buildToolbar(): void {
     this.toolbar.innerHTML = '';
@@ -998,10 +1088,20 @@ export class ImageEditor {
     panelBtn('Transform', 'transform');
     panelBtn('Reshape', 'reshape');
     panelBtn('Layers', 'layers');
+    panelBtn('History', 'history');
     panelBtn('Remove BG', 'bg');
 
     this.toolbar.appendChild(el('div', 'img-spacer'));
 
+    const cmp = button('Hold: Before', 'img-tool');
+    cmp.title = 'Hold to compare with the original (shortcut: \\)';
+    cmp.dataset.act = 'compare';
+    const setCmp = (on: boolean): void => this.setComparing(on);
+    cmp.addEventListener('pointerdown', (e) => { e.preventDefault(); setCmp(true); });
+    for (const ev of ['pointerup', 'pointerleave', 'pointercancel'] as const) cmp.addEventListener(ev, () => setCmp(false));
+    const exportBtn = button('Export', 'img-tool');
+    exportBtn.dataset.panel = 'export';
+    exportBtn.onclick = (): void => { this.activePanel = this.activePanel === 'export' ? null : 'export'; this.rebuildPanel(); this.syncToolbar(); };
     const undoBtn = button('↶ Undo', 'img-tool');
     undoBtn.dataset.act = 'undo';
     undoBtn.onclick = (): void => this.undo();
@@ -1010,7 +1110,7 @@ export class ImageEditor {
     redoBtn.onclick = (): void => this.redo();
     const resetBtn = button('Reset', 'img-tool');
     resetBtn.onclick = (): void => this.resetAll();
-    this.toolbar.append(undoBtn, redoBtn, resetBtn);
+    this.toolbar.append(cmp, undoBtn, redoBtn, resetBtn, exportBtn);
 
     this.syncToolbar();
   }
@@ -1090,6 +1190,26 @@ export class ImageEditor {
     if (e.key === 'Enter') { e.preventDefault(); this.confirmCrop(); }
     else if (e.key === 'Escape') { e.preventDefault(); this.cancelCrop(); }
   };
+
+  // Web shortcuts (undo/redo/copy/paste are handled app-wide via commands()).
+  private onShortcut = (e: KeyboardEvent): void => {
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+    if (!this.container.isConnected || e.repeat && e.key !== '[' && e.key !== ']') return;
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key.toLowerCase() === 'e') { e.preventDefault(); this.activePanel = 'export'; this.rebuildPanel(); this.syncToolbar(); return; }
+    if (mod && e.key === '0') { e.preventDefault(); this.setZoom(100); return; }
+    if (mod || e.altKey) return;
+    const tools: Record<string, Tool> = { v: 'select', c: 'crop', b: 'brush', e: 'eraser', t: 'text', r: 'rect', o: 'ellipse', a: 'arrow', w: 'wand', l: 'lasso' };
+    const k = e.key.toLowerCase();
+    if (k === '\\') { e.preventDefault(); this.setComparing(true); }
+    else if (tools[k] && this.tool !== 'crop') { e.preventDefault(); this.setTool(tools[k]!); }
+    else if (k === '[' || k === ']') { this.brushSize = Math.max(1, Math.min(200, this.brushSize + (k === ']' ? 2 : -2) * Math.max(1, Math.round(this.brushSize / 12)))); if (this.activePanel === 'draw' || this.activePanel === 'shapes') this.rebuildPanel(); }
+    else if (k === '+' || k === '=') this.setZoom(this.zoom + 10);
+    else if (k === '-') this.setZoom(this.zoom - 10);
+    else if (k === 'h') { this.activePanel = this.activePanel === 'history' ? null : 'history'; this.rebuildPanel(); this.syncToolbar(); }
+  };
+  private onShortcutUp = (e: KeyboardEvent): void => { if (e.key === '\\') this.setComparing(false); };
 
   private endCrop(): void {
     if (this.cropBox) this.cropBox.style.display = 'none';
@@ -1216,6 +1336,8 @@ export class ImageEditor {
       case 'layers': this.buildLayersPanel(host); break;
       case 'bg': this.buildBgPanel(host); break;
       case 'select': this.buildSelectPanel(host); break;
+      case 'history': this.buildHistoryPanel(host); break;
+      case 'export': this.buildExportPanel(host); break;
     }
     this.positionSelBox();
     this.syncCropShape();
@@ -1230,37 +1352,198 @@ export class ImageEditor {
   }
 
   private slider(host: HTMLElement, label: string, key: keyof Adjustments, min: number, max: number, step = 1): void {
+    const neutral = neutralAdjustments()[key];
     const field = el('div', 'img-field');
     const lab = document.createElement('label');
     const val = document.createElement('span');
-    val.textContent = String(this.state.adjustments[key]);
+    const showVal = (v: number): void => { val.textContent = String(v); val.classList.toggle('changed', v !== neutral); };
+    showVal(this.state.adjustments[key]);
     lab.append(document.createTextNode(label), val);
+    lab.title = 'Double-click to reset';
     const input = document.createElement('input');
     input.type = 'range';
     input.min = String(min); input.max = String(max); input.step = String(step);
     input.value = String(this.state.adjustments[key]);
-    input.oninput = (): void => {
-      this.state.adjustments[key] = Number(input.value);
-      val.textContent = input.value;
-      this.render();
+    let armed = true; // snapshot once per drag, BEFORE the first change, so undo works
+    const set = (v: number): void => {
+      if (armed) { this.commit(label); armed = false; }
+      this.state.adjustments[key] = v;
+      input.value = String(v);
+      showVal(v);
+      this.renderSoon();
     };
-    input.onchange = (): void => { this.commit(); };
+    input.oninput = (): void => set(Number(input.value));
+    input.onchange = (): void => { armed = true; };
+    lab.ondblclick = (): void => { if (this.state.adjustments[key] !== neutral) { armed = true; set(neutral); armed = true; } };
     field.append(lab, input);
     host.appendChild(field);
   }
 
+  // Coalesce slider-driven renders to one per frame (full-res composites are heavy).
+  private renderSoon(): void {
+    if (this.renderRaf) return;
+    this.renderRaf = requestAnimationFrame(() => { this.renderRaf = 0; this.render(); });
+  }
+
+  private setComparing(on: boolean): void {
+    if (this.comparing === on || !this.canvas) return;
+    this.comparing = on;
+    this.render();
+    this.canvas.classList.toggle('img-comparing', on);
+  }
+
+  private group(host: HTMLElement, name: string): void {
+    const g = el('div', 'img-group');
+    g.textContent = name;
+    host.appendChild(g);
+  }
+
   private buildAdjustPanel(host: HTMLElement): void {
     host.appendChild(title('Adjustments'));
+    this.histCanvas = document.createElement('canvas');
+    this.histCanvas.className = 'img-hist';
+    this.histCanvas.width = 256; this.histCanvas.height = 64;
+    host.appendChild(this.histCanvas);
+    this.group(host, 'Light');
+    this.slider(host, 'Exposure', 'exposure', -100, 100);
     this.slider(host, 'Brightness', 'brightness', 0, 200);
     this.slider(host, 'Contrast', 'contrast', 0, 200);
-    this.slider(host, 'Saturation', 'saturation', 0, 200);
-    this.slider(host, 'Exposure', 'exposure', -100, 100);
+    this.slider(host, 'Highlights', 'highlights', -100, 100);
+    this.slider(host, 'Shadows', 'shadows', -100, 100);
+    this.slider(host, 'Black point', 'blackPoint', 0, 100);
+    this.slider(host, 'White point', 'whitePoint', 0, 100);
+    this.group(host, 'Color');
     this.slider(host, 'Temperature', 'temperature', -100, 100);
     this.slider(host, 'Tint', 'tint', -100, 100);
+    this.slider(host, 'Vibrance', 'vibrance', -100, 100);
+    this.slider(host, 'Saturation', 'saturation', 0, 200);
     this.slider(host, 'Hue', 'hue', -180, 180);
+    this.group(host, 'Detail & effects');
     this.slider(host, 'Sharpness', 'sharpness', 0, 100);
     this.slider(host, 'Blur', 'blur', 0, 20);
     this.slider(host, 'Vignette', 'vignette', 0, 100);
+    this.slider(host, 'Grain', 'grain', 0, 100);
+    this.slider(host, 'Fade', 'fade', 0, 100);
+    const row = el('div', 'img-row');
+    const reset = button('Reset adjustments', 'img-btn');
+    reset.onclick = (): void => { this.commit('Reset adjustments'); this.state.adjustments = neutralAdjustments(); this.render(); this.rebuildPanel(); };
+    row.appendChild(reset);
+    host.appendChild(row);
+    host.appendChild(note('Hold "Hold: Before" (or the \\ key) to compare with the original.'));
+    // Panel is attached by rebuildPanel's caller; draw once it is in the DOM.
+    queueMicrotask(() => this.drawHistogram());
+  }
+
+  // Luma + RGB histogram of the current result, from a small downsample.
+  private drawHistogram(): void {
+    const hc = this.histCanvas;
+    if (!hc || !hc.isConnected || !this.canvas) return;
+    const s = computeResize(this.canvas.width, this.canvas.height, 200);
+    const t = document.createElement('canvas');
+    t.width = s.w; t.height = s.h;
+    const tc = t.getContext('2d')!;
+    tc.drawImage(this.canvas, 0, 0, s.w, s.h);
+    const h = computeHistogram(tc.getImageData(0, 0, s.w, s.h).data);
+    const c = hc.getContext('2d')!;
+    c.clearRect(0, 0, 256, 64);
+    const plot = (bins: number[], color: string): void => {
+      c.fillStyle = color;
+      for (let i = 0; i < 256; i++) c.fillRect(i, 64 - Math.min(1, bins[i]! / h.max) * 62, 1, 64);
+    };
+    c.globalCompositeOperation = 'lighter';
+    plot(h.r, 'rgba(255,60,60,0.55)'); plot(h.g, 'rgba(60,220,60,0.55)'); plot(h.b, 'rgba(70,110,255,0.55)');
+    c.globalCompositeOperation = 'source-over';
+    plot(h.luma, 'rgba(200,200,200,0.35)');
+  }
+
+  private buildHistoryPanel(host: HTMLElement): void {
+    host.appendChild(title('History'));
+    const list = el('ol', 'img-history');
+    const mk = (text: string, cls: string, jump: () => void): void => {
+      const li = el('li', `img-hist-item ${cls}`);
+      li.textContent = text; li.tabIndex = 0;
+      li.onclick = jump;
+      li.onkeydown = (e): void => { if (e.key === 'Enter') jump(); };
+      list.appendChild(li);
+    };
+    const n = this.labels.length;
+    this.labels.forEach((lab, i) => mk(`${i + 1}. ${lab}`, 'past', () => { for (let k = n - i; k > 0; k--) this.undo(); }));
+    mk('Current', 'current', () => undefined);
+    for (let i = this.redoLabels.length - 1, step = 1; i >= 0; i--, step++) {
+      const steps = step;
+      mk(`${n + step + 1}. ${this.redoLabels[i]}`, 'future', () => { for (let k = 0; k < steps; k++) this.redo(); });
+    }
+    host.appendChild(list);
+    host.appendChild(note('Click a step to jump back or forward. Up to 40 steps are kept.'));
+  }
+
+  private estimateTimer = 0;
+  private buildExportPanel(host: HTMLElement): void {
+    host.appendChild(title('Export'));
+    const o = this.exportOpts;
+    const row = (label: string, child: HTMLElement): void => {
+      const f = el('div', 'img-field'); const l = document.createElement('label'); l.textContent = label;
+      f.append(l, child); host.appendChild(f);
+    };
+    const fmt = document.createElement('select'); fmt.className = 'img-input wide';
+    for (const [v, n] of [['image/png', 'PNG (lossless)'], ['image/jpeg', 'JPEG'], ['image/webp', 'WebP']] as const) {
+      const op = document.createElement('option'); op.value = v; op.textContent = n; if (o.format === v) op.selected = true; fmt.appendChild(op);
+    }
+    row('Format', fmt);
+    const q = document.createElement('input'); q.type = 'range'; q.min = '40'; q.max = '100'; q.value = String(Math.round(o.quality * 100));
+    const qv = el('div', 'img-note');
+    row('Quality', q); host.appendChild(qv);
+    const sz = document.createElement('select'); sz.className = 'img-input wide';
+    for (const [v, n] of [[0, 'Original size'], [3840, '3840 px (4K)'], [2048, '2048 px'], [1280, '1280 px'], [1080, '1080 px'], [640, '640 px']] as const) {
+      const op = document.createElement('option'); op.value = String(v); op.textContent = n; if (o.maxDim === v) op.selected = true; sz.appendChild(op);
+    }
+    row('Longest side', sz);
+    const info = el('div', 'img-note');
+    host.appendChild(info);
+    const refresh = (): void => {
+      o.format = fmt.value as ExportOptions['format'];
+      o.quality = Number(q.value) / 100;
+      o.maxDim = Number(sz.value);
+      qv.textContent = o.format === 'image/png' ? 'Quality: lossless' : `Quality ${q.value}%`;
+      q.disabled = o.format === 'image/png';
+      const d = exportSize(this.state.base.width, this.state.base.height, o.maxDim);
+      info.textContent = `${d.w} × ${d.h} px · estimating size…`;
+      clearTimeout(this.estimateTimer);
+      this.estimateTimer = window.setTimeout(async () => {
+        const r = await this.renderExport(o);
+        if (info.isConnected) info.textContent = r ? `${d.w} × ${d.h} px · about ${formatBytes(r.size)}` : `${d.w} × ${d.h} px`;
+      }, 250);
+    };
+    fmt.onchange = refresh; q.oninput = refresh; sz.onchange = refresh;
+    refresh();
+    const dl = button('Download copy', 'img-btn primary');
+    dl.onclick = async (): Promise<void> => {
+      const r = await this.renderExport(o);
+      if (!r) return;
+      const ext = o.format === 'image/jpeg' ? 'jpg' : o.format === 'image/webp' ? 'webp' : 'png';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(r); a.download = `image.${ext}`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    };
+    const r2 = el('div', 'img-row'); r2.appendChild(dl);
+    host.appendChild(r2);
+    host.appendChild(note('Your document auto-saves in its original format; this makes a separate copy.'));
+  }
+
+  // Flatten + resize + encode with explicit options.
+  private async renderExport(o: ExportOptions): Promise<Blob | null> {
+    const flat = document.createElement('canvas');
+    const was = this.comparing; this.comparing = false;
+    this.composite(flat);
+    this.comparing = was;
+    const d = exportSize(flat.width, flat.height, o.maxDim);
+    const out = document.createElement('canvas');
+    out.width = d.w; out.height = d.h;
+    const c = out.getContext('2d')!;
+    c.imageSmoothingQuality = 'high';
+    if (o.format === 'image/jpeg') { c.fillStyle = '#fff'; c.fillRect(0, 0, d.w, d.h); }
+    c.drawImage(flat, 0, 0, d.w, d.h);
+    return new Promise<Blob | null>((res) => out.toBlob(res, o.format, o.format === 'image/png' ? undefined : o.quality));
   }
 
   private buildFiltersPanel(host: HTMLElement): void {
@@ -1278,13 +1561,12 @@ export class ImageEditor {
       c.width = ts.w; c.height = ts.h;
       const cx = c.getContext('2d')!;
       const a = { ...neutralAdjustments(), ...preset.adj };
-      cx.filter = `brightness(${a.brightness}%) contrast(${a.contrast}%) saturate(${a.saturation}%) hue-rotate(${a.hue}deg) grayscale(${a.grayscale}) sepia(${a.sepia}) invert(${a.invert})`;
-      cx.drawImage(thumbSrc, 0, 0);
+      this.paintBase(cx, thumbSrc, a);
       const cap = document.createElement('span');
       cap.textContent = preset.name;
       cell.append(c, cap);
       cell.onclick = (): void => {
-        this.commit();
+        this.commit(`Filter: ${preset.name}`);
         this.state.adjustments = { ...neutralAdjustments(), ...preset.adj };
         this.render();
         this.rebuildPanel();
@@ -2309,6 +2591,10 @@ export class ImageEditor {
     this.canvas?.removeEventListener('pointerup', this.onPointerUp);
     this.canvas?.removeEventListener('pointercancel', this.onPointerUp);
     document.removeEventListener('keydown', this.onCropKey);
+    document.removeEventListener('keydown', this.onShortcut);
+    document.removeEventListener('keyup', this.onShortcutUp);
+    cancelAnimationFrame(this.renderRaf);
+    clearTimeout(this.estimateTimer);
     this.toolbar?.remove(); // may live in the host's header
     this.container.innerHTML = '';
   }

@@ -145,6 +145,53 @@ export async function aiEdit(input: AiEditInput, byok?: ByoKey | null): Promise<
   return res.json();
 }
 
+// ---- AI generate (image / audio / interior / storyboard) -----------------
+
+export type GenKind = 'image' | 'audio' | 'describe' | 'interior' | 'storyboard';
+
+export interface GenInput {
+  kind: GenKind;
+  prompt?: string; text?: string; lang?: string;
+  images?: string[]; style?: string; roomType?: string;
+  variants?: number; scenes?: number; frames?: boolean; question?: string;
+}
+
+export interface InteriorVariant { style: string; image: string | null; prompt: string; mode: 'img2img' | 'text2img' }
+export interface StoryScene { prompt: string; narration: string; durationSec: number; motion: string; image: string | null }
+
+export interface GenResult {
+  provider: 'workers-ai' | 'openai';
+  image?: string; audio?: string; mime?: string; description?: string;
+  style?: string; palette?: string[]; floorplanText?: string; variants?: InteriorVariant[];
+  title?: string; scenes?: StoryScene[]; note?: string;
+}
+
+// Approximate weighted-unit cost (mirrors worker/src/generate.ts COST) for UI hints.
+export const GEN_DAILY_UNITS = 60;
+export function genCost(i: GenInput): number {
+  const n = Math.min(3, Math.max(1, i.variants ?? 2));
+  switch (i.kind) {
+    case 'image': return 4;
+    case 'audio': return 2;
+    case 'describe': return 3;
+    case 'interior': return 3 + 5 * n;
+    case 'storyboard': return 3 + (i.frames ? 4 * Math.min(4, Math.max(1, i.scenes ?? 3)) : 0);
+  }
+}
+
+export async function aiGenerate(input: GenInput, byok?: ByoKey | null): Promise<GenResult> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (byok?.key) headers['X-AI-Key'] = byok.key;
+  const res = await fetch(`${API_BASE}/api/ai/generate`, {
+    method: 'POST', credentials: 'include', headers, body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({ error: 'generation_failed' }))) as { error: string; limit?: number };
+    throw new AiError(data.error, data.limit);
+  }
+  return res.json();
+}
+
 // Random per-browser id used only for abuse limits (server stores an HMAC of it).
 export function deviceId(): string {
   const KEY = 'gz-device-id';

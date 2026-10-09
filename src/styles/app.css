@@ -2910,3 +2910,5 @@ button, input, select, a { transition-property: background-color, border-color, 
 .sheet-compare .compare-split-head { flex-wrap: wrap; row-gap: 0.4rem; }
 .sheet-compare .compare-split-head button, .sheet-compare .compare-split-title { white-space: nowrap; }
 .sheet-compare .sc-summary { flex: 1 1 200px; min-width: 0; }
+
+.share-link-input { width: 100%; box-sizing: border-box; padding: 0.7rem 0.8rem; margin-bottom: 0.8rem; border: 1px solid var(--border, #cbd5e1); border-radius: 10px; background: var(--surface-2, transparent); color: inherit; font: inherit; font-size: 16px; }

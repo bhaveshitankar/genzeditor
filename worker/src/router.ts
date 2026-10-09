@@ -11,6 +11,8 @@ import { normalizeEmail, isValidSyntax, domainOf, isDisposable, hasMx } from './
 import { checkThrottle, recordStrike, clearThrottle } from './throttle';
 import { verifyTurnstile } from './turnstile';
 import { runAiEdit, type AiKind } from './ai';
+import { chargeUnits, costFor, runGenerate, isGenKind, GenError, type GenParams } from './generate';
+import { mcpHandle, mcpKeyOwner } from './mcp';
 
 const WINDOW = 60_000;
 const DAY = 86_400_000;
@@ -138,6 +140,43 @@ export async function handle(req: Request, env: Env): Promise<Response> {
       return json(result, env);
     } catch (e) {
       return json({ error: 'ai_failed', detail: (e as Error).message }, env, { status: 502 });
+    }
+  }
+
+  // --- MCP server (Streamable HTTP, JSON-RPC). Session cookie OR Bearer API key. ---
+  if (path === '/mcp') {
+    if (req.method === 'GET' || req.method === 'DELETE') return new Response(null, { status: 405, headers: { Allow: 'POST', ...corsHeaders(env, req) } });
+    if (req.method !== 'POST') return error('not_found', env, 404);
+    if (!originAllowed(req, env)) return error('bad_origin', env, 403);
+    const keyOwner = mcpKeyOwner(env, req.headers.get('Authorization'));
+    const mcpOwner = keyOwner ?? userId;
+    if (!mcpOwner) return error('unauthorized', env, 401);
+    if (!(await rateLimit(env.DB, mcpOwner, 'mcp', 60, WINDOW)).ok) return error('rate_limited', env, 429);
+    const body = await req.json().catch(() => null);
+    const out = await mcpHandle(body, env, { owner: mcpOwner });
+    if (out === null) return new Response(null, { status: 202, headers: corsHeaders(env, req) });
+    return withCors(json(out, env), env, req);
+  }
+
+  // --- Generation: image / audio / describe / interior / storyboard (weighted free quota) ---
+  if (req.method === 'POST' && path === '/api/ai/generate') {
+    if (!originAllowed(req, env)) return error('bad_origin', env, 403);
+    if (!userId) return error('unauthorized', env, 401);
+    if (!(await rateLimit(env.DB, owner, 'ai_gen_min', 10, WINDOW)).ok) return error('rate_limited', env, 429);
+    const byokKey = req.headers.get('X-AI-Key');
+    const b = await req.json<GenParams & { kind?: string }>().catch(() => null);
+    if (!b || !isGenKind(b.kind)) return error('bad_request', env, 400);
+    // BYOK image generation goes straight to the user's OpenAI account: unmetered.
+    const byokImage = b.kind === 'image' && !!byokKey && !byokKey.startsWith('sk-ant-');
+    if (!byokImage) {
+      const q = await chargeUnits(env.DB, owner, costFor(b.kind, b));
+      if (!q.ok) return json({ error: 'daily_limit', used: q.used, limit: q.limit }, env, { status: 429 });
+    }
+    try {
+      return json(await runGenerate(env, b.kind, b, byokImage ? byokKey : null), env);
+    } catch (e) {
+      if (e instanceof GenError) return json({ error: e.code }, env, { status: e.status });
+      return json({ error: 'generation_failed' }, env, { status: 502 });
     }
   }
 

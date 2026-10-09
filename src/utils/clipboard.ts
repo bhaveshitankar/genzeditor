@@ -14,8 +14,9 @@ export async function copyText(text: string): Promise<void> {
       el.style.opacity = '0';
       document.body.appendChild(el);
       el.select();
-      document.execCommand('copy');
+      const ok = document.execCommand('copy');
       document.body.removeChild(el);
+      if (!ok) throw new Error('execCommand copy failed');
     }
   } catch (err) {
     console.error('Failed to copy to clipboard:', err);

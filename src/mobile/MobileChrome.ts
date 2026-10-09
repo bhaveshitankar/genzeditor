@@ -132,7 +132,7 @@ export class MobileChrome implements ShellChrome {
     const head = document.createElement('div');
     head.className = 'm-drawer-head';
     head.innerHTML = `
-      <span class="m-brand"><span class="brand-mark">Gz</span><span>GenZ Editor</span></span>
+      <span class="m-brand"><span class="brand-mark">GZ</span><span>GenZ Editor</span></span>
       <button type="button" class="m-icon-btn" aria-label="Close menu">${icon('x', 20)}</button>`;
     head.querySelector('button')!.addEventListener('click', () => this.api.closeDrawer());
     panel.prepend(head);

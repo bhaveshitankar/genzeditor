@@ -19,7 +19,7 @@ export interface ShareContext {
 }
 
 async function defaultUploadPut(url: string, blob: Blob): Promise<void> {
-  const res = await fetch(url, { method: 'PUT', headers: { 'content-length': String(blob.size) }, body: blob });
+  const res = await fetch(url, { method: 'PUT', body: blob });
   if (!res.ok) throw new Error('upload_failed');
 }
 

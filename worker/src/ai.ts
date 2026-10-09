@@ -149,7 +149,7 @@ function stripFences(s: string): string {
 // Robustly pull a JSON value out of a model response that may wrap it in prose
 // or code fences (Workers AI / Llama rarely returns bare JSON). Scans for the
 // first balanced {...} or [...] block, respecting strings and escapes.
-function extractJson(raw: string): unknown {
+export function extractJson(raw: string): unknown {
   const s = stripFences(raw);
   try { return JSON.parse(s); } catch { /* fall through to scan */ }
   const start = s.search(/[[{]/);

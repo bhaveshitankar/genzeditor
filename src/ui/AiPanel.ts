@@ -1,5 +1,5 @@
 import './styles/ai.css';
-import { aiEdit, AiError, type AiEditResult, type AiKind, type ByoKey } from '../api/client';
+import { aiEdit, aiGenerate, genCost, GEN_DAILY_UNITS, AiError, type AiEditResult, type AiKind, type ByoKey, type GenInput, type GenResult } from '../api/client';
 import { icon } from './icons';
 import { reportFailure } from '../telemetry';
 
@@ -21,6 +21,50 @@ export interface AiPanelOptions {
   onSignIn: () => void;
   // Returns the AI target for whatever editor is open, or null if unsupported.
   resolve: () => AiTarget | null;
+  // Optional: save a generated asset (image/audio/.floorplan) as a new file in the app.
+  // When absent, the Generate tab offers a plain download instead.
+  saveGenerated?: (name: string, mime: string, blob: Blob) => Promise<void> | void;
+}
+
+type GenMode = 'image' | 'audio' | 'interior' | 'storyboard';
+const MAX_PHOTOS = 4;
+
+async function fileToDataUrl(file: File, max = 768): Promise<string> {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.8);
+}
+
+// Pull up to `n` evenly spaced frames from a video file.
+async function videoFrames(file: File, n: number): Promise<string[]> {
+  const url = URL.createObjectURL(file);
+  try {
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true; v.src = url;
+    await new Promise<void>((ok, bad) => { v.onloadedmetadata = () => ok(); v.onerror = () => bad(new Error('video')); });
+    const out: string[] = [];
+    const k = Math.min(1, 768 / Math.max(v.videoWidth, v.videoHeight, 1));
+    const c = document.createElement('canvas');
+    c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
+    for (let i = 0; i < n; i++) {
+      v.currentTime = (v.duration || 1) * ((i + 0.5) / n);
+      await new Promise<void>((ok) => { v.onseeked = () => ok(); });
+      c.getContext('2d')!.drawImage(v, 0, 0, c.width, c.height);
+      out.push(c.toDataURL('image/jpeg', 0.8));
+    }
+    return out;
+  } finally { URL.revokeObjectURL(url); }
+}
+
+function dataUrlToBlob(u: string): Blob {
+  const mime = u.slice(5, u.indexOf(';'));
+  const bin = atob(u.slice(u.indexOf(',') + 1));
+  const a = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+  return new Blob([a], { type: mime });
 }
 
 const SUGGESTIONS: Record<AiKind, string[]> = {
@@ -66,6 +110,32 @@ export class AiPanel {
         <span class="ai-drawer-title">${icon('sparkles', 18)}<span>AI assistant</span></span>
         <button type="button" class="ai-drawer-close" data-role="ai-close" aria-label="Close AI assistant" title="Close">${icon('x', 16)}</button>
       </div>
+      <div class="ai-tabs" role="tablist">
+        <button type="button" class="ai-tab active" role="tab" data-role="tab-edit">Edit</button>
+        <button type="button" class="ai-tab" role="tab" data-role="tab-gen">Generate</button>
+      </div>
+      <div class="ai-gen" data-role="ai-gen" hidden>
+        <select class="ai-gen-mode" data-role="gen-mode" aria-label="What to generate">
+          <option value="image">Image from text</option>
+          <option value="audio">Speech (text to audio)</option>
+          <option value="interior">Interior design from photos</option>
+          <option value="storyboard">Video storyboard</option>
+        </select>
+        <textarea class="ai-input" data-role="gen-prompt" rows="3" placeholder="Describe it…"></textarea>
+        <div class="ai-gen-photos" data-role="gen-photos" hidden>
+          <label class="ai-ghost ai-file">Photos / video<input type="file" accept="image/*,video/*" multiple hidden data-role="gen-files" /></label>
+          <label class="ai-ghost ai-file">Take photo<input type="file" accept="image/*" capture="environment" hidden data-role="gen-cam" /></label>
+          <select data-role="gen-style" aria-label="Style">
+            <option>modern minimalist</option><option>scandinavian</option><option>industrial loft</option>
+            <option>bohemian</option><option>mid-century modern</option><option>japandi</option>
+          </select>
+          <div class="ai-thumbs" data-role="gen-thumbs"></div>
+        </div>
+        <label class="ai-check" data-role="gen-frames-wrap" hidden><input type="checkbox" data-role="gen-frames" /> Render frames (uses more quota)</label>
+        <button type="button" class="ai-go" data-role="gen-go">Generate</button>
+        <div class="ai-gen-cost" data-role="gen-cost"></div>
+        <div class="ai-gen-out" data-role="gen-out"></div>
+      </div>
       <div class="ai-hint" data-role="ai-hint"></div>
       <div class="ai-log" data-role="ai-log"></div>
       <div class="ai-suggestions" data-role="ai-chips"></div>
@@ -98,6 +168,7 @@ export class AiPanel {
     this.chipsEl = this.q('[data-role="ai-chips"]');
 
     this.q('[data-role="ai-close"]').addEventListener('click', () => this.close());
+    this.wireGenerate();
     this.sendBtn.addEventListener('click', () => void this.run());
     this.input.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); void this.run(); }
@@ -121,6 +192,144 @@ export class AiPanel {
       this.addMsg('system', 'Key cleared.');
       this.refreshHint();
     });
+  }
+
+  // ---- Generate tab ----
+  private photos: string[] = [];
+  private genBusy = false;
+
+  private wireGenerate(): void {
+    const edit = this.q('[data-role="tab-edit"]'), gen = this.q('[data-role="tab-gen"]');
+    const setTab = (g: boolean) => {
+      edit.classList.toggle('active', !g); gen.classList.toggle('active', g);
+      this.q('[data-role="ai-gen"]').toggleAttribute('hidden', !g);
+      for (const r of ['ai-log', 'ai-chips', 'ai-hint']) this.q(`[data-role="${r}"]`).toggleAttribute('hidden', g);
+      this.el.querySelector('.ai-composer')?.toggleAttribute('hidden', g);
+      if (g) this.updateGenUi();
+    };
+    edit.addEventListener('click', () => setTab(false));
+    gen.addEventListener('click', () => setTab(true));
+    this.q('[data-role="gen-mode"]').addEventListener('change', () => this.updateGenUi());
+    this.q('[data-role="gen-frames"]').addEventListener('change', () => this.updateGenUi());
+    const add = async (input: HTMLInputElement) => {
+      const files = [...(input.files ?? [])]; input.value = '';
+      try {
+        for (const f of files) {
+          if (this.photos.length >= MAX_PHOTOS) break;
+          if (f.type.startsWith('video/')) this.photos.push(...(await videoFrames(f, Math.min(3, MAX_PHOTOS - this.photos.length))));
+          else this.photos.push(await fileToDataUrl(f));
+        }
+      } catch (e) { reportFailure('ai-gen-photo', e, 'interior'); this.genMsg('Could not read that file.', true); }
+      this.renderThumbs();
+    };
+    this.q<HTMLInputElement>('[data-role="gen-files"]').addEventListener('change', (e) => void add(e.target as HTMLInputElement));
+    this.q<HTMLInputElement>('[data-role="gen-cam"]').addEventListener('change', (e) => void add(e.target as HTMLInputElement));
+    this.q('[data-role="gen-go"]').addEventListener('click', () => void this.runGenerate());
+  }
+
+  private genMode(): GenMode { return this.q<HTMLSelectElement>('[data-role="gen-mode"]').value as GenMode; }
+
+  private genInput(): GenInput {
+    const mode = this.genMode();
+    const prompt = this.q<HTMLTextAreaElement>('[data-role="gen-prompt"]').value.trim();
+    switch (mode) {
+      case 'image': return { kind: 'image', prompt };
+      case 'audio': return { kind: 'audio', text: prompt };
+      case 'interior': return { kind: 'interior', images: this.photos, style: this.q<HTMLSelectElement>('[data-role="gen-style"]').value, roomType: prompt || undefined, variants: 2 };
+      case 'storyboard': return { kind: 'storyboard', prompt, scenes: 3, frames: this.q<HTMLInputElement>('[data-role="gen-frames"]').checked };
+    }
+  }
+
+  private updateGenUi(): void {
+    const mode = this.genMode();
+    this.q('[data-role="gen-photos"]').toggleAttribute('hidden', mode !== 'interior');
+    this.q('[data-role="gen-frames-wrap"]').toggleAttribute('hidden', mode !== 'storyboard');
+    this.q<HTMLTextAreaElement>('[data-role="gen-prompt"]').placeholder =
+      mode === 'audio' ? 'Text to speak…' : mode === 'interior' ? 'Room type, e.g. living room (optional)' : mode === 'storyboard' ? 'Describe the video idea…' : 'Describe the image…';
+    const byok = loadByok();
+    this.q('[data-role="gen-cost"]').textContent = byok?.key && mode === 'image'
+      ? 'Unlimited with your OpenAI key.'
+      : `Uses ~${genCost(this.genInput())} of ${GEN_DAILY_UNITS} free daily units.`;
+  }
+
+  private renderThumbs(): void {
+    const box = this.q('[data-role="gen-thumbs"]'); box.innerHTML = '';
+    this.photos.forEach((src, i) => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'ai-thumb'; b.title = 'Remove';
+      const im = document.createElement('img'); im.src = src; im.alt = `Photo ${i + 1}`; b.appendChild(im);
+      b.addEventListener('click', () => { this.photos.splice(i, 1); this.renderThumbs(); });
+      box.appendChild(b);
+    });
+    this.updateGenUi();
+  }
+
+  private genMsg(text: string, isErr = false): void {
+    const out = this.q('[data-role="gen-out"]'); out.innerHTML = '';
+    const d = document.createElement('div'); d.className = isErr ? 'ai-msg ai-msg-error' : 'ai-msg ai-msg-assistant'; d.textContent = text; out.appendChild(d);
+  }
+
+  private async saveAsset(name: string, blob: Blob, btn: HTMLButtonElement): Promise<void> {
+    if (this.opts.saveGenerated) { await this.opts.saveGenerated(name, blob.type, blob); btn.textContent = 'Added ✓'; return; }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  private assetButton(label: string, name: string, blob: () => Blob): HTMLButtonElement {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'ai-ghost';
+    b.textContent = this.opts.saveGenerated ? label : 'Download';
+    b.addEventListener('click', () => void this.saveAsset(name, blob(), b));
+    return b;
+  }
+
+  private renderGenResult(r: GenResult): void {
+    const out = this.q('[data-role="gen-out"]'); out.innerHTML = '';
+    const imgCard = (src: string, caption: string, name: string) => {
+      const f = document.createElement('figure'); f.className = 'ai-card';
+      const im = document.createElement('img'); im.src = src; im.alt = caption; f.appendChild(im);
+      const c = document.createElement('figcaption'); c.textContent = caption; f.appendChild(c);
+      f.appendChild(this.assetButton('Add as file', name, () => dataUrlToBlob(src)));
+      out.appendChild(f);
+    };
+    if (r.image) imgCard(r.image, 'Generated image', 'generated.png');
+    if (r.audio) {
+      const au = document.createElement('audio'); au.controls = true; au.src = r.audio; out.appendChild(au);
+      out.appendChild(this.assetButton('Add as file', 'speech.mp3', () => dataUrlToBlob(r.audio!)));
+    }
+    if (r.description) { const p = document.createElement('p'); p.className = 'ai-quota'; p.textContent = r.description; out.appendChild(p); }
+    r.variants?.forEach((v, i) => v.image && imgCard(v.image, `${v.style}${v.mode === 'img2img' ? '' : ' (from description)'}`, `interior-${i + 1}.png`));
+    if (r.floorplanText) {
+      out.appendChild(this.assetButton('Add layout as Floor plan', 'ai-room.floorplan', () => new Blob([r.floorplanText!], { type: 'application/json' })));
+    }
+    r.scenes?.forEach((s, i) => {
+      if (s.image) imgCard(s.image, `Scene ${i + 1} · ${s.durationSec}s · ${s.motion}: ${s.narration}`, `scene-${i + 1}.png`);
+      else { const p = document.createElement('p'); p.className = 'ai-quota'; p.textContent = `Scene ${i + 1} (${s.durationSec}s, ${s.motion}): ${s.prompt}`; out.appendChild(p); }
+    });
+    if (r.note) { const p = document.createElement('p'); p.className = 'ai-quota'; p.textContent = r.note; out.appendChild(p); }
+  }
+
+  private async runGenerate(): Promise<void> {
+    if (this.genBusy) return;
+    if (!this.opts.isAuthed()) { this.genMsg('Sign in to generate — free daily units, or add your own key.', true); return; }
+    const input = this.genInput();
+    if (input.kind === 'interior' ? !input.images?.length : !(input.prompt || input.text)) {
+      this.genMsg(input.kind === 'interior' ? 'Add 1–4 photos (or a video) of the room.' : 'Enter a description first.', true); return;
+    }
+    this.genBusy = true;
+    const go = this.q<HTMLButtonElement>('[data-role="gen-go"]'); go.disabled = true;
+    this.genMsg('Generating… this can take up to a minute.');
+    try {
+      this.renderGenResult(await aiGenerate(input, loadByok()));
+    } catch (e) {
+      if (e instanceof AiError) {
+        const m: Record<string, string> = {
+          daily_limit: 'Daily free units used up. Try again tomorrow, or add your own key.',
+          unauthorized: 'Please sign in again.', rate_limited: 'Slow down a moment and retry.',
+          too_many_images: `Max ${MAX_PHOTOS} photos.`, image_too_large: 'Photo too large.',
+        };
+        this.genMsg(m[e.code] ?? `Generation failed: ${e.code}`, true);
+        if (!['daily_limit', 'unauthorized', 'rate_limited'].includes(e.code)) reportFailure('ai-generate', e, input.kind);
+      } else { this.genMsg('Request failed. Check your connection and try again.', true); }
+    } finally { this.genBusy = false; go.disabled = false; }
   }
 
   private q<T extends HTMLElement>(sel: string): T { return this.el.querySelector(sel) as T; }

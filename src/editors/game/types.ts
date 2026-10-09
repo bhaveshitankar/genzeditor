@@ -2,6 +2,8 @@
 // OPFS (as JSON) AND the unit synced in a live room, so both the GameEditor and
 // the room sync layer depend on it. Keep it small, serializable, and stable.
 
+import { defaultSprites, migrateSprites } from './art';
+
 export type TemplateId = 'platformer' | 'topdown' | 'racer';
 
 // Tiles paintable on the level grid. 'start' marks the player spawn; 'goal' the
@@ -16,6 +18,8 @@ export interface GameSettings {
   tileSize: number;  // px per tile in the render/engine
   lanes?: number;    // racer: number of road lanes (defaults to 3)
   obstacleRate?: number; // racer: seconds between obstacle spawns (defaults to 1.1)
+  shake?: number;     // screen-shake strength 0..2 (default 1)
+  particles?: number; // particle burst amount 0..2 (default 1)
 }
 
 // Free-floating, non-grid objects (moving platforms, decorations, extra spawns).
@@ -34,7 +38,9 @@ export interface GameLevel {
   entities: Entity[];
 }
 
-// Visual mapping for tiles/entity types → an emoji glyph or a data: URL sprite.
+// Visual mapping for tiles/entity types → a data: URL SVG sprite (legacy docs may
+// hold an emoji glyph). Reserved string keys: 'bg' (background theme id) and
+// 'sfx' (sound preset id).
 export interface GameAssets {
   sprites: Record<string, string>;
 }
@@ -100,16 +106,6 @@ const DEFAULT_SETTINGS: Record<TemplateId, GameSettings> = {
   racer: { gravity: 0, jump: 0, speed: 260, lives: 3, tileSize: 96, lanes: 3, obstacleRate: 1.1 },
 };
 
-const DEFAULT_SPRITES: Record<string, string> = {
-  ground: '🟫', spike: '🔺', coin: '🪙', start: '🏁', goal: '🚩',
-  enemy: '👾', player: '🙂',
-};
-
-// Racer reuses the sprite map but with driving-themed glyphs: 'player' is the
-// car, 'enemy' the oncoming obstacle, 'coin' the pickup.
-const RACER_SPRITES: Record<string, string> = {
-  ...DEFAULT_SPRITES, player: '🏎️', enemy: '🚗', coin: '🪙',
-};
 
 export function createGameDoc(template: TemplateId, title: string): GameDoc {
   if (template === 'racer') {
@@ -123,7 +119,7 @@ export function createGameDoc(template: TemplateId, title: string): GameDoc {
       meta: { title },
       settings: { ...DEFAULT_SETTINGS.racer },
       level: { cols, rows, tiles: new Array(cols * rows).fill('empty'), entities: [] },
-      assets: { sprites: { ...RACER_SPRITES } },
+      assets: { sprites: defaultSprites(true) },
     };
   }
   const cols = 24, rows = 14;
@@ -138,7 +134,7 @@ export function createGameDoc(template: TemplateId, title: string): GameDoc {
     meta: { title },
     settings: { ...DEFAULT_SETTINGS[template] },
     level: { cols, rows, tiles, entities: [] },
-    assets: { sprites: { ...DEFAULT_SPRITES } },
+    assets: { sprites: defaultSprites(false) },
   };
 }
 
@@ -159,8 +155,8 @@ export function parseGameDoc(text: string): GameDoc {
     meta: { title: raw.meta?.title ?? base.meta.title },
     settings: { ...base.settings, ...(raw.settings ?? {}) },
     level: raw.level && Array.isArray(raw.level.tiles)
-      ? { cols: raw.level.cols, rows: raw.level.rows, tiles: raw.level.tiles, entities: raw.level.entities ?? [] }
+      ? { cols: raw.level.cols, rows: raw.level.rows, tiles: raw.level.tiles, entities: Array.isArray(raw.level.entities) ? raw.level.entities : [] }
       : base.level,
-    assets: { sprites: { ...base.assets.sprites, ...(raw.assets?.sprites ?? {}) } },
+    assets: { sprites: migrateSprites({ ...base.assets.sprites, ...(raw.assets?.sprites ?? {}) }, template === 'racer') },
   };
 }

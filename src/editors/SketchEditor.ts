@@ -1,9 +1,30 @@
 import type { DocEditor } from './registry';
+import './styles/sketch.css';
 
 // Self-host Excalidraw's static assets (fonts, locales, vendor chunk) so we
 // never reach out to the default unpkg CDN — the app runs under a strict CSP.
 // Assets live in public/excalidraw-assets/. Set before the dynamic import below.
 (window as unknown as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = '/';
+
+// Excalidraw embeds fonts into exported SVGs by fetching `${EXCALIDRAW_ASSET_PATH}Virgil.woff2`
+// (i.e. /Virgil.woff2), while its chunk/css loader uses `/excalidraw-assets/…`. Our assets only
+// live under /excalidraw-assets/, so the SPA fallback would serve HTML for the root font URLs
+// and SVG export would break. Redirect those few requests.
+const FONT_RE = /^\/(Virgil|Cascadia|Assistant-(?:Regular|Medium|SemiBold|Bold))\.woff2$/;
+if (!(window as unknown as { __skFontShim?: boolean }).__skFontShim) {
+  (window as unknown as { __skFontShim?: boolean }).__skFontShim = true;
+  const orig = window.fetch.bind(window);
+  window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    try {
+      const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const u = new URL(raw, location.href);
+      if (u.origin === location.origin && FONT_RE.test(u.pathname)) {
+        return orig('/excalidraw-assets' + u.pathname, init);
+      }
+    } catch { /* fall through */ }
+    return orig(input, init);
+  }) as typeof window.fetch;
+}
 
 type Lib = typeof import('@excalidraw/excalidraw');
 type Elements = readonly { isDeleted?: boolean }[];
@@ -12,6 +33,39 @@ interface Api {
   getAppState(): Record<string, unknown>;
   getFiles(): Record<string, unknown>;
   updateScene(scene: { elements?: readonly unknown[] }): void;
+}
+
+function isDarkUi(): boolean {
+  const cs = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  const m = /^#([0-9a-f]{6})$/i.exec(cs);
+  if (m) {
+    const n = parseInt(m[1]!, 16);
+    const lum = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+    return lum < 0.5;
+  }
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+const isCoarse = () => window.matchMedia('(pointer: coarse)').matches;
+
+// Reliable save: Web Share (files) on touch devices where supported, else <a download>.
+async function saveBlob(blob: Blob, name: string, preferShare = isCoarse()): Promise<void> {
+  const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
+  if (preferShare && nav.share && nav.canShare) {
+    const file = new File([blob], name, { type: blob.type });
+    if (nav.canShare({ files: [file] })) {
+      try { await nav.share({ files: [file], title: name }); return; }
+      catch (e) { if ((e as Error).name === 'AbortError') return; }
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
 }
 
 // Rich "Sketch" editor: Excalidraw mounted as a lazy-loaded React island.
@@ -27,6 +81,13 @@ export class SketchEditor implements DocEditor {
   private files: Record<string, unknown> = {};
   private sceneVersion = -1;
   private fileCount = 0;
+  private dark = false;
+  private rerender: (() => void) | null = null;
+  private themeObs: MutationObserver | null = null;
+  private mq: MediaQueryList | null = null;
+  private fab: HTMLElement | null = null;
+  private toastEl: HTMLElement | null = null;
+  private toastTimer = 0;
 
   private constructor(host: HTMLElement) {
     this.host = host;
@@ -80,17 +141,21 @@ export class SketchEditor implements DocEditor {
     wrapper.style.width = '100%';
     host.appendChild(wrapper);
 
+    ed.dark = isDarkUi();
     const h = React.createElement;
+    const item = (label: string, fn: () => void) =>
+      h(MainMenu.Item as unknown as React.FunctionComponent<Record<string, unknown>>, { onSelect: fn }, label);
     // Own menu + welcome screen: the defaults link out to excalidraw.com,
     // Excalidraw+, Discord, GitHub and X.
     const menu = h(MainMenu, null,
       h(MainMenu.DefaultItems.LoadScene),
-      h(MainMenu.DefaultItems.SaveToActiveFile),
-      h(MainMenu.DefaultItems.Export),
-      h(MainMenu.DefaultItems.SaveAsImage),
+      item('Save as .excalidraw', () => void ed.saveScene()),
+      item('Export PNG', () => void ed.exportImage('png')),
+      item('Export SVG', () => void ed.exportImage('svg')),
+      item('Copy as PNG', () => void ed.copyPng()),
+      item('Share…', () => void ed.share()),
       h(MainMenu.DefaultItems.ClearCanvas),
       h(MainMenu.Separator),
-      h(MainMenu.DefaultItems.ToggleTheme),
       h(MainMenu.DefaultItems.ChangeCanvasBackground),
     );
     const welcome = h(WelcomeScreen, null,
@@ -103,9 +168,12 @@ export class SketchEditor implements DocEditor {
     );
 
     ed.root = createRoot(wrapper);
-    ed.root.render(
+    const draw = () => ed.root?.render(
       h(Excalidraw as unknown as React.FunctionComponent<Record<string, unknown>>, {
-        initialData,
+        initialData: initialData ?? { appState: { currentItemStrokeColor: '#f02b73', currentItemBackgroundColor: 'transparent' } },
+        theme: ed.dark ? 'dark' : 'light',
+        langCode: 'en',
+        UIOptions: { canvasActions: { toggleTheme: false, export: false, saveAsImage: false, saveToActiveFile: false, loadScene: true } },
         excalidrawAPI: (api: unknown) => { ed.api = api as Api; },
         // onChange fires on every pointer move, scroll and selection change. Only
         // cache + autosave when the drawing itself (elements/images) changed.
@@ -122,7 +190,126 @@ export class SketchEditor implements DocEditor {
         },
       }, menu, welcome),
     );
+    draw();
+    ed.rerender = draw;
+
+    // Keep Excalidraw's theme in step with the app theme (data-theme / OS scheme).
+    const sync = () => {
+      const d = isDarkUi();
+      if (d !== ed.dark) { ed.dark = d; draw(); }
+    };
+    ed.themeObs = new MutationObserver(sync);
+    ed.themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
+    ed.mq = window.matchMedia('(prefers-color-scheme: dark)');
+    ed.mq.addEventListener('change', sync);
+    ed.buildFab(wrapper);
     return ed;
+  }
+
+  // ---- Reliable export helpers (don't depend on Excalidraw's built-in dialog) ----
+  private scene() {
+    const elements = (this.api?.getSceneElements() ?? this.elements).filter((e) => !e.isDeleted);
+    const appState = { ...(this.api?.getAppState() ?? this.appState) } as Record<string, unknown>;
+    const files = (this.api?.getFiles() ?? this.files) as Record<string, unknown>;
+    return { elements, appState, files };
+  }
+
+  private toast(msg: string): void {
+    if (!this.toastEl) return;
+    this.toastEl.textContent = msg;
+    this.toastEl.style.display = 'block';
+    clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => { if (this.toastEl) this.toastEl.style.display = 'none'; }, 2500);
+  }
+
+  private async render(kind: 'png' | 'svg'): Promise<Blob> {
+    if (!this.lib) throw new Error('not ready');
+    const { elements, appState, files } = this.scene();
+    if (elements.length === 0) throw new Error('Nothing to export yet');
+    const opts = {
+      elements: elements as never,
+      appState: { ...appState, exportBackground: true, exportWithDarkMode: false, exportEmbedScene: kind === 'png' } as never,
+      files: files as never,
+      exportPadding: 24,
+    };
+    if (kind === 'png') return this.lib.exportToBlob({ ...opts, mimeType: 'image/png', getDimensions: (w, h) => ({ width: w * 2, height: h * 2, scale: 2 }) });
+    const svg = await this.lib.exportToSvg(opts);
+    return new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' });
+  }
+
+  /** Rendered image of the sketch (PNG or SVG) — usable by the app's Download action. */
+  async exportImageBlob(kind: 'png' | 'svg' = 'png'): Promise<{ blob: Blob; contentType: string }> {
+    const blob = await this.render(kind);
+    return { blob, contentType: blob.type };
+  }
+
+  async exportImage(kind: 'png' | 'svg'): Promise<void> {
+    try {
+      await saveBlob(await this.render(kind), `sketch.${kind}`);
+      this.toast(`Exported ${kind.toUpperCase()}`);
+    } catch (e) { this.toast((e as Error).message || 'Export failed'); }
+  }
+
+  async copyPng(): Promise<void> {
+    try {
+      const p = this.render('png');
+      const CI = (window as unknown as { ClipboardItem?: typeof ClipboardItem }).ClipboardItem;
+      if (!CI || !navigator.clipboard?.write) throw new Error('unsupported');
+      await navigator.clipboard.write([new CI({ 'image/png': p })]); // promise form keeps Safari's user gesture
+      this.toast('Copied to clipboard');
+    } catch (e) {
+      if ((e as Error).message === 'Nothing to export yet') { this.toast('Nothing to copy yet'); return; }
+      this.toast('Copy not supported here — downloading PNG');
+      void this.exportImage('png');
+    }
+  }
+
+  async saveScene(): Promise<void> {
+    try {
+      const out = await this.export();
+      if (out) { await saveBlob(out.blob, 'sketch.excalidraw', false); this.toast('Saved sketch.excalidraw'); }
+    } catch { this.toast('Save failed'); }
+  }
+
+  async share(): Promise<void> {
+    try {
+      await saveBlob(await this.render('png'), 'sketch.png', true);
+    } catch (e) { this.toast((e as Error).message || 'Share failed'); }
+  }
+
+  private buildFab(wrapper: HTMLElement): void {
+    const fab = document.createElement('div');
+    fab.className = 'sk-fab';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sk-btn';
+    btn.textContent = 'Export';
+    btn.setAttribute('aria-label', 'Export sketch');
+    const menu = document.createElement('div');
+    menu.className = 'sk-menu';
+    const add = (label: string, fn: () => void) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sk-item';
+      b.textContent = label;
+      b.addEventListener('click', () => { fab.classList.remove('open'); fn(); });
+      menu.appendChild(b);
+    };
+    add('Download PNG', () => void this.exportImage('png'));
+    add('Download SVG', () => void this.exportImage('svg'));
+    add('Copy as PNG', () => void this.copyPng());
+    add('Share image…', () => void this.share());
+    add('Save .excalidraw', () => void this.saveScene());
+    btn.addEventListener('click', () => fab.classList.toggle('open'));
+    fab.append(btn, menu);
+    // Stop pointer events reaching the canvas underneath.
+    for (const ev of ['pointerdown', 'wheel']) fab.addEventListener(ev, (e) => e.stopPropagation());
+    const toast = document.createElement('div');
+    toast.className = 'sk-toast';
+    toast.style.display = 'none';
+    wrapper.append(fab, toast);
+    this.fab = fab;
+    this.toastEl = toast;
   }
 
   async export(): Promise<{ blob: Blob; contentType: string } | null> {
@@ -137,6 +324,9 @@ export class SketchEditor implements DocEditor {
   }
 
   destroy(): void {
+    this.themeObs?.disconnect();
+    this.mq = null;
+    clearTimeout(this.toastTimer);
     this.root?.unmount();
     this.root = null;
     this.api = null;

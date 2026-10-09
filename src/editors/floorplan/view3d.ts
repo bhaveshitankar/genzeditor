@@ -23,13 +23,13 @@ export async function mount3D(host: HTMLElement, plan: FloorPlan): Promise<View3
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#e9eef5');
 
-  const camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 1000);
-  camera.position.set(8, 9, 10);
+  const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(width, height);
+  renderer.setSize(width, height, false);
   renderer.shadowMap.enabled = true;
+  renderer.domElement.style.cssText = 'display:block;width:100%;height:100%;touch-action:none';
   host.appendChild(renderer.domElement);
 
   // Lighting.
@@ -86,8 +86,30 @@ export async function mount3D(host: HTMLElement, plan: FloorPlan): Promise<View3
     root.add(mesh);
   }
 
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, 1, 0);
+  // Frame the whole plan: distance from the plan radius, widened for portrait.
+  let radius = 2.5;
+  for (const w of plan.walls) {
+    radius = Math.max(radius, Math.hypot((w.x1 - cx), (w.y1 - cy)), Math.hypot((w.x2 - cx), (w.y2 - cy)));
+  }
+  for (const f of plan.furniture) radius = Math.max(radius, Math.hypot(f.x - cx, f.y - cy) + Math.max(f.w, f.d) / 2);
+  const frame = () => {
+    const aspect = (host.clientWidth || width) / (host.clientHeight || height);
+    const vfov = (camera.fov * Math.PI) / 180;
+    const fitH = Math.min(1, aspect);
+    const dist = (radius * 1.25) / Math.tan(vfov / 2) / fitH;
+    camera.position.set(dist * 0.45, dist * 0.7, dist * 0.55);
+  };
+  frame();
+
+  const controls = new OrbitControls(camera, renderer.domElement) as unknown as {
+    update(): void; dispose(): void; target: { set(x: number, y: number, z: number): void };
+    addEventListener(t: string, f: () => void): void; removeEventListener(t: string, f: () => void): void;
+    maxPolarAngle: number; minDistance: number; maxDistance: number; enableDamping: boolean;
+  };
+  controls.target.set(0, 0.8, 0);
+  controls.maxPolarAngle = Math.PI / 2 - 0.02;
+  controls.minDistance = 1.5;
+  controls.maxDistance = radius * 8 + 20;
   controls.update();
 
   // Render on demand (camera moves / resize) instead of a continuous 60fps loop.
@@ -102,15 +124,18 @@ export async function mount3D(host: HTMLElement, plan: FloorPlan): Promise<View3
     const h = host.clientHeight || height;
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(w, h);
+    renderer.setSize(w, h, false);
     requestRender();
   };
   window.addEventListener('resize', onResize);
+  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onResize) : null;
+  ro?.observe(host);
 
   return {
     dispose() {
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', onResize);
+      ro?.disconnect();
       controls.removeEventListener('change', requestRender);
       controls.dispose();
       renderer.dispose();

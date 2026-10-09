@@ -22,6 +22,7 @@ import { lineDiff } from '../diff/lineDiff';
 import { getMe, signOut, type MeState, deleteShare } from '../api/client';
 import { renderAuthBar, openSignInModal } from '../auth/authUi';
 import { shareFile } from '../share/shareFlow';
+import { copyText } from '../utils/clipboard';
 import { saveBackShared } from '../share/openShared';
 import type { ShareLink } from '../store/types';
 import { CompareView } from '../diff/CompareView';
@@ -126,6 +127,11 @@ export class AppShell {
       isAuthed: () => this.meState.authenticated,
       onSignIn: () => openSignInModal(),
       resolve: () => this.resolveAiTarget(),
+      saveGenerated: async (name, _mime, blob) => {
+        const rec = await this.store.save(await this.uniqueName(name), blob, detectKind(name));
+        await this.refreshLibrary();
+        this.toast(`Added “${rec.name}”`, 'success', 2500);
+      },
     });
     this.wireUpload();
     this.wirePalette();
@@ -224,7 +230,7 @@ export class AppShell {
           <div class="ribbon-brand">
             <button class="hamburger" aria-label="Toggle files">${icon('menu')}</button>
             <h1 class="brand-name">
-              <span class="brand-mark">Gz</span>
+              <span class="brand-mark">GZ</span>
               <span class="brand-text">GenZ<span class="brand-accent"> Editor</span></span>
             </h1>
           </div>
@@ -1544,11 +1550,7 @@ export class AppShell {
       // Push the latest content to the existing link so the copied URL is fresh,
       // then copy it. This keeps "Share" idempotent per access level.
       await this.pushToShares([existing]);
-      await navigator.clipboard.writeText(existing.url);
-      this.toast(
-        wantRw ? 'Editable link copied (existing link updated)' : 'Read-only link copied (existing link updated)',
-        'success',
-      );
+      await this.deliverShareLink(existing.url, wantRw ? 'Editable link (existing link updated)' : 'Read-only link (existing link updated)');
       return;
     }
 
@@ -1595,15 +1597,57 @@ export class AppShell {
       await this.store.updateMeta(record.id, { shares });
       this.syncSaveButton(true);
 
-      await navigator.clipboard.writeText(result.url);
-      this.toast(
-        wantRw ? 'Editable share link copied to clipboard' : 'Read-only link copied to clipboard',
-        'success',
-      );
+      await this.deliverShareLink(result.url, wantRw ? 'Editable share link' : 'Read-only link');
     } catch (err) {
       reportFailure('share', err, record.kind);
       this.toast(`Share failed: ${this.friendlyShareError(err)}`, 'error');
     }
+  }
+
+  // Copy the link; mobile browsers (iOS Safari especially) reject clipboard
+  // writes once the tap's user activation has been spent on the upload awaits.
+  // The share itself already succeeded, so fall back to a sheet with a Copy /
+  // Share button (a fresh tap) instead of reporting a failure.
+  private async deliverShareLink(url: string, label: string): Promise<void> {
+    try {
+      await copyText(url);
+      this.toast(`${label} copied to clipboard`, 'success');
+      return;
+    } catch { /* fall through to the manual sheet */ }
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal share-modal" role="dialog" aria-modal="true">
+        <h3>Your link is ready</h3>
+        <p class="share-note"></p>
+        <input class="share-link-input" type="text" readonly aria-label="Share link">
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel">Close</button>
+          <button type="button" class="btn-confirm" data-role="copy">Copy</button>
+        </div>
+      </div>`;
+    (overlay.querySelector('.share-note') as HTMLElement).textContent = `${label} — tap Copy or Share to send it.`;
+    const input = overlay.querySelector('input') as HTMLInputElement;
+    input.value = url;
+    const copyBtn = overlay.querySelector('[data-role="copy"]') as HTMLButtonElement;
+    const close = () => overlay.remove();
+    overlay.querySelector('.btn-cancel')?.addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    if (typeof navigator.share === 'function') copyBtn.textContent = 'Share';
+    copyBtn.addEventListener('click', async () => {
+      try {
+        if (typeof navigator.share === 'function') { await navigator.share({ url }); close(); return; }
+        await copyText(url);
+        this.toast('Link copied to clipboard', 'success');
+        close();
+      } catch (e) {
+        if ((e as Error)?.name === 'AbortError') return;
+        input.focus(); input.select(); input.setSelectionRange(0, url.length);
+        this.toast('Press and hold the link to copy it', 'info');
+      }
+    });
+    this.root.appendChild(overlay);
+    input.focus(); input.select();
   }
 
   // Delete a file from this browser, plus any uploaded share copies on our

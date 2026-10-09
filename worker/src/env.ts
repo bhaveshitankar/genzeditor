@@ -23,4 +23,6 @@ export interface Env {
   // Optional server-side fallback provider keys (used when Workers AI errors).
   OPENAI_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
+  // MCP API keys for external agents: "name:secret,name2:secret2" (wrangler secret).
+  MCP_API_KEYS?: string;
 }

@@ -2,6 +2,7 @@ import './styles/video.css';
 import type { FFmpeg } from '@ffmpeg/ffmpeg';
 import type { DocEditor } from './registry';
 import { getFfmpeg } from './ffmpegLoader';
+import { type Quality, type OutFps, CRF, estimateBytes, fmtBytes, memoryWarning, abortAndReload } from './video/exportOpts';
 import { type EditCommands, getAppClipboard, setAppClipboard } from './editCommands';
 
 // Multi-clip, client-side video editor.
@@ -26,6 +27,8 @@ interface Clip {
   crop: Rect | null;
   speed: number;  // per-clip playback speed (main track only)
   volume: number; // 0..2
+  fadeIn?: number;  // seconds, fade from black (main track)
+  fadeOut?: number; // seconds, fade to black
 }
 
 interface Overlay extends Clip {
@@ -160,6 +163,11 @@ export class VideoEditor implements DocEditor {
   private audioEls = new Map<string, HTMLAudioElement>();
   private outFmt: Fmt = 'mp4';
   private resPreset: ResPreset = 'original';
+  private outFps: OutFps = 30;
+  private quality: Quality = 'balanced';
+  private guides = false;                  // safe-zone overlay (preview only)
+  private ffRun: FFmpeg | null = null;
+  private cancelled = false;
 
   // DOM
   private canvas!: HTMLCanvasElement;
@@ -739,7 +747,9 @@ export class VideoEditor implements DocEditor {
     return !untouched || this.rotate !== 0 || this.flipH || this.flipV || this.speed !== 1 ||
       this.brightness !== 0 || this.contrast !== 1 || this.saturation !== 1 || this.look !== 'none' ||
       this.mute || this.volume !== 1 ||
-      this.resPreset !== 'original' || this.outFmt !== this.currentFmt();
+      this.resPreset !== 'original' || this.outFmt !== this.currentFmt() ||
+      this.outFps !== 30 || this.quality !== 'balanced' ||
+      this.main.some((c) => (c.fadeIn ?? 0) > 0 || (c.fadeOut ?? 0) > 0);
   }
 
   async export(): Promise<{ blob: Blob; contentType: string } | null> {
@@ -747,6 +757,7 @@ export class VideoEditor implements DocEditor {
       return { blob: this.blob, contentType: this.blob.type || 'video/mp4' };
     }
     this.setPlaying(false);
+    this.cancelled = false;
     this.setStatus('Processing… (first run downloads the video engine)');
     this.showProgress(true);
     let ff: FFmpeg;
@@ -755,6 +766,10 @@ export class VideoEditor implements DocEditor {
     } catch (err) {
       return this.fail('Could not load the video engine', err);
     }
+    this.ffRun = ff;
+    this.showProgress(true);
+    const warn = this.memWarn();
+    if (warn) this.opts.toast?.(warn, 'info');
     const written: string[] = [];
     const outName = 'out.' + this.outFmt;
     try {
@@ -802,13 +817,47 @@ export class VideoEditor implements DocEditor {
       part.set(data); // detach from any SharedArrayBuffer backing
       await cleanupFs(ff, written);
       const contentType = this.outFmt === 'webm' ? 'video/webm' : 'video/mp4';
+      this.ffRun = null;
       this.setStatus('Done.');
       this.showProgress(false);
       return { blob: new Blob([part], { type: contentType }), contentType };
     } catch (err) {
-      await cleanupFs(ff, written);
+      if (this.cancelled) {
+        await abortAndReload(ff);
+        this.ffRun = null;
+        return this.fail('Export cancelled', 'nothing was changed');
+      }
+      await cleanupFs(ff, written).catch(() => undefined);
+      this.ffRun = null;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/memory|alloc|abort|oom|out of bounds/i.test(msg)) {
+        await abortAndReload(ff);
+        return this.fail('Ran out of memory. Try 720p, 24 fps, Small quality or fewer clips', err);
+      }
       return this.fail('Processing failed', err);
     }
+  }
+
+  private cancelExport(): void {
+    if (!this.ffRun) return;
+    this.cancelled = true;
+    this.ffRun.terminate();
+  }
+
+  private memWarn(): string | null {
+    const { W, H } = this.frameSize();
+    const bytes = [...new Set([...this.main, ...this.overlays].map((c) => c.blob))].reduce((n, b) => n + b.size, 0);
+    return memoryWarning(bytes, W, H, this.total(), this.outFps);
+  }
+
+  private updateEstimate(): void {
+    const el = this.host.querySelector<HTMLElement>('[data-role="estimate"]');
+    if (!el) return;
+    const { W, H } = this.frameSize();
+    const T = this.total() / this.speed;
+    const est = estimateBytes(this.outFmt, this.quality, W, H, this.outFps, T, !this.mute);
+    const w = this.memWarn();
+    el.textContent = `${W}×${H} · ${fmtT(T)} · about ${fmtBytes(est)}${w ? `. ${w}` : ''}`;
   }
 
   private fail(msg: string, err: unknown): { blob: Blob; contentType: string } {
@@ -830,7 +879,7 @@ export class VideoEditor implements DocEditor {
     let idx = 0;
     const addInput = (c: Clip): number => {
       const f = fileOf.get(c.blob)!;
-      if (c.kind === 'image') inputs.push('-loop', '1', '-framerate', String(FPS), '-t', f3(len(c)), '-i', f);
+      if (c.kind === 'image') inputs.push('-loop', '1', '-framerate', String(this.outFps), '-t', f3(len(c)), '-i', f);
       else inputs.push('-ss', f3(c.in), '-t', f3(c.out - c.in), '-i', f);
       return idx++;
     };
@@ -841,13 +890,14 @@ export class VideoEditor implements DocEditor {
     this.main.forEach((c, i) => {
       const k = addInput(c);
       const sp = c.kind === 'video' && c.speed !== 1 ? `,setpts=PTS/${f3(c.speed)}` : '';
-      parts.push(`[${k}:v]setpts=PTS-STARTPTS${sp},${cropFilter(c)}${fitFilter(this.mainFit, mb.w, mb.h)},setsar=1,fps=${FPS},format=yuv420p[v${i}]`);
+      parts.push(`[${k}:v]setpts=PTS-STARTPTS${sp},${cropFilter(c)}${fitFilter(this.mainFit, mb.w, mb.h)},setsar=1,fps=${this.outFps},format=yuv420p${this.fadeFilter(c)}[v${i}]`);
       segs.push(`[v${i}]`);
       if (wantAudio) {
         if (audioOf(c) && !this.muteOriginal) {
           const tempo = c.speed !== 1 ? `,${atempoChain(c.speed).join(',')}` : '';
           const vol = c.volume !== 1 ? `,volume=${f3(c.volume)}` : '';
-          parts.push(`[${k}:a]asetpts=PTS-STARTPTS,${AFMT}${tempo}${vol},apad,atrim=duration=${f3(len(c))}[a${i}]`);
+          const afd = this.afadeFilter(c);
+          parts.push(`[${k}:a]asetpts=PTS-STARTPTS,${AFMT}${tempo}${vol}${afd},apad,atrim=duration=${f3(len(c))}[a${i}]`);
         }
         else parts.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${f3(len(c))}[a${i}]`);
         segs.push(`[a${i}]`);
@@ -866,7 +916,7 @@ export class VideoEditor implements DocEditor {
       const k = addInput(o);
       const ob = boxPx(o.box, W, H);
       const alpha = o.opacity < 1 ? `,colorchannelmixer=aa=${f3(o.opacity)}` : '';
-      parts.push(`[${k}:v]setpts=PTS-STARTPTS,${cropFilter(o)}${fitFilter('cover', ob.w, ob.h)},setsar=1,fps=${FPS},format=rgba${alpha},setpts=PTS+${f3(o.start)}/TB[o${j}]`);
+      parts.push(`[${k}:v]setpts=PTS-STARTPTS,${cropFilter(o)}${fitFilter('cover', ob.w, ob.h)},setsar=1,fps=${this.outFps},format=rgba${alpha},setpts=PTS+${f3(o.start)}/TB[o${j}]`);
       parts.push(`${base}[o${j}]overlay=x=${ob.x}:y=${ob.y}:eof_action=pass:enable='between(t,${f3(o.start)},${f3(o.start + len(o))})'[b${j}]`);
       base = `[b${j}]`;
       if (wantAudio && o.audio && audioOf(o)) {
@@ -931,12 +981,24 @@ export class VideoEditor implements DocEditor {
     return [...inputs, '-filter_complex', parts.join(';'), ...maps, ...this.codecArgs(), outName];
   }
 
+  private fadeFilter(c: Clip): string {
+    const L = len(c);
+    const fi = clamp(c.fadeIn ?? 0, 0, L / 2), fo = clamp(c.fadeOut ?? 0, 0, L / 2);
+    return (fi > 0.01 ? `,fade=t=in:st=0:d=${f3(fi)}` : '') + (fo > 0.01 ? `,fade=t=out:st=${f3(L - fo)}:d=${f3(fo)}` : '');
+  }
+
+  private afadeFilter(c: Clip): string {
+    const L = len(c);
+    const fi = clamp(c.fadeIn ?? 0, 0, L / 2), fo = clamp(c.fadeOut ?? 0, 0, L / 2);
+    return (fi > 0.01 ? `,afade=t=in:st=0:d=${f3(fi)}` : '') + (fo > 0.01 ? `,afade=t=out:st=${f3(L - fo)}:d=${f3(fo)}` : '');
+  }
+
   private codecArgs(): string[] {
     if (this.outFmt === 'webm') {
-      return ['-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', '32', '-deadline', 'realtime',
+      return ['-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', String(CRF.webm[this.quality]), '-deadline', 'realtime',
         '-cpu-used', '5', '-c:a', 'libopus'];
     }
-    return ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '24', '-pix_fmt', 'yuv420p',
+    return ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', String(CRF.mp4[this.quality]), '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart'];
   }
 
@@ -1047,8 +1109,10 @@ export class VideoEditor implements DocEditor {
               <option value="720p">720p</option>
               <option value="480p">480p</option>
               <option value="square">Square 1:1</option>
-              <option value="vertical">Vertical 9:16</option>
+              <option value="vertical">Vertical 9:16 (Shorts / Reels / TikTok)</option>
             </select></label>
+          <button type="button" class="vid-btn" data-role="guides">Safe-zone guides</button>
+          <span class="vid-hint">Guides show where Shorts / Reels / TikTok UI covers the frame. They are never exported.</span>
         </div>
 
         <div class="vid-panel" data-panel="adjust">
@@ -1085,12 +1149,26 @@ export class VideoEditor implements DocEditor {
               <option value="mp4">MP4 (H.264)</option>
               <option value="webm">WebM (VP9)</option>
             </select></label>
-          <span class="vid-hint">Export runs on Download / Share / Save.</span>
+          <label class="vid-field">Quality
+            <select data-role="quality">
+              <option value="high">High (larger file)</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="small">Small file</option>
+            </select></label>
+          <label class="vid-field">Frame rate
+            <select data-role="fps">
+              <option value="24">24 fps</option>
+              <option value="30" selected>30 fps</option>
+              <option value="60">60 fps</option>
+            </select></label>
+          <span class="vid-hint" data-role="estimate"></span>
+          <span class="vid-hint">Export runs on Download / Share / Save. Runs fully on your device.</span>
         </div>
 
         <div class="vid-statusbar">
           <span class="vid-status" data-role="status"></span>
           <div class="vid-progress" data-role="progress"><span data-role="progressFill"></span></div>
+          <button type="button" class="vid-btn vid-cancel" data-role="cancelExport" hidden>Cancel</button>
         </div>
 
         <div class="vid-zoom" data-role="zoom">
@@ -1200,7 +1278,7 @@ export class VideoEditor implements DocEditor {
 
     // Resize.
     const res = this.q<HTMLSelectElement>('res');
-    res.addEventListener('change', () => { this.resPreset = res.value as ResPreset; this.setCanvasSize(); });
+    res.addEventListener('change', () => { this.resPreset = res.value as ResPreset; this.setCanvasSize(); this.updateEstimate(); });
 
     // Adjust.
     const br = this.q<HTMLInputElement>('brightness');
@@ -1227,7 +1305,16 @@ export class VideoEditor implements DocEditor {
 
     // Export format.
     const fs = this.q<HTMLSelectElement>('fmt');
-    fs.addEventListener('change', () => { this.outFmt = fs.value as Fmt; });
+    fs.addEventListener('change', () => { this.outFmt = fs.value as Fmt; this.updateEstimate(); });
+    const qs = this.q<HTMLSelectElement>('quality');
+    qs.addEventListener('change', () => { this.quality = qs.value as Quality; this.updateEstimate(); });
+    const fp = this.q<HTMLSelectElement>('fps');
+    fp.addEventListener('change', () => { this.outFps = Number(fp.value) as OutFps; this.updateEstimate(); });
+    this.q('cancelExport').addEventListener('click', () => this.cancelExport());
+    this.q('guides').addEventListener('click', () => {
+      this.guides = !this.guides;
+      this.q('guides').classList.toggle('active', this.guides);
+    });
 
     // Timeline zoom.
     const zs = this.q<HTMLInputElement>('zoom-slider');
@@ -1249,6 +1336,11 @@ export class VideoEditor implements DocEditor {
   // Seek to t and wait until the preview canvas shows that frame, then copy it.
   private async grabFrame(t: number): Promise<HTMLCanvasElement> {
     if (this.playing) this.setPlaying(false);
+    const g = this.guides; this.guides = false;
+    try { return await this.grabFrameInner(t); } finally { this.guides = g; }
+  }
+
+  private async grabFrameInner(t: number): Promise<HTMLCanvasElement> {
     this.seek(t);
     const cur = this.mainAt(this.t);
     const m = cur ? this.mediaFor(cur.clip) : null;
@@ -1295,6 +1387,7 @@ export class VideoEditor implements DocEditor {
   }
 
   private showTab(tab: string): void {
+    if (tab === 'export') this.updateEstimate();
     this.host.querySelectorAll<HTMLElement>('.vid-tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab));
     this.host.querySelectorAll<HTMLElement>('.vid-panel').forEach((x) => x.classList.toggle('active', x.dataset.panel === tab));
   }
@@ -1436,6 +1529,11 @@ export class VideoEditor implements DocEditor {
       } else {
         g.appendChild(hint('Images are silent; set how long they show with Duration.'));
       }
+      const fh = Math.max(0.1, len(c) / 2);
+      g.append(
+        this.slider('Fade in', 0, Math.min(5, fh), 0.1, Math.min(c.fadeIn ?? 0, fh), secs, (v) => { c.fadeIn = v; }),
+        this.slider('Fade out', 0, Math.min(5, fh), 0.1, Math.min(c.fadeOut ?? 0, fh), secs, (v) => { c.fadeOut = v; }),
+      );
       row.appendChild(g);
     }
 
@@ -1552,7 +1650,19 @@ export class VideoEditor implements DocEditor {
       check('Background box', x.bg, (v) => { x.bg = v; }),
       this.slider('Box opacity', 0, 1, 0.05, x.bgOpacity, pct, (v) => { x.bgOpacity = v; }),
     );
-    host.append(head, g);
+    const { H } = this.frameSize();
+    const presets: Array<[string, Partial<TextClip>]> = [
+      ['Title', { y: 0.5, size: Math.round(H * 0.1), bold: true, bg: false, color: '#ffffff' }],
+      ['Subtitle', { y: 0.62, size: Math.round(H * 0.05), bold: false, bg: false, color: '#ffffff' }],
+      ['Caption', { y: 0.85, size: Math.round(H * 0.05), bold: true, bg: true, bgOpacity: 0.5, color: '#ffffff' }],
+      ['Lower third', { x: 0.3, y: 0.82, size: Math.round(H * 0.045), bold: true, bg: true, bgOpacity: 0.7, color: '#ffe14d' }],
+      ['Pink pop', { y: 0.5, size: Math.round(H * 0.09), bold: true, bg: true, bgOpacity: 0.85, color: '#ff4d8d' }],
+    ];
+    const pr = el('div', 'vid-props-actions');
+    for (const [name, p] of presets) {
+      pr.appendChild(button(name, () => { this.pushHistory(); Object.assign(x, { x: 0.5 }, p); this.renderProps(); }));
+    }
+    host.append(head, pr, g);
     if (!this.ovActive(x)) host.appendChild(hint('Move the playhead inside this text’s time range to see it on the preview.'));
     host.appendChild(actions);
   }
@@ -2062,7 +2172,16 @@ export class VideoEditor implements DocEditor {
     const px = (r: Rect): Rect => ({ x: r.x * cw, y: r.y * ch, w: r.w * cw, h: r.h * ch });
 
     const cur = this.mainAt(this.t);
-    if (cur) this.drawSource(this.mediaFor(cur.clip), cur.clip, px(this.mainBox), this.mainFit);
+    if (cur) {
+      const L = len(cur.clip), loc = this.t - cur.start;
+      const fi = cur.clip.fadeIn ?? 0, fo = cur.clip.fadeOut ?? 0;
+      let a = 1;
+      if (fi > 0) a = Math.min(a, loc / fi);
+      if (fo > 0) a = Math.min(a, (L - loc) / fo);
+      ctx.globalAlpha = clamp(a, 0, 1);
+      this.drawSource(this.mediaFor(cur.clip), cur.clip, px(this.mainBox), this.mainFit);
+      ctx.globalAlpha = 1;
+    }
 
     for (const o of this.overlays) {
       if (!this.ovActive(o)) continue;
@@ -2073,6 +2192,8 @@ export class VideoEditor implements DocEditor {
 
     this.textBoxes.clear();
     for (const x of this.texts) if (this.ovActive(x) && x.text.trim()) this.drawText(x, cw, ch);
+
+    if (this.guides) this.drawGuides(cw, ch);
 
     if (this.sel?.track === 'tx') {
       const b = this.textBoxes.get(this.sel.id);
@@ -2101,6 +2222,26 @@ export class VideoEditor implements DocEditor {
         ctx.restore();
       }
     }
+  }
+
+  // Preview-only overlay: platform UI zones (top 10%, bottom 20%, right 14%) and
+  // a title-safe margin. Never part of exports or captured frames.
+  private drawGuides(cw: number, ch: number): void {
+    const c = this.ctx;
+    c.save();
+    c.fillStyle = 'rgba(255, 77, 141, 0.18)';
+    c.fillRect(0, 0, cw, ch * 0.1);
+    c.fillRect(0, ch * 0.8, cw, ch * 0.2);
+    c.fillRect(cw * 0.86, ch * 0.1, cw * 0.14, ch * 0.7);
+    c.strokeStyle = 'rgba(255,255,255,0.7)';
+    c.lineWidth = 1.5;
+    c.setLineDash([6, 4]);
+    c.strokeRect(cw * 0.05, ch * 0.05, cw * 0.9, ch * 0.9);
+    c.beginPath();
+    c.moveTo(cw / 2, 0); c.lineTo(cw / 2, ch);
+    c.moveTo(0, ch / 2); c.lineTo(cw, ch / 2);
+    c.stroke();
+    c.restore();
   }
 
   // Same math as the export: crop in source pixels, then contain (letterbox)
@@ -2213,7 +2354,12 @@ export class VideoEditor implements DocEditor {
   }
 
   private setStatus(t: string): void { if (this.statusEl) this.statusEl.textContent = t; }
-  private showProgress(on: boolean): void { this.barEl?.classList.toggle('active', on); if (!on) this.setProgress(0); }
+  private showProgress(on: boolean): void {
+    this.barEl?.classList.toggle('active', on);
+    const cb = this.host.querySelector<HTMLElement>('[data-role="cancelExport"]');
+    if (cb) cb.hidden = !on || !this.ffRun;
+    if (!on) this.setProgress(0);
+  }
   private setProgress(r: number): void {
     const pct = Math.round(clamp(r, 0, 1) * 100);
     if (this.barFill) this.barFill.style.width = `${pct}%`;

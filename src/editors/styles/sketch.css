@@ -1,0 +1,166 @@
+/* Sketch (Excalidraw) skin: maps Excalidraw's CSS variables onto the app's
+   theme tokens so the chrome matches the pink Gen-Z shell in every theme.
+   The canvas keeps its hand-drawn feel; only the chrome is re-skinned. */
+
+.sketch-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--surface-2);
+}
+
+.sketch-host .excalidraw,
+.sketch-host .excalidraw.theme--dark {
+  --color-primary: var(--brand-500);
+  --color-primary-darker: var(--brand-600);
+  --color-primary-darkest: var(--brand-700);
+  --color-primary-light: color-mix(in srgb, var(--brand-500) 16%, var(--surface));
+  --color-primary-light-darker: color-mix(in srgb, var(--brand-500) 26%, var(--surface));
+  --color-primary-hover: var(--brand-600);
+  --color-brand-active: var(--brand-600);
+  --color-brand-hover: var(--brand-600);
+  --color-surface-lowest: var(--surface);
+  --color-surface-low: var(--surface-2);
+  --color-surface-mid: var(--surface-2);
+  --color-surface-high: var(--surface-hover);
+  --color-on-primary-container: var(--brand-700);
+  --color-selection: var(--brand-500);
+  --island-bg-color: var(--surface);
+  --default-bg-color: var(--surface-2);
+  --input-bg-color: var(--surface);
+  --input-border-color: var(--border);
+  --input-hover-bg-color: var(--surface-hover);
+  --input-label-color: var(--text-muted);
+  --button-bg: var(--surface-2);
+  --button-hover-bg: var(--surface-hover);
+  --button-active-bg: color-mix(in srgb, var(--brand-500) 20%, var(--surface));
+  --button-destructive-bg-color: var(--danger-bg);
+  --button-destructive-color: var(--danger);
+  --default-border-color: var(--border);
+  --dialog-border-color: var(--border);
+  --text-primary-color: var(--text);
+  --icon-fill-color: var(--text);
+  --popup-bg-color: var(--surface);
+  --popup-secondary-bg-color: var(--surface-2);
+  --popup-text-color: var(--text);
+  --sidebar-bg-color: var(--surface);
+  --sidebar-border-color: var(--border);
+  --sidebar-shadow: var(--shadow-md);
+  --shadow-island: var(--shadow-md);
+  --border-radius-md: var(--r-sm);
+  --border-radius-lg: var(--r-md);
+  font-family: var(--font);
+}
+
+/* Islands: toolbar, properties panel, menus, popovers */
+.sketch-host .excalidraw .Island {
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  background: var(--surface);
+}
+.sketch-host .excalidraw .App-menu_top .buttonList,
+.sketch-host .excalidraw .App-toolbar { border-radius: var(--r-full); }
+.sketch-host .excalidraw .App-toolbar.zen-mode { border-radius: var(--r-md); }
+.sketch-host .excalidraw .ToolIcon__icon,
+.sketch-host .excalidraw .dropdown-menu-item,
+.sketch-host .excalidraw .Modal__content,
+.sketch-host .excalidraw button.Button { border-radius: var(--r-sm); }
+.sketch-host .excalidraw .ToolIcon__icon:hover { background: var(--surface-hover); }
+.sketch-host .excalidraw .ToolIcon_type_radio:checked + .ToolIcon__icon,
+.sketch-host .excalidraw .ToolIcon__icon.selected,
+.sketch-host .excalidraw .ToolIcon_type_button.ToolIcon--selected .ToolIcon__icon {
+  background: var(--brand-500);
+}
+.sketch-host .excalidraw .ToolIcon_type_radio:checked + .ToolIcon__icon svg,
+.sketch-host .excalidraw .ToolIcon--selected .ToolIcon__icon svg { color: var(--on-brand); }
+.sketch-host .excalidraw .dropdown-menu { border-radius: var(--r-md); box-shadow: var(--shadow-lg); border: 1px solid var(--border); }
+.sketch-host .excalidraw .dropdown-menu-item:hover { background: var(--surface-hover); }
+.sketch-host .excalidraw .Modal__background { backdrop-filter: blur(3px); }
+.sketch-host .excalidraw .welcome-screen-center__heading,
+.sketch-host .excalidraw .welcome-screen-decor { color: var(--text-faint); }
+.sketch-host .excalidraw .welcome-screen-center__heading {
+  font-family: var(--font-display);
+  font-weight: 800;
+  color: var(--text-muted);
+}
+
+/* ---- Our own export button + sheet (works on every browser) ---- */
+.sk-fab {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  font-family: var(--font);
+}
+.sk-btn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 16px;
+  border: 2px solid var(--ink);
+  border-radius: var(--r-full);
+  background: var(--brand-500);
+  color: var(--on-brand);
+  font: 700 14px/1 var(--font-display);
+  box-shadow: var(--shadow-pop);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.sk-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
+.sk-menu {
+  display: none;
+  flex-direction: column;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+}
+.sk-fab.open .sk-menu { display: flex; }
+.sk-item {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: 600 15px/1 var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.sk-item:hover, .sk-item:active { background: var(--surface-hover); }
+.sk-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 84px;
+  transform: translateX(-50%);
+  z-index: 6;
+  padding: 10px 16px;
+  border-radius: var(--r-full);
+  background: var(--ink);
+  color: #fff;
+  font: 600 14px/1.2 var(--font);
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+  max-width: 90%;
+}
+
+/* ---- Mobile: bigger touch targets, no cramped chrome ---- */
+@media (pointer: coarse), (max-width: 760px) {
+  .sketch-host .excalidraw .ToolIcon__icon { width: 2.6rem; height: 2.6rem; }
+  .sketch-host .excalidraw .dropdown-menu-item { min-height: 48px; font-size: 15px; }
+  .sketch-host .excalidraw .mobile-misc-tools-container { gap: 8px; }
+  .sketch-host .excalidraw .App-bottom-bar { padding-bottom: env(safe-area-inset-bottom); }
+  .sk-fab { top: 8px; right: 8px; }
+  .sk-btn { padding: 0 14px; }
+}

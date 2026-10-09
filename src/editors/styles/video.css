@@ -368,3 +368,11 @@
   .vt-label { font-size: 10px; padding: 0 4px; }
   .vid-time { min-width: 0; }
 }
+
+/* Export cancel + safe-area */
+.vid-cancel { min-height: 40px; padding: 6px 14px; }
+.vid-cancel[hidden] { display: none; }
+@media (pointer: coarse) {
+  .vid-btn, .vid-tab { min-height: 44px; }
+  .vid-editor { padding-bottom: env(safe-area-inset-bottom, 0); }
+}

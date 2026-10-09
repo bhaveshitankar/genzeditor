@@ -105,6 +105,8 @@ describe('AppShell', () => {
   });
 
   it('never rewrites a binary file it opens (I4)', async () => {
+    // jsdom has no object URLs; the binary preview needs them.
+    if (!URL.createObjectURL) { URL.createObjectURL = () => 'blob:test'; URL.revokeObjectURL = () => {}; }
     const store = new FileStore(new MemoryAdapter());
     const bytes = new Uint8Array([0xff, 0xfe, 0x00, 0x01, 0x80]);
     const rec = await store.save('data.bin', new Blob([bytes]), 'binary');

@@ -7,6 +7,6 @@ describe('app bootstrap', () => {
     const root = document.createElement('div');
     const store = new FileStore(new MemoryAdapter());
     new AppShell(root, store);
-    expect(root.querySelector('header')?.textContent).toContain('AnyEdits');
+    expect(root.querySelector('header')?.textContent).toContain('GenZ');
   });
 });
