@@ -1,10 +1,12 @@
 import './styles/app.css';
+import { initControls } from './styles/controls';
 import { bootstrap } from './bootstrap';
 import { initTelemetry } from './telemetry';
 import { FileStore, OpfsAdapter } from './store/opfs';
 
 export async function mount(root: HTMLElement): Promise<void> {
   initTelemetry('web');
+  initControls();
   if (await maybeRedirectToMobile()) return;
   await bootstrap(root);
   maybeShowMobileBanner(root);

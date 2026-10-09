@@ -1,0 +1,93 @@
+/* Global form-control skin: sliders, colour pickers, selects, checkboxes and
+   radios. Selectors are wrapped in :where() so they have zero specificity —
+   any editor-specific rule still wins. Excalidraw keeps its own controls. */
+
+/* ---- Range slider: rounded track with a brand-filled portion ---- */
+:where(input[type="range"]:not(.excalidraw *)) {
+  -webkit-appearance: none; appearance: none;
+  --pct: 50%;
+  --track: var(--border-strong, #16121f);
+  height: 24px; min-width: 0; margin: 0; padding: 0;
+  background: transparent; cursor: pointer; touch-action: pan-y;
+  accent-color: var(--brand-500);
+}
+:where(input[type="range"]:not(.excalidraw *))::-webkit-slider-runnable-track {
+  height: 8px; border-radius: 999px;
+  background: linear-gradient(var(--brand-500), var(--brand-500)) 0 / var(--pct) 100% no-repeat, var(--surface-2, #eee);
+  border: 1.5px solid var(--track);
+  box-sizing: border-box;
+}
+:where(input[type="range"]:not(.excalidraw *))::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 22px; height: 22px; margin-top: -8.5px; border-radius: 50%;
+  background: #fff; border: 2px solid var(--ink, #16121f);
+  box-shadow: 2px 2px 0 var(--ink, #16121f);
+  transition: transform 0.12s var(--ease);
+}
+:where(input[type="range"]:not(.excalidraw *)):active::-webkit-slider-thumb { transform: scale(1.12); background: var(--brand-500); }
+:where(input[type="range"]:not(.excalidraw *))::-moz-range-track {
+  height: 8px; border-radius: 999px; box-sizing: border-box;
+  background: var(--surface-2, #eee); border: 1.5px solid var(--track);
+}
+:where(input[type="range"]:not(.excalidraw *))::-moz-range-progress { height: 8px; border-radius: 999px; background: var(--brand-500); }
+:where(input[type="range"]:not(.excalidraw *))::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 50%; background: #fff;
+  border: 2px solid var(--ink, #16121f); box-shadow: 2px 2px 0 var(--ink, #16121f);
+}
+:where(input[type="range"]:not(.excalidraw *)):focus-visible { outline: none; }
+:where(input[type="range"]:not(.excalidraw *)):focus-visible::-webkit-slider-thumb { outline: 2px solid var(--brand-500); outline-offset: 2px; }
+:where(input[type="range"]:not(.excalidraw *)):disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ---- Colour picker: round sticker swatch ---- */
+:where(input[type="color"]:not(.excalidraw *)) {
+  -webkit-appearance: none; appearance: none;
+  width: 34px; height: 34px; padding: 0; background: none; cursor: pointer;
+  border: 2px solid var(--ink, #16121f); border-radius: 50%;
+  box-shadow: 2px 2px 0 var(--ink, #16121f); overflow: hidden;
+  transition: transform 0.12s var(--ease);
+}
+:where(input[type="color"]:not(.excalidraw *)):hover { transform: translateY(-1px) rotate(-4deg); }
+:where(input[type="color"]:not(.excalidraw *))::-webkit-color-swatch-wrapper { padding: 0; }
+:where(input[type="color"]:not(.excalidraw *))::-webkit-color-swatch { border: none; border-radius: 50%; }
+:where(input[type="color"]:not(.excalidraw *))::-moz-color-swatch { border: none; border-radius: 50%; }
+:where(input[type="color"]:not(.excalidraw *)):focus-visible { outline: 2px solid var(--brand-500); outline-offset: 2px; }
+
+/* ---- Select: themed with a custom chevron ---- */
+:where(select:not(.excalidraw *)) {
+  -webkit-appearance: none; appearance: none;
+  padding: 0.5rem 2rem 0.5rem 0.75rem;
+  border: 1.5px solid var(--border-strong, #16121f); border-radius: var(--r-md, 14px);
+  background-color: var(--surface, #fff); color: var(--text, inherit); font: inherit; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff4d8d' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 0.6rem center; background-size: 14px;
+}
+:where(select:not(.excalidraw *)):hover { background-color: var(--surface-hover, #f4f4f4); }
+:where(select:not(.excalidraw *)):focus-visible { outline: 2px solid var(--brand-500); outline-offset: 1px; }
+:where(select:not(.excalidraw *)):disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---- Checkbox / radio ---- */
+:where(input[type="checkbox"]:not(.excalidraw *), input[type="radio"]:not(.excalidraw *)) {
+  -webkit-appearance: none; appearance: none; flex: 0 0 auto;
+  width: 20px; height: 20px; margin: 0; cursor: pointer; display: inline-grid; place-content: center;
+  border: 2px solid var(--ink, #16121f); background: var(--surface, #fff);
+  transition: background 0.12s, transform 0.12s var(--ease);
+}
+:where(input[type="checkbox"]:not(.excalidraw *)) { border-radius: 6px; }
+:where(input[type="radio"]:not(.excalidraw *)) { border-radius: 50%; }
+:where(input[type="checkbox"]:not(.excalidraw *), input[type="radio"]:not(.excalidraw *)):checked { background: var(--brand-500); }
+:where(input[type="checkbox"]:not(.excalidraw *))::after {
+  content: ''; width: 10px; height: 6px; margin-top: -2px;
+  border-left: 3px solid #fff; border-bottom: 3px solid #fff; transform: rotate(-45deg) scale(0); transition: transform 0.12s var(--ease);
+}
+:where(input[type="checkbox"]:not(.excalidraw *)):checked::after { transform: rotate(-45deg) scale(1); }
+:where(input[type="radio"]:not(.excalidraw *))::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #fff; transform: scale(0); transition: transform 0.12s var(--ease); }
+:where(input[type="radio"]:not(.excalidraw *)):checked::after { transform: scale(1); }
+:where(input[type="checkbox"]:not(.excalidraw *), input[type="radio"]:not(.excalidraw *)):focus-visible { outline: 2px solid var(--brand-500); outline-offset: 2px; }
+:where(input[type="checkbox"]:not(.excalidraw *), input[type="radio"]:not(.excalidraw *)):disabled { opacity: 0.45; cursor: not-allowed; }
+
+@media (pointer: coarse) {
+  :where(input[type="range"]:not(.excalidraw *)) { height: 36px; }
+  :where(input[type="range"]:not(.excalidraw *))::-webkit-slider-thumb { width: 28px; height: 28px; margin-top: -11.5px; }
+  :where(input[type="color"]:not(.excalidraw *)) { width: 40px; height: 40px; }
+  :where(input[type="checkbox"]:not(.excalidraw *), input[type="radio"]:not(.excalidraw *)) { width: 24px; height: 24px; }
+}
