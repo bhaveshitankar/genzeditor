@@ -55,6 +55,7 @@ export class GameEditor {
   private selbar!: HTMLElement;
   private toolBtns = new Map<Tool, HTMLElement>();
   private ro: ResizeObserver | null = null;
+  private zoomLbl!: HTMLElement;
 
   private tool: Tool = 'select';
   private brush: Brush = { k: 'tile', tile: 'ground' };
@@ -213,10 +214,13 @@ export class GameEditor {
 
     const zoom = el('div', 'ge-zoom');
     const zi = ibtn('plus', 'Zoom in'), zo = ibtn('minus', 'Zoom out'), zf = ibtn('maximize', 'Fit to screen');
+    this.zoomLbl = el('button', 'ge-zoom-pct', '100%');
+    this.zoomLbl.title = 'Reset to 100%';
+    this.zoomLbl.addEventListener('click', () => this.zoomBy(1 / this.view.z));
     zi.addEventListener('click', () => this.zoomBy(1.25));
     zo.addEventListener('click', () => this.zoomBy(0.8));
     zf.addEventListener('click', () => { this.viewTouched = false; this.fit(); });
-    zoom.append(zi, zo, zf);
+    zoom.append(zo, this.zoomLbl, zi, zf);
     this.stage.append(zoom);
 
     this.selbar = el('div', 'ge-selbar');
@@ -737,13 +741,21 @@ export class GameEditor {
     this.view = { z, ox: (W - w * z) / 2, oy: (H - h * z) / 2 };
     this.requestDraw();
   }
+  /** Keep the scene reachable: at least a margin of it stays on screen. */
+  private clampView() {
+    const W = this.stage.clientWidth, H = this.stage.clientHeight;
+    if (!W || !H) return;
+    const { w, h } = this.worldSize(), m = 96, v = this.view;
+    v.ox = Math.min(W - m, Math.max(m - w * v.z, v.ox));
+    v.oy = Math.min(H - m, Math.max(m - h * v.z, v.oy));
+  }
   private zoomBy(f: number, cx?: number, cy?: number) {
     const W = this.stage.clientWidth, H = this.stage.clientHeight;
     const px = cx ?? W / 2, py = cy ?? H / 2;
     const nz = Math.max(0.1, Math.min(6, this.view.z * f));
     const k = nz / this.view.z;
     this.view = { z: nz, ox: px - (px - this.view.ox) * k, oy: py - (py - this.view.oy) * k };
-    this.viewTouched = true; this.requestDraw();
+    this.viewTouched = true; this.clampView(); this.requestDraw();
   }
 
   // screen (stage-relative css px) <-> tile space
@@ -768,6 +780,7 @@ export class GameEditor {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
     const { z, ox, oy } = this.view;
+    if (this.zoomLbl) this.zoomLbl.textContent = `${Math.round(z * 100)}%`;
     const { w, h, ts } = this.worldSize();
     const d = this.doc;
     const again = () => this.requestDraw();
@@ -891,14 +904,17 @@ export class GameEditor {
   private bindStage() {
     const st = this.stage;
     st.addEventListener('pointerdown', (ev) => this.onDown(ev));
+    st.addEventListener('contextmenu', (ev) => ev.preventDefault());
     st.addEventListener('pointermove', (ev) => this.onMove(ev));
     st.addEventListener('pointerup', (ev) => this.onUp(ev));
     st.addEventListener('pointercancel', (ev) => this.onUp(ev));
     st.addEventListener('wheel', (ev) => {
       ev.preventDefault();
       const p = this.local(ev);
-      if (ev.ctrlKey || ev.metaKey || Math.abs(ev.deltaY) > Math.abs(ev.deltaX)) this.zoomBy(Math.exp(-ev.deltaY * (ev.ctrlKey ? 0.01 : 0.0015)), p.x, p.y);
-      else { this.view.ox -= ev.deltaX; this.viewTouched = true; this.requestDraw(); }
+      const mouseWheel = ev.deltaMode !== 0 || (Number.isInteger(ev.deltaY) && Math.abs(ev.deltaY) >= 50 && ev.deltaX === 0);
+      if (ev.ctrlKey || ev.metaKey) this.zoomBy(Math.exp(-ev.deltaY * 0.01), p.x, p.y);
+      else if (mouseWheel) this.zoomBy(Math.exp(-ev.deltaY * 0.0015), p.x, p.y);
+      else { this.view.ox -= ev.deltaX; this.view.oy -= ev.deltaY; this.viewTouched = true; this.clampView(); this.requestDraw(); }
     }, { passive: false });
   }
 
@@ -915,7 +931,7 @@ export class GameEditor {
     if (this.pointers.size === 2) { this.startPinch(); return; }
     if (this.pointers.size > 2) return;
     const racer = this.doc.template === 'racer';
-    if (this.tool === 'hand' || racer) { this.startPan(p); return; }
+    if (this.tool === 'hand' || racer || ev.button === 1 || ev.button === 2) { this.startPan(p); return; }
 
     const t = this.toTile(p.x, p.y);
     if (this.tool === 'select') {
@@ -981,7 +997,7 @@ export class GameEditor {
     const t = this.toTile(p.x, p.y);
     if (dr.k === 'pan') {
       this.view.ox = dr.ox + (p.x - dr.sx); this.view.oy = dr.oy + (p.y - dr.sy);
-      this.viewTouched = true; this.requestDraw();
+      this.viewTouched = true; this.clampView(); this.requestDraw();
     } else if (dr.k === 'move') {
       const nx = snap(dr.orig.x + (t.x - dr.px), 0.5), ny = snap(dr.orig.y + (t.y - dr.py), 0.5);
       if (nx !== dr.cur.x || ny !== dr.cur.y) { dr.cur.x = nx; dr.cur.y = ny; dr.moved = true; this.requestDraw(); }
