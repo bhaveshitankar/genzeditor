@@ -388,10 +388,10 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 }
 
 .auth-menu {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 0.5rem;
+  position: fixed;
+  top: 0;
+  left: 0;
+  max-width: calc(100vw - 16px);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -401,7 +401,7 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   visibility: hidden;
   transform: translateY(-8px);
   transition: all 0.15s var(--ease);
-  z-index: 100;
+  z-index: 2100;
 }
 
 .auth-menu.active {

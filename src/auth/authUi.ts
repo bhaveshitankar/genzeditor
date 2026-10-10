@@ -40,34 +40,56 @@ export function renderAuthBar(
 
   const menu = document.createElement('div');
   menu.className = 'auth-menu';
+  menu.setAttribute('role', 'menu');
   menu.innerHTML = `
     <div class="auth-menu-header">
-      <div class="auth-avatar-large">${initials || '👤'}</div>
+      <div class="auth-avatar-large"></div>
       <div class="auth-menu-info">
-        <div class="auth-menu-email">${email}</div>
+        <div class="auth-menu-email"></div>
       </div>
     </div>
-    <button type="button" class="auth-logout" data-role="logout">Sign out</button>
+    <button type="button" class="auth-logout" data-role="logout" role="menuitem">Sign out</button>
   `;
+  (menu.querySelector('.auth-avatar-large') as HTMLElement).textContent = initials || '👤';
+  (menu.querySelector('.auth-menu-email') as HTMLElement).textContent = email;
+
+  // The menu lives on <body> (not inside the clipping top bar) and is placed
+  // under the avatar, clamped to the viewport, so it can never run off-screen.
+  const place = (): void => {
+    const r = avatar.getBoundingClientRect();
+    const w = menu.offsetWidth;
+    const left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${Math.min(r.bottom + 8, window.innerHeight - menu.offsetHeight - 8)}px`;
+  };
+  const close = (): void => {
+    menu.classList.remove('active');
+    document.removeEventListener('pointerdown', onOutside, true);
+    window.removeEventListener('resize', close);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const onOutside = (e: Event): void => {
+    const t = e.target as Node;
+    if (!menu.contains(t) && !avatar.contains(t)) close();
+  };
+  const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') close(); };
+  const open = (): void => {
+    if (!menu.isConnected) document.body.appendChild(menu);
+    place();
+    menu.classList.add('active');
+    document.addEventListener('pointerdown', onOutside, true);
+    window.addEventListener('resize', close);
+    document.addEventListener('keydown', onKey, true);
+  };
 
   const logout = menu.querySelector('[data-role="logout"]') as HTMLButtonElement;
-  logout.addEventListener('click', () => {
-    menu.classList.remove('active');
-    handlers.onLogout();
-  });
+  logout.addEventListener('click', () => { close(); menu.remove(); handlers.onLogout(); });
+  avatar.setAttribute('aria-haspopup', 'menu');
+  avatar.addEventListener('click', () => { if (menu.classList.contains('active')) close(); else open(); });
 
-  avatar.addEventListener('click', () => {
-    menu.classList.toggle('active');
-  });
-
-  // Close menu when clicking outside
-  document.addEventListener('click', (e) => {
-    if (!container.contains(e.target as Node)) {
-      menu.classList.remove('active');
-    }
-  }, { capture: true });
-
-  container.append(avatar, menu);
+  // Drop any menu left on <body> by a previous render.
+  document.querySelectorAll('body > .auth-menu').forEach((n) => n.remove());
+  container.append(avatar);
   host.append(container);
 }
 

@@ -17,8 +17,11 @@ describe('authUi', () => {
     const host = document.createElement('div');
     const onLogout = vi.fn();
     renderAuthBar(host, { authenticated: true, email: 'a@b.co', csrfToken: 'c' }, { onLogout, onSignIn: () => {} });
-    expect(host.textContent).toContain('a@b.co');
-    (host.querySelector('button[data-role="logout"]') as HTMLButtonElement).click();
+    document.body.appendChild(host);
+    (host.querySelector('[data-role="profile-avatar"]') as HTMLButtonElement).click();
+    // The menu is portalled to <body> so the top bar can't clip it.
+    expect(document.querySelector('.auth-menu')?.textContent).toContain('a@b.co');
+    (document.querySelector('button[data-role="logout"]') as HTMLButtonElement).click();
     expect(onLogout).toHaveBeenCalled();
   });
 
