@@ -2934,3 +2934,6 @@ button, input, select, a { transition-property: background-color, border-color, 
     -webkit-app-region: no-drag; app-region: no-drag;
   }
 }
+
+.docx-toolbar button svg { vertical-align: -3px; }
+.docx-toolbar button:has(svg) { display: inline-flex; align-items: center; gap: 0.3rem; }

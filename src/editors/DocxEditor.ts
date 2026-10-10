@@ -1,6 +1,7 @@
 import type { DocEditor } from './registry';
 import { copyText, pasteText, showClipboardFeedback } from '../utils/clipboard';
 import { askText } from '../ui/dialog';
+import { icon } from '../ui/icons';
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -378,10 +379,10 @@ export class DocxEditor implements DocEditor {
     this.host.innerHTML = `
       <div class="docx-editor">
         <div class="docx-toolbar" data-role="fmt">
-          <button type="button" data-cmd="undo" title="Undo (Ctrl+Z)">↶</button>
-          <button type="button" data-cmd="redo" title="Redo (Ctrl+Y)">↷</button>
-          <button type="button" data-clipboard="copy" title="Copy (Cmd+C)" class="docx-mobile-only">📋 Copy</button>
-          <button type="button" data-clipboard="paste" title="Paste (Cmd+V)" class="docx-mobile-only">📌 Paste</button>
+          <button type="button" data-cmd="undo" title="Undo (Ctrl+Z)" aria-label="Undo">${icon("undo",18)}</button>
+          <button type="button" data-cmd="redo" title="Redo (Ctrl+Y)" aria-label="Redo">${icon("redo",18)}</button>
+          <button type="button" data-clipboard="copy" title="Copy (Cmd+C)" class="docx-mobile-only">${icon("copy",16)} Copy</button>
+          <button type="button" data-clipboard="paste" title="Paste (Cmd+V)" class="docx-mobile-only">${icon("clipboard",16)} Paste</button>
           <span class="docx-sep"></span>
           <button type="button" data-cmd="bold" title="Bold"><b>B</b></button>
           <button type="button" data-cmd="italic" title="Italic"><i>I</i></button>
@@ -401,7 +402,7 @@ export class DocxEditor implements DocEditor {
           </select>
           <span class="docx-sep"></span>
           <div class="docx-dropdown" data-role="format-menu">
-            <button type="button" class="docx-menu-btn" title="Format">⚡ Format ▼</button>
+            <button type="button" class="docx-menu-btn" title="Format">Format ${icon("chevronDown",14)}</button>
             <div class="docx-menu" data-menu="format">
               <button type="button" data-block="h1">Heading 1</button>
               <button type="button" data-block="h2">Heading 2</button>
@@ -410,15 +411,15 @@ export class DocxEditor implements DocEditor {
             </div>
           </div>
           <div class="docx-dropdown" data-role="align-menu">
-            <button type="button" class="docx-menu-btn" title="Alignment">≡ Align ▼</button>
+            <button type="button" class="docx-menu-btn" title="Alignment">Align ${icon("chevronDown",14)}</button>
             <div class="docx-menu" data-menu="align">
-              <button type="button" data-cmd="justifyLeft" title="Align left">⯇ Left</button>
-              <button type="button" data-cmd="justifyCenter" title="Align center">≡ Center</button>
-              <button type="button" data-cmd="justifyRight" title="Align right">⯈ Right</button>
+              <button type="button" data-cmd="justifyLeft" title="Align left">Left</button>
+              <button type="button" data-cmd="justifyCenter" title="Align center">Center</button>
+              <button type="button" data-cmd="justifyRight" title="Align right">Right</button>
             </div>
           </div>
           <div class="docx-dropdown" data-role="list-menu">
-            <button type="button" class="docx-menu-btn" title="Lists">≣ List ▼</button>
+            <button type="button" class="docx-menu-btn" title="Lists">List ${icon("chevronDown",14)}</button>
             <div class="docx-menu" data-menu="list">
               <button type="button" data-cmd="insertUnorderedList">• Bullet list</button>
               <button type="button" data-cmd="insertOrderedList">1. Numbered list</button>
@@ -426,21 +427,21 @@ export class DocxEditor implements DocEditor {
           </div>
           <span class="docx-sep"></span>
           <div class="docx-dropdown" data-role="insert-menu">
-            <button type="button" class="docx-menu-btn" title="Insert">+ Insert ▼</button>
+            <button type="button" class="docx-menu-btn" title="Insert">${icon("plus",14)} Insert ${icon("chevronDown",14)}</button>
             <div class="docx-menu" data-menu="insert">
-              <button type="button" data-ins="link">🔗 Link</button>
-              <button type="button" data-ins="image">🖼 Image</button>
-              <button type="button" data-ins="table">▦ Table</button>
-              <button type="button" data-ins="hr">— Divider</button>
-              <button type="button" data-ins="pagesetup">⚙ Page setup</button>
-              <button type="button" data-ins="sign">✍ Signature</button>
+              <button type="button" data-ins="link">${icon("link",16)} Link</button>
+              <button type="button" data-ins="image">${icon("image",16)} Image</button>
+              <button type="button" data-ins="table">${icon("table",16)} Table</button>
+              <button type="button" data-ins="hr">Divider</button>
+              <button type="button" data-ins="pagesetup">${icon("sliders",16)} Page setup</button>
+              <button type="button" data-ins="sign">Signature</button>
             </div>
           </div>
-          <button type="button" data-cmd="unlink" title="Remove link">🔗‌ Unlink</button>
-          <button type="button" data-cmd="removeFormat" title="Clear formatting">⌫ Clear</button>
-          <button type="button" data-ins="find" title="Find & Replace">🔍 Find</button>
+          <button type="button" data-cmd="unlink" title="Remove link">${icon("link",16)} Unlink</button>
+          <button type="button" data-cmd="removeFormat" title="Clear formatting">Clear</button>
+          <button type="button" data-ins="find" title="Find & Replace">${icon("search",16)} Find</button>
           <span class="docx-sep"></span>
-          <button type="button" data-role="save-pdf" title="Save as PDF">⤓ PDF</button>
+          <button type="button" data-role="save-pdf" title="Save as PDF">${icon("download",16)} PDF</button>
         </div>
         <div class="docx-page" contenteditable="true" data-role="editable" spellcheck="true"></div>
         <div class="docx-zoom" data-role="zoom">
