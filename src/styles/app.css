@@ -2937,3 +2937,27 @@ button, input, select, a { transition-property: background-color, border-color, 
 
 .docx-toolbar button svg { vertical-align: -3px; }
 .docx-toolbar button:has(svg) { display: inline-flex; align-items: center; gap: 0.3rem; }
+
+/* New-file dialog: never taller than the screen — the type grid scrolls, the
+   name field and Create/Cancel stay pinned and visible (phones, short windows). */
+.new-file-modal {
+  display: flex; flex-direction: column;
+  max-height: calc(100dvh - 2rem); max-height: calc(100svh - 2rem);
+  overflow: hidden;
+}
+.new-file-modal h3 { flex: 0 0 auto; }
+.new-file-types {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch; padding: 2px;
+}
+.new-file-name-label, .new-file-modal .modal-actions { flex: 0 0 auto; }
+.new-file-modal .modal-actions { margin-top: 0; }
+@media (max-width: 720px) {
+  .modal-overlay:has(.new-file-modal) { align-items: flex-end; padding: 0; }
+  .new-file-modal {
+    max-width: none; width: 100%; border-radius: var(--r-lg) var(--r-lg) 0 0;
+    max-height: 88dvh; padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom, 0px));
+  }
+  .new-file-types { grid-template-columns: repeat(3, 1fr); gap: 0.4rem; margin: 0.4rem 0 0.8rem; }
+  .new-file-type { padding: 0.55rem 0.2rem; }
+}

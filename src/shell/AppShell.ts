@@ -795,8 +795,11 @@ export class AppShell {
     });
 
     this.root.appendChild(overlay);
-    nameInput.focus();
-    nameInput.setSelectionRange(0, nameInput.value.lastIndexOf('.'));
+    // On touch, don't auto-open the keyboard: it would cover the type grid.
+    if (!matchMedia('(pointer: coarse)').matches) {
+      nameInput.focus();
+      nameInput.setSelectionRange(0, nameInput.value.lastIndexOf('.'));
+    }
   }
 
   private async createNewFile(name: string, kind: FileKind, content: string, ext: string): Promise<void> {
