@@ -544,6 +544,9 @@ export class ImageEditor {
 
   // ---- Pointer handling ----
 
+  // One-finger pan state (touch + Select tool on empty space).
+  private touchPan: { x: number; y: number; moved: boolean } | null = null;
+
   private onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0 || this.pinching) return;
     const p = this.toImage(e);
@@ -612,6 +615,11 @@ export class ImageEditor {
       this.selectedId = hit.id;
       this.commit('Move');
       this.drag = { mode: 'move', start: p, orig: cloneLayer(hit) };
+    } else if (e.pointerType === 'touch') {
+      // Empty space + finger = pan the canvas (a marquee is a mouse-only gesture).
+      if (!e.shiftKey) { this.multi.clear(); this.selectedId = null; }
+      this.touchPan = { x: e.clientX, y: e.clientY, moved: false };
+      this.drag = null;
     } else {
       if (!e.shiftKey) { this.multi.clear(); this.selectedId = null; }
       this.drag = { mode: 'marquee', start: p };
@@ -649,6 +657,16 @@ export class ImageEditor {
   }
 
   private onPointerMove = (e: PointerEvent): void => {
+    if (this.touchPan) {
+      const stage = this.canvas.closest('.img-stage') as HTMLElement | null;
+      const dx = e.clientX - this.touchPan.x, dy = e.clientY - this.touchPan.y;
+      if (!this.touchPan.moved && Math.hypot(dx, dy) < 4) return;
+      this.touchPan.moved = true;
+      if (stage) { stage.scrollLeft -= dx; stage.scrollTop -= dy; }
+      this.touchPan.x = e.clientX; this.touchPan.y = e.clientY;
+      this.positionCropBox(); this.positionSelBox();
+      return;
+    }
     if (!this.drag) return;
     const p = this.toImage(e);
     if (this.drag.mode === 'lasso') { this.lassoPts.push(p); this.render(); return; }
@@ -678,6 +696,7 @@ export class ImageEditor {
   };
 
   private onPointerUp = (e: PointerEvent): void => {
+    if (this.touchPan) { this.touchPan = null; this.render(); this.rebuildPanel(); return; }
     if (this.drag?.mode === 'lasso') {
       this.drag = null;
       this.finishLasso(e.shiftKey);
@@ -981,6 +1000,10 @@ export class ImageEditor {
       zoomChip.textContent = `${this.zoom}%`;
       this.wrap.style.transform = `scale(${this.zoom / 100})`;
       this.wrap.style.transformOrigin = 'top left';
+      // transform doesn't change layout size; extend/shrink it so the stage scrolls exactly to the zoomed edges.
+      const k = this.zoom / 100 - 1;
+      this.wrap.style.marginRight = `${k * this.wrap.offsetWidth}px`;
+      this.wrap.style.marginBottom = `${k * this.wrap.offsetHeight}px`;
     };
     zoomBar.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest('button');
@@ -1007,6 +1030,7 @@ export class ImageEditor {
         // Abort any one-finger stroke/shape/move that the first finger started.
         if (this.drag && (this.drag.mode === 'draw' || this.drag.mode === 'shape')) this.undo();
         this.drag = null;
+        this.touchPan = null;
         this.pinching = true;
         pinch = { ...pinchState(), zoom: this.zoom };
         e.stopPropagation();
@@ -2418,6 +2442,7 @@ export class ImageEditor {
       paste: (data) => this.cmdPaste(data),
       duplicate: () => this.cmdDuplicate(),
       selectAll: () => this.cmdSelectAll(),
+      suppressLongPress: () => this.tool !== 'select' || this.pinching || !!this.touchPan?.moved,
     };
   }
 

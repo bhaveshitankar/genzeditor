@@ -392,3 +392,14 @@
   .img-presets { grid-template-columns: repeat(5, 1fr); }
   .img-preset canvas { height: 48px; }
 }
+
+/* ---- Touch: own the gestures (pinch zooms the canvas, not the page) ---- */
+.img-stage {
+  touch-action: none;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  align-items: flex-start; justify-content: flex-start;
+}
+.img-canvas-wrap { margin: auto; flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.img-stage * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.img-panel { touch-action: pan-y; }

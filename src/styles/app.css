@@ -2784,17 +2784,22 @@ button, input, select, a { transition-property: background-color, border-color, 
 /* Long-press edit menu (touch) — see src/editors/editCommands.ts */
 .edit-menu {
   position: fixed; z-index: 2000;
-  display: flex; flex-wrap: wrap; max-width: calc(100vw - 16px);
-  background: var(--ink, #1f1f2b); border-radius: 12px; padding: 4px;
+  display: grid; grid-template-columns: repeat(4, minmax(64px, 1fr)); gap: 4px; width: min(320px, calc(100vw - 16px));
+  background: var(--surface); color: var(--text);
+  border: 1.5px solid var(--border-strong); border-radius: var(--r-md, 16px); padding: 6px;
   box-shadow: var(--shadow-pop-lg, 0 10px 30px rgba(0,0,0,.3));
+  animation: modal-in 0.16s var(--ease);
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
 }
 .edit-menu button {
-  border: none; background: none; color: #fff; font: inherit; font-size: 14px;
-  padding: 10px 12px; min-height: 40px; border-radius: 8px; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  border: none; background: none; color: inherit; font: inherit; font-size: 11px; font-weight: 600;
+  padding: 8px 4px; min-height: 52px; border-radius: var(--r-sm, 10px); cursor: pointer;
 }
-.edit-menu button:active { background: rgba(255,255,255,.15); }
+.edit-menu button svg { color: var(--brand-500); }
+.edit-menu button:active { background: var(--surface-hover); transform: scale(0.96); }
 .edit-menu button:disabled { opacity: .35; }
-.edit-menu button.danger { color: #ff8a8a; }
+.edit-menu button.danger, .edit-menu button.danger svg { color: var(--danger); }
 .editor-area canvas, .editor-area img, .editor-area svg { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 
 /* Scroll indicator under a top-bar tool strip that overflows sideways (AppShell.watchStripScroll). */

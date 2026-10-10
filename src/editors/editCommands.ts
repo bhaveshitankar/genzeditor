@@ -1,3 +1,4 @@
+import { icon } from '../ui/icons';
 // Shared edit commands (undo / redo / cut / copy / paste / delete / duplicate /
 // select all) for every editor. Editors expose an EditCommands object; the shell
 // owns the keyboard shortcuts (web) and the long-press menu (mobile), so each
@@ -19,6 +20,8 @@ export interface EditCommands {
   canRedo?(): boolean;
   hasSelection?(): boolean;
   canPaste?(): boolean;
+  // Return true while a tool owns touch input (brush, crop…): a held finger there is not a menu request.
+  suppressLongPress?(): boolean;
 }
 
 // Modal tools (thumbnail maker, …) temporarily take over the commands while open.
@@ -85,10 +88,10 @@ export function runAction(cmds: EditCommands, a: Action, data?: DataTransfer | n
 
 // ---- Mobile long-press menu ---------------------------------------------------
 
-const MENU: { a: Action; label: string }[] = [
-  { a: 'undo', label: 'Undo' }, { a: 'redo', label: 'Redo' },
-  { a: 'cut', label: 'Cut' }, { a: 'copy', label: 'Copy' }, { a: 'paste', label: 'Paste' },
-  { a: 'duplicate', label: 'Duplicate' }, { a: 'delete', label: 'Delete' }, { a: 'selectAll', label: 'Select all' },
+const MENU: { a: Action; label: string; icon: string }[] = [
+  { a: 'undo', label: 'Undo', icon: 'undo' }, { a: 'redo', label: 'Redo', icon: 'redo' },
+  { a: 'cut', label: 'Cut', icon: 'scissors' }, { a: 'copy', label: 'Copy', icon: 'copy' }, { a: 'paste', label: 'Paste', icon: 'clipboard' },
+  { a: 'duplicate', label: 'Duplicate', icon: 'plus' }, { a: 'delete', label: 'Delete', icon: 'trash' }, { a: 'selectAll', label: 'Select all', icon: 'boxSelect' },
 ];
 
 let openMenu: HTMLElement | null = null;
@@ -112,7 +115,7 @@ export function showEditMenu(cmds: EditCommands, x: number, y: number): void {
   for (const m of items) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = m.label;
+    b.innerHTML = `${icon(m.icon, 20)}<span>${m.label}</span>`;
     b.setAttribute('role', 'menuitem');
     b.disabled = !enabled(m.a);
     if (m.a === 'delete') b.classList.add('danger');

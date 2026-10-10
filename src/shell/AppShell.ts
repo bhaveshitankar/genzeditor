@@ -1295,7 +1295,7 @@ export class AppShell {
     bindLongPress((e) => {
       if (!inScope(e.target) || isNativeTextTarget(e.target)) return;
       const cmds = this.activeCommands(e.target);
-      if (cmds) showEditMenu(cmds, e.clientX, e.clientY);
+      if (cmds && !cmds.suppressLongPress?.()) showEditMenu(cmds, e.clientX, e.clientY);
     });
     // Suppress the OS "save image / copy" callout where our menu takes over.
     document.addEventListener('contextmenu', (e) => {
