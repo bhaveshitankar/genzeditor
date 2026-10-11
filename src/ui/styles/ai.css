@@ -129,3 +129,7 @@
 .ai-gen-scenes select { min-width: 72px; }
 .ai-script { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 .ai-script .ai-ghost { align-self: flex-start; min-height: 36px; }
+
+/* Song mode */
+.ai-gen-song { display: flex; flex-direction: column; gap: 8px; }
+.ai-lyrics { width: 100%; box-sizing: border-box; }

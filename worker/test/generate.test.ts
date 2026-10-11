@@ -16,6 +16,7 @@ function fakeEnv(): Env {
       if (model.includes('img2img')) return new Response(new Uint8Array([1, 2, 3])).body;
       if (model.includes('llama-3.3')) {
         const sys = JSON.stringify(input);
+        if (sys.includes('songwriter')) return { response: '{"title":"Sun","lyrics":"[Verse 1]\\nla la","mood":"weird","tempo":999,"key":"Z","minor":false}' };
         if (sys.includes('storyboards')) return { response: '{"title":"T","scenes":[{"prompt":"a","narration":"n","durationSec":3,"motion":"zoom-in"}]}' };
         return { response: '```json\n{"widthM":5,"depthM":4,"furniture":[{"catalogId":"sofa","x":99,"y":1,"rotation":90},{"catalogId":"bogus","x":1,"y":1}]}\n```' };
       }
@@ -74,6 +75,9 @@ describe('generate', () => {
     expect((await runGenerate(e, 'audio', { text: 'hi' })).audio).toContain('BBBB');
     expect(((await runGenerate(e, 'storyboard', { prompt: 'ad' })).scenes as unknown[]).length).toBe(1);
     await expect(runGenerate(e, 'image', {})).rejects.toThrow('prompt_required');
+    const song = await runGenerate(e, 'song', { prompt: 'summer' });
+    expect([song.mood, song.key, song.tempo]).toEqual(['chill', 'C', 160]); // out-of-range values are clamped
+    expect(String(song.lyrics)).toContain('Verse 1');
   });
 });
 

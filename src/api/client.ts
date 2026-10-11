@@ -147,7 +147,7 @@ export async function aiEdit(input: AiEditInput, byok?: ByoKey | null): Promise<
 
 // ---- AI generate (image / audio / interior / storyboard) -----------------
 
-export type GenKind = 'image' | 'audio' | 'describe' | 'interior' | 'storyboard';
+export type GenKind = 'image' | 'audio' | 'describe' | 'interior' | 'storyboard' | 'song';
 
 export interface GenInput {
   kind: GenKind;
@@ -164,6 +164,7 @@ export interface GenResult {
   image?: string; audio?: string; mime?: string; description?: string;
   style?: string; palette?: string[]; floorplanText?: string; variants?: InteriorVariant[];
   title?: string; scenes?: StoryScene[]; note?: string;
+  lyrics?: string; mood?: string; tempo?: number; key?: string; minor?: boolean;
 }
 
 // Approximate weighted-unit cost (mirrors worker/src/generate.ts COST) for UI hints.
@@ -175,6 +176,7 @@ export function genCost(i: GenInput): number {
     case 'audio': return 2;
     case 'describe': return 3;
     case 'interior': return 3 + 5 * n;
+    case 'song': return 3;
     case 'storyboard': return 3 + (i.frames ? 4 * Math.min(4, Math.max(1, i.scenes ?? 3)) : 0);
   }
 }

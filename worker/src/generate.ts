@@ -5,12 +5,12 @@
 import type { Env } from './env';
 import { extractJson } from './ai';
 
-export type GenKind = 'image' | 'audio' | 'describe' | 'interior' | 'storyboard';
+export type GenKind = 'image' | 'audio' | 'describe' | 'interior' | 'storyboard' | 'song';
 
 // Weighted daily budget per user. Tuned so the account-wide 10k-neuron/day
 // free allowance stretches across many users (1 unit ~ <= 25 neurons).
 export const DAILY_UNITS = 60;
-export const COST = { image: 4, audio: 2, describe: 3, interiorBase: 3, interiorVariant: 5, storyboard: 3, storyboardFrame: 4 };
+export const COST = { image: 4, audio: 2, describe: 3, interiorBase: 3, interiorVariant: 5, storyboard: 3, storyboardFrame: 4, song: 3 };
 
 export const MAX_IMAGES = 4;
 const MAX_IMAGE_CHARS = 1_500_000; // per data URL (~1.1 MB binary)
@@ -55,6 +55,7 @@ export function costFor(kind: GenKind, p: GenParams): number {
     case 'audio': return COST.audio;
     case 'describe': return COST.describe;
     case 'interior': return COST.interiorBase + COST.interiorVariant * n;
+    case 'song': return COST.song;
     case 'storyboard': return COST.storyboard + (p.frames ? COST.storyboardFrame * clampInt(p.scenes, 1, 4, 3) : 0);
   }
 }
@@ -282,6 +283,29 @@ export async function designInterior(env: Env, p: GenParams): Promise<GenResult>
   return { provider: 'workers-ai', description, style, palette, layout, floorplan: plan, floorplanText: JSON.stringify(plan), variants };
 }
 
+// ---- song ----------------------------------------------------------------
+// No free text-to-music model exists, so the model writes the lyrics and a
+// musical plan (mood / tempo / key / chords); the browser performs the backing
+// track with WebAudio (src/ai/songSynth.ts), which costs no quota.
+
+const MOODS = ['chill', 'upbeat', 'sad', 'epic', 'lofi'];
+const KEYS = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+
+export async function songPlan(env: Env, p: GenParams): Promise<GenResult> {
+  const idea = cleanPrompt(p.prompt);
+  const raw = (await llmJson(env,
+    'You are a songwriter. Reply with ONLY JSON: {"title":string,"lyrics":string,"mood":"chill"|"upbeat"|"sad"|"epic"|"lofi","tempo":number,"key":"C"|"D"|"E"|"F"|"G"|"A"|"B","minor":boolean}. ' +
+    'lyrics: 2 verses and a chorus, short lines, labelled [Verse 1] [Chorus] [Verse 2], under 900 characters. tempo 70-150 BPM.', idea)) as Record<string, unknown>;
+  const lyrics = String(raw?.lyrics ?? '').trim().slice(0, 1200);
+  if (!lyrics) throw new GenError('llm_failed', 502);
+  const mood = MOODS.includes(String(raw.mood)) ? String(raw.mood) : 'chill';
+  const key = KEYS.includes(String(raw.key)) ? String(raw.key) : 'C';
+  return {
+    provider: 'workers-ai', title: String(raw.title ?? 'Untitled song').slice(0, 80), lyrics, mood,
+    tempo: clampInt(raw.tempo, 60, 160, 100), key, minor: typeof raw.minor === 'boolean' ? raw.minor : mood === 'sad',
+  };
+}
+
 // ---- storyboard ----------------------------------------------------------
 
 export async function storyboard(env: Env, p: GenParams): Promise<GenResult> {
@@ -314,10 +338,11 @@ export async function runGenerate(env: Env, kind: GenKind, p: GenParams, byokKey
     case 'describe': { const imgs = validateImages(p.images, true); return { provider: 'workers-ai', description: await describeImages(env, imgs, p.question) }; }
     case 'interior': return designInterior(env, p);
     case 'storyboard': return storyboard(env, p);
+    case 'song': return songPlan(env, p);
     default: throw new GenError('bad_kind');
   }
 }
 
 export function isGenKind(k: unknown): k is GenKind {
-  return k === 'image' || k === 'audio' || k === 'describe' || k === 'interior' || k === 'storyboard';
+  return k === 'image' || k === 'audio' || k === 'describe' || k === 'interior' || k === 'storyboard' || k === 'song';
 }

@@ -18,11 +18,13 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: { images: imagesProp, style: { type: 'string' }, roomType: { type: 'string' }, variants: { type: 'integer', minimum: 1, maximum: 3 } }, required: ['images'] } },
   { name: 'storyboard_video', description: 'Plan a short video as scenes (prompt, narration, duration, motion); optionally render frames. Assemble as a slideshow client-side (no free text-to-video).',
     inputSchema: { type: 'object', properties: { prompt: { type: 'string' }, scenes: { type: 'integer', minimum: 1, maximum: 4 }, frames: { type: 'boolean' } }, required: ['prompt'] } },
+  { name: 'compose_song', description: 'Write song lyrics plus a musical plan (mood, tempo, key, minor/major) from a description. Audio is performed client-side from the plan.',
+    inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] } },
 ] as const;
 
 const TOOL_KIND: Record<string, GenKind> = {
   generate_image: 'image', generate_audio: 'audio', describe_images: 'describe',
-  design_interior: 'interior', storyboard_video: 'storyboard',
+  design_interior: 'interior', storyboard_video: 'storyboard', compose_song: 'song',
 };
 
 export interface McpCaller { owner: string }
