@@ -409,5 +409,11 @@
   "related_applications": [],
   "lang": "en",
   "dir": "ltr",
-  "orientation": "any"
+  "orientation": "any",
+  "scope_extensions": [
+    {
+      "type": "origin",
+      "origin": "https://mobile.genzeditor.com"
+    }
+  ]
 }

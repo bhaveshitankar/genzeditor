@@ -1,0 +1,4 @@
+{
+  "https://genzeditor.com": { "scope": "/" },
+  "https://mobile.genzeditor.com": { "scope": "/" }
+}

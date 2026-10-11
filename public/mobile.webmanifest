@@ -319,6 +319,7 @@
     "preferred_width": 420
   },
   "display_override": [
+    "window-controls-overlay",
     "standalone"
   ],
   "screenshots": [
@@ -368,5 +369,38 @@
   "prefer_related_applications": false,
   "related_applications": [],
   "lang": "en",
-  "dir": "ltr"
+  "dir": "ltr",
+  "widgets": [
+    {
+      "name": "Quick create",
+      "short_name": "Quick create",
+      "description": "Start a new document, sheet, sketch or scan in one tap.",
+      "tag": "gz-quick-create",
+      "ms_ac_template": "/widgets/quick-create.template.json",
+      "data": "/widgets/quick-create.data.json",
+      "type": "application/json",
+      "screenshots": [
+        {
+          "src": "/widgets/quick-create-387.png",
+          "sizes": "387x387",
+          "label": "Quick create: new doc, sheet, scan or sketch"
+        }
+      ],
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ],
+      "auth": false,
+      "update": 86400
+    }
+  ],
+  "scope_extensions": [
+    {
+      "type": "origin",
+      "origin": "https://genzeditor.com"
+    }
+  ]
 }
