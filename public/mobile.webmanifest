@@ -320,6 +320,7 @@
   },
   "display_override": [
     "window-controls-overlay",
+    "tabbed",
     "standalone"
   ],
   "screenshots": [
@@ -402,5 +403,17 @@
       "type": "origin",
       "origin": "https://genzeditor.com"
     }
-  ]
+  ],
+  "tab_strip": {
+    "home_tab": {
+      "scope_patterns": [
+        {
+          "pathname": "/"
+        }
+      ]
+    },
+    "new_tab_button": {
+      "url": "/?new=document"
+    }
+  }
 }
