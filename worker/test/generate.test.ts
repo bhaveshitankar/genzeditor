@@ -17,7 +17,7 @@ function fakeEnv(): Env {
       if (model.includes('llama-3.3')) {
         const sys = JSON.stringify(input);
         if (sys.includes('songwriter')) return { response: '{"title":"Sun","lyrics":"[Verse 1]\\nla la","mood":"weird","tempo":999,"key":"Z","minor":false}' };
-        if (sys.includes('storyboards')) return { response: '{"title":"T","scenes":[{"prompt":"a","narration":"n","durationSec":3,"motion":"zoom-in"}]}' };
+        if (sys.includes('storyboards')) { lastSys = sys; const k = sys.includes('Exactly 6') ? 8 : 1; return { response: JSON.stringify({ title: 'T', style: 'soft watercolor', scenes: Array.from({ length: k }, () => ({ prompt: 'a', narration: 'n', durationSec: 99, motion: 'zoom-in' })) }) }; }
         return { response: '```json\n{"widthM":5,"depthM":4,"furniture":[{"catalogId":"sofa","x":99,"y":1,"rotation":90},{"catalogId":"bogus","x":1,"y":1}]}\n```' };
       }
       throw new Error('unexpected ' + model);
@@ -25,6 +25,8 @@ function fakeEnv(): Env {
   };
   return { ...env, AI: ai } as unknown as Env;
 }
+
+let lastSys = '';
 
 describe('generate', () => {
   beforeAll(async () => {
@@ -74,6 +76,15 @@ describe('generate', () => {
     expect((await runGenerate(e, 'image', { prompt: 'cat' })).image).toBe('data:image/png;base64,AAAA');
     expect((await runGenerate(e, 'audio', { text: 'hi' })).audio).toContain('BBBB');
     expect(((await runGenerate(e, 'storyboard', { prompt: 'ad' })).scenes as unknown[]).length).toBe(1);
+    const sb = await runGenerate(e, 'storyboard', { prompt: 'ad', characters: 'Mia, red scarf' });
+    expect(sb.style).toBe('soft watercolor');
+    expect(lastSys).toContain('Recurring characters');
+    expect(lastSys).toContain('Mia, red scarf');
+    const big = await runGenerate(e, 'storyboard', { prompt: 'ad', scenes: 99 });
+    expect(lastSys).not.toContain('Recurring characters');
+    expect((big.scenes as { durationSec: number }[]).length).toBe(6);
+    expect((big.scenes as { durationSec: number }[])[0].durationSec).toBe(7);
+    expect(costFor('storyboard', { frames: true, scenes: 99 })).toBe(3 + 4 * 6);
     await expect(runGenerate(e, 'image', {})).rejects.toThrow('prompt_required');
     const song = await runGenerate(e, 'song', { prompt: 'summer' });
     expect([song.mood, song.key, song.tempo]).toEqual(['chill', 'C', 160]); // out-of-range values are clamped

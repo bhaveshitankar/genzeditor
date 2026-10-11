@@ -178,7 +178,7 @@ export function genCost(i: GenInput): number {
     case 'describe': return 3;
     case 'interior': return 3 + 5 * n;
     case 'song': return 3;
-    case 'storyboard': return 3 + (i.frames ? 4 * Math.min(4, Math.max(1, i.scenes ?? 3)) : 0);
+    case 'storyboard': return 3 + (i.frames ? 4 * Math.min(6, Math.max(2, i.scenes ?? 4)) : 0);
   }
 }
 

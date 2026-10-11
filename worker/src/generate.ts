@@ -56,7 +56,7 @@ export function costFor(kind: GenKind, p: GenParams): number {
     case 'describe': return COST.describe;
     case 'interior': return COST.interiorBase + COST.interiorVariant * n;
     case 'song': return COST.song;
-    case 'storyboard': return COST.storyboard + (p.frames ? COST.storyboardFrame * clampInt(p.scenes, 1, 4, 3) : 0);
+    case 'storyboard': return COST.storyboard + (p.frames ? COST.storyboardFrame * clampInt(p.scenes, 2, 6, 4) : 0);
   }
 }
 
@@ -311,21 +311,26 @@ export async function songPlan(env: Env, p: GenParams): Promise<GenResult> {
 
 export async function storyboard(env: Env, p: GenParams): Promise<GenResult> {
   const idea = cleanPrompt(p.prompt);
-  const n = clampInt(p.scenes, 1, 4, 3);
+  const n = clampInt(p.scenes, 2, 6, 4);
+  const chars = typeof p.characters === 'string' ? p.characters.trim().slice(0, 600) : '';
   const raw = (await llmJson(env,
-    'You write short video storyboards. Reply with ONLY JSON: {"title":string,"scenes":[{"prompt":string,"narration":string,"durationSec":number,"motion":"zoom-in"|"zoom-out"|"pan-left"|"pan-right"}]}. ' +
-    `Exactly ${n} scenes; each prompt is a vivid image-generation prompt; durationSec 2-6.`, idea)) as { title?: string; scenes?: Record<string, unknown>[] };
+    'You write short video storyboards. Reply with ONLY JSON: {"title":string,"style":string,"scenes":[{"prompt":string,"narration":string,"durationSec":number,"motion":"zoom-in"|"zoom-out"|"pan-left"|"pan-right"}]}. ' +
+    `Exactly ${n} scenes. "style" is one shared art-style phrase (e.g. "soft watercolor storybook") used for every scene. ` +
+    'Each scene prompt: a vivid image-generation prompt, vertical 9:16 composition, same art style across all scenes, no text in the image. ' +
+    'Each narration: max ~22 words, spoken aloud, first person or narrator voice matching the story. durationSec 3-7.' +
+    (chars ? ` Recurring characters (repeat their key visual traits verbatim in EVERY scene prompt so images stay consistent): ${chars}` : ''),
+    idea)) as { title?: string; style?: string; scenes?: Record<string, unknown>[] };
   const scenes = (Array.isArray(raw?.scenes) ? raw.scenes : []).slice(0, n).map((s) => ({
-    prompt: String(s.prompt ?? '').slice(0, 600),
+    prompt: String(s.prompt ?? '').slice(0, 700),
     narration: String(s.narration ?? '').slice(0, 400),
-    durationSec: Math.min(6, Math.max(2, Number(s.durationSec) || 3)),
+    durationSec: Math.min(7, Math.max(3, Number(s.durationSec) || 4)),
     motion: ['zoom-in', 'zoom-out', 'pan-left', 'pan-right'].includes(String(s.motion)) ? String(s.motion) : 'zoom-in',
     image: null as string | null,
   })).filter((s) => s.prompt);
   if (!scenes.length) throw new GenError('llm_failed', 502);
   if (p.frames) for (const s of scenes) { try { s.image = (await genImage(env, s.prompt)).image; } catch { /* leave null */ } }
   return {
-    provider: 'workers-ai', title: String(raw?.title ?? 'Storyboard').slice(0, 100), scenes,
+    provider: 'workers-ai', title: String(raw?.title ?? 'Storyboard').slice(0, 100), style: String(raw?.style ?? '').slice(0, 120), scenes,
     note: 'Text-to-video has no free provider. Assemble frames client-side as a Ken-Burns slideshow (canvas/ffmpeg.wasm) with the narration TTS.',
   };
 }
