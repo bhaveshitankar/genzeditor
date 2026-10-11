@@ -360,5 +360,54 @@
       "auth": false,
       "update": 86400
     }
-  ]
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshots/phone-photo.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Photo editor"
+    },
+    {
+      "src": "/screenshots/phone-interior.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Interior designer"
+    },
+    {
+      "src": "/screenshots/phone-sketch.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Sketch board"
+    },
+    {
+      "src": "/screenshots/phone-docs.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Documents"
+    },
+    {
+      "src": "/screenshots/desktop-photo.png",
+      "sizes": "1920x1080",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Photo editor on desktop"
+    },
+    {
+      "src": "/screenshots/desktop-interior.png",
+      "sizes": "1920x1080",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Interior designer on desktop"
+    }
+  ],
+  "prefer_related_applications": false,
+  "related_applications": [],
+  "lang": "en",
+  "dir": "ltr",
+  "orientation": "any"
 }
