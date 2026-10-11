@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.genzeditor.editor",
+      "sha256_cert_fingerprints": [
+        "BA:BA:51:A7:FE:EF:55:A9:EF:13:61:1B:AF:C5:91:7D:50:C3:88:56:BB:69:3F:55:45:E1:B6:8C:C3:17:F2:ED"
+      ]
+    }
+  }
+]
