@@ -70,6 +70,7 @@ export interface GenParams {
   variants?: number;   // interior variants (1-3)
   scenes?: number;     // storyboard scenes
   frames?: boolean;    // storyboard: also render frames
+  characters?: string; // storyboard: visual description of recurring characters
   question?: string;   // describe
   width?: number; height?: number;
 }

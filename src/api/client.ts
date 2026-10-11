@@ -154,6 +154,7 @@ export interface GenInput {
   prompt?: string; text?: string; lang?: string;
   images?: string[]; style?: string; roomType?: string;
   variants?: number; scenes?: number; frames?: boolean; question?: string;
+  characters?: string; // storyboard/reel: visual description of recurring characters
 }
 
 export interface InteriorVariant { style: string; image: string | null; prompt: string; mode: 'img2img' | 'text2img' }
