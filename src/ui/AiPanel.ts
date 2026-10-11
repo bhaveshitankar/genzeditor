@@ -2,6 +2,7 @@ import './styles/ai.css';
 import { aiEdit, aiGenerate, genCost, GEN_DAILY_UNITS, AiError, type AiEditResult, type AiKind, type ByoKey, type GenInput, type GenResult } from '../api/client';
 import { icon } from './icons';
 import { reportFailure } from '../telemetry';
+import { renderSong, audioBufferToWav, planFromText, type SongPlan } from '../ai/songSynth';
 
 const BYOK_STORE = 'anyedits:aiKey';
 
@@ -26,7 +27,7 @@ export interface AiPanelOptions {
   saveGenerated?: (name: string, mime: string, blob: Blob) => Promise<void> | void;
 }
 
-type GenMode = 'image' | 'audio' | 'interior' | 'storyboard';
+type GenMode = 'image' | 'audio' | 'song' | 'interior' | 'storyboard';
 const MAX_PHOTOS = 4;
 
 async function fileToDataUrl(file: File, max = 768): Promise<string> {
@@ -118,6 +119,7 @@ export class AiPanel {
         <select class="ai-gen-mode" data-role="gen-mode" aria-label="What to generate">
           <option value="image">Image from text</option>
           <option value="audio">Speech (text to audio)</option>
+          <option value="song">Song (lyrics + music)</option>
           <option value="interior">Interior design from photos</option>
           <option value="storyboard">Video (text → storyboard)</option>
         </select>
@@ -130,6 +132,12 @@ export class AiPanel {
             <option>bohemian</option><option>mid-century modern</option><option>japandi</option>
           </select>
           <div class="ai-thumbs" data-role="gen-thumbs"></div>
+        </div>
+        <div class="ai-gen-song" data-role="gen-song" hidden>
+          <label class="ai-check"><input type="checkbox" data-role="gen-instr" /> Instrumental only — free, no sign-in, works offline</label>
+          <label class="ai-gen-scenes">Length
+            <select data-role="gen-bars"><option value="8">~20 s</option><option value="16" selected>~40 s</option><option value="32">~80 s</option></select>
+          </label>
         </div>
         <div class="ai-gen-video" data-role="gen-video" hidden>
           <input type="text" class="ai-input" data-role="gen-vstyle" placeholder="Style, e.g. cinematic, cozy, retro" maxlength="120" />
@@ -218,6 +226,7 @@ export class AiPanel {
     gen.addEventListener('click', () => setTab(true));
     this.q('[data-role="gen-mode"]').addEventListener('change', () => this.updateGenUi());
     this.q('[data-role="gen-frames"]').addEventListener('change', () => this.updateGenUi());
+    this.q('[data-role="gen-instr"]').addEventListener('change', () => this.updateGenUi());
     const add = async (input: HTMLInputElement) => {
       const files = [...(input.files ?? [])]; input.value = '';
       try {
@@ -243,6 +252,7 @@ export class AiPanel {
       case 'image': return { kind: 'image', prompt };
       case 'audio': return { kind: 'audio', text: prompt };
       case 'interior': return { kind: 'interior', images: this.photos, style: this.q<HTMLSelectElement>('[data-role="gen-style"]').value, roomType: prompt || undefined, variants: 2 };
+      case 'song': return { kind: 'song', prompt };
       case 'storyboard': {
         const style = this.q<HTMLInputElement>('[data-role="gen-vstyle"]').value.trim();
         const script = this.q<HTMLTextAreaElement>('[data-role="gen-vscript"]').value.trim();
@@ -257,10 +267,12 @@ export class AiPanel {
     this.q('[data-role="gen-photos"]').toggleAttribute('hidden', mode !== 'interior');
     this.q('[data-role="gen-frames-wrap"]').toggleAttribute('hidden', mode !== 'storyboard');
     this.q('[data-role="gen-video"]').toggleAttribute('hidden', mode !== 'storyboard');
+    this.q('[data-role="gen-song"]').toggleAttribute('hidden', mode !== 'song');
     this.q<HTMLTextAreaElement>('[data-role="gen-prompt"]').placeholder =
-      mode === 'audio' ? 'Text to speak…' : mode === 'interior' ? 'Room type, e.g. living room (optional)' : mode === 'storyboard' ? 'What is the video about? e.g. a 15-second teaser for my coffee shop' : 'Describe the image…';
+      mode === 'audio' ? 'Text to speak…' : mode === 'song' ? 'What is the song about? e.g. a cozy rainy-day lofi tune about coffee' : mode === 'interior' ? 'Room type, e.g. living room (optional)' : mode === 'storyboard' ? 'What is the video about? e.g. a 15-second teaser for my coffee shop' : 'Describe the image…';
     const byok = loadByok();
-    this.q('[data-role="gen-cost"]').textContent = byok?.key && mode === 'image'
+    const instr = mode === 'song' && this.q<HTMLInputElement>('[data-role="gen-instr"]').checked;
+    this.q('[data-role="gen-cost"]').textContent = instr ? 'Free — no units used.' : byok?.key && mode === 'image'
       ? 'Unlimited with your OpenAI key.'
       : `Uses ~${genCost(this.genInput())} of ${GEN_DAILY_UNITS} free daily units.`;
   }
@@ -329,8 +341,59 @@ export class AiPanel {
     if (r.note) { const p = document.createElement('p'); p.className = 'ai-quota'; p.textContent = r.note; out.appendChild(p); }
   }
 
+  // Songs: the model writes lyrics + a musical plan (3 units), then the browser
+  // performs the backing track with WebAudio (free). "Instrumental only" skips
+  // the model entirely, so it needs no sign-in and uses no quota.
+  private async runSong(plan?: SongPlan, lyrics?: string, title?: string): Promise<void> {
+    if (this.genBusy) return;
+    const prompt = this.q<HTMLTextAreaElement>('[data-role="gen-prompt"]').value.trim();
+    const instr = this.q<HTMLInputElement>('[data-role="gen-instr"]').checked;
+    const bars = Number(this.q<HTMLSelectElement>('[data-role="gen-bars"]').value) || 16;
+    if (!plan && !prompt) { this.genMsg('Describe the song first — mood, topic, style.', true); return; }
+    if (!plan && !instr && !this.opts.isAuthed()) { this.genMsg('Sign in for AI lyrics — or tick “Instrumental only” to compose for free.', true); return; }
+    this.genBusy = true;
+    const go = this.q<HTMLButtonElement>('[data-role="gen-go"]'); go.disabled = true;
+    try {
+      if (!plan) {
+        if (instr) { plan = { ...planFromText(prompt), bars }; title = prompt.slice(0, 40) || 'Instrumental'; }
+        else {
+          this.genMsg('Writing lyrics and a musical plan…');
+          const r = await aiGenerate({ kind: 'song', prompt }, loadByok());
+          plan = { mood: (r.mood as SongPlan['mood']) ?? 'chill', tempo: r.tempo ?? 100, key: r.key ?? 'C', minor: !!r.minor, bars, seed: Date.now() % 100000 };
+          lyrics = r.lyrics; title = r.title;
+        }
+      }
+      this.genMsg('Composing the music…');
+      const { buffer } = await renderSong(plan);
+      const blob = audioBufferToWav(buffer);
+      this.renderSongResult(plan, blob, lyrics, title, bars);
+    } catch (e) {
+      if (e instanceof AiError) this.genMsg(e.code === 'daily_limit' ? 'Daily free units used up — tick “Instrumental only” to keep composing for free.' : `Song failed: ${e.code}`, true);
+      else { reportFailure('ai-song', e, 'audio'); this.genMsg('Could not compose that song in this browser.', true); }
+    } finally { this.genBusy = false; go.disabled = false; }
+  }
+
+  private renderSongResult(plan: SongPlan, wav: Blob, lyrics: string | undefined, title: string | undefined, bars: number): void {
+    const out = this.q('[data-role="gen-out"]'); out.innerHTML = '';
+    const head = document.createElement('p'); head.className = 'ai-quota';
+    head.textContent = `${title || 'Song'} · ${plan.mood}, ${plan.tempo} BPM, ${plan.key} ${plan.minor ? 'minor' : 'major'}`;
+    const audio = document.createElement('audio'); audio.controls = true; audio.src = URL.createObjectURL(wav);
+    out.append(head, audio);
+    if (lyrics) {
+      const ta = document.createElement('textarea'); ta.className = 'ai-input ai-lyrics'; ta.rows = 8; ta.value = lyrics;
+      out.appendChild(ta);
+    }
+    const safe = (title || 'song').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'song';
+    out.appendChild(this.assetButton('Add song as file', `${safe}.wav`, () => wav));
+    if (lyrics) out.appendChild(this.assetButton('Add lyrics as note', `${safe}-lyrics.txt`, () => new Blob([lyrics], { type: 'text/plain' })));
+    const remix = document.createElement('button'); remix.type = 'button'; remix.className = 'ai-ghost'; remix.textContent = 'Remix (new arrangement)';
+    remix.addEventListener('click', () => void this.runSong({ ...plan, seed: (plan.seed ?? 1) + 7919, bars }, lyrics, title));
+    out.appendChild(remix);
+  }
+
   private async runGenerate(): Promise<void> {
     if (this.genBusy) return;
+    if (this.genMode() === 'song') { await this.runSong(); return; }
     if (!this.opts.isAuthed()) { this.genMsg('Sign in to generate — free daily units, or add your own key.', true); return; }
     const input = this.genInput();
     if (input.kind === 'interior' ? !input.images?.length : !(input.prompt || input.text)) {
