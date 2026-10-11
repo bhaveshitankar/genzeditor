@@ -117,3 +117,15 @@
 .ai-card img { width: 100%; border-radius: 10px; border: 1px solid var(--border, #d9d9e3); }
 .ai-card figcaption { font-size: 0.76rem; opacity: 0.75; }
 .ai-gen-out audio { width: 100%; }
+
+/* The display:flex rules above beat the UA [hidden] rule — which made the Edit
+   and Generate tabs render on top of each other. Hidden must always win. */
+.ai-drawer [hidden] { display: none !important; }
+.ai-gen > * { flex: 0 0 auto; }
+.ai-gen { min-height: 0; }
+.ai-gen-video { display: flex; flex-direction: column; gap: 8px; }
+.ai-gen-video .ai-input { width: 100%; }
+.ai-gen-scenes { display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; gap: 8px; }
+.ai-gen-scenes select { min-width: 72px; }
+.ai-script { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.ai-script .ai-ghost { align-self: flex-start; min-height: 36px; }

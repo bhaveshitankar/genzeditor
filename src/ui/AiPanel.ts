@@ -119,7 +119,7 @@ export class AiPanel {
           <option value="image">Image from text</option>
           <option value="audio">Speech (text to audio)</option>
           <option value="interior">Interior design from photos</option>
-          <option value="storyboard">Video storyboard</option>
+          <option value="storyboard">Video (text → storyboard)</option>
         </select>
         <textarea class="ai-input" data-role="gen-prompt" rows="3" placeholder="Describe it…"></textarea>
         <div class="ai-gen-photos" data-role="gen-photos" hidden>
@@ -130,6 +130,13 @@ export class AiPanel {
             <option>bohemian</option><option>mid-century modern</option><option>japandi</option>
           </select>
           <div class="ai-thumbs" data-role="gen-thumbs"></div>
+        </div>
+        <div class="ai-gen-video" data-role="gen-video" hidden>
+          <input type="text" class="ai-input" data-role="gen-vstyle" placeholder="Style, e.g. cinematic, cozy, retro" maxlength="120" />
+          <textarea class="ai-input" data-role="gen-vscript" rows="3" placeholder="Your own narration or script — free text (optional). Leave empty to let AI write it." maxlength="500"></textarea>
+          <label class="ai-gen-scenes">Scenes
+            <select data-role="gen-vscenes"><option>2</option><option selected>3</option><option>4</option></select>
+          </label>
         </div>
         <label class="ai-check" data-role="gen-frames-wrap" hidden><input type="checkbox" data-role="gen-frames" /> Render frames (uses more quota)</label>
         <button type="button" class="ai-go" data-role="gen-go">Generate</button>
@@ -236,7 +243,12 @@ export class AiPanel {
       case 'image': return { kind: 'image', prompt };
       case 'audio': return { kind: 'audio', text: prompt };
       case 'interior': return { kind: 'interior', images: this.photos, style: this.q<HTMLSelectElement>('[data-role="gen-style"]').value, roomType: prompt || undefined, variants: 2 };
-      case 'storyboard': return { kind: 'storyboard', prompt, scenes: 3, frames: this.q<HTMLInputElement>('[data-role="gen-frames"]').checked };
+      case 'storyboard': {
+        const style = this.q<HTMLInputElement>('[data-role="gen-vstyle"]').value.trim();
+        const script = this.q<HTMLTextAreaElement>('[data-role="gen-vscript"]').value.trim();
+        const full = [prompt, style && `Style: ${style}.`, script && `Use this narration/script as the basis for the scenes: ${script}`].filter(Boolean).join('\n').slice(0, 1000);
+        return { kind: 'storyboard', prompt: prompt ? full : '', scenes: Number(this.q<HTMLSelectElement>('[data-role="gen-vscenes"]').value) || 3, frames: this.q<HTMLInputElement>('[data-role="gen-frames"]').checked };
+      }
     }
   }
 
@@ -244,8 +256,9 @@ export class AiPanel {
     const mode = this.genMode();
     this.q('[data-role="gen-photos"]').toggleAttribute('hidden', mode !== 'interior');
     this.q('[data-role="gen-frames-wrap"]').toggleAttribute('hidden', mode !== 'storyboard');
+    this.q('[data-role="gen-video"]').toggleAttribute('hidden', mode !== 'storyboard');
     this.q<HTMLTextAreaElement>('[data-role="gen-prompt"]').placeholder =
-      mode === 'audio' ? 'Text to speak…' : mode === 'interior' ? 'Room type, e.g. living room (optional)' : mode === 'storyboard' ? 'Describe the video idea…' : 'Describe the image…';
+      mode === 'audio' ? 'Text to speak…' : mode === 'interior' ? 'Room type, e.g. living room (optional)' : mode === 'storyboard' ? 'What is the video about? e.g. a 15-second teaser for my coffee shop' : 'Describe the image…';
     const byok = loadByok();
     this.q('[data-role="gen-cost"]').textContent = byok?.key && mode === 'image'
       ? 'Unlimited with your OpenAI key.'
@@ -304,6 +317,15 @@ export class AiPanel {
       if (s.image) imgCard(s.image, `Scene ${i + 1} · ${s.durationSec}s · ${s.motion}: ${s.narration}`, `scene-${i + 1}.png`);
       else { const p = document.createElement('p'); p.className = 'ai-quota'; p.textContent = `Scene ${i + 1} (${s.durationSec}s, ${s.motion}): ${s.prompt}`; out.appendChild(p); }
     });
+    if (r.scenes?.length) {
+      // Editable script the user can tweak and copy (e.g. into a voiceover tool or the video editor's text).
+      const wrap = document.createElement('div'); wrap.className = 'ai-script';
+      const ta = document.createElement('textarea'); ta.className = 'ai-input'; ta.rows = 5;
+      ta.value = (r.title ? `${r.title}\n\n` : '') + r.scenes.map((s, i) => `Scene ${i + 1} (${s.durationSec}s): ${s.narration || s.prompt}`).join('\n');
+      const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'ai-ghost'; copy.textContent = 'Copy script';
+      copy.addEventListener('click', () => { void navigator.clipboard?.writeText(ta.value).then(() => { copy.textContent = 'Copied ✓'; setTimeout(() => { copy.textContent = 'Copy script'; }, 1500); }).catch(() => { ta.select(); }); });
+      wrap.append(ta, copy); out.appendChild(wrap);
+    }
     if (r.note) { const p = document.createElement('p'); p.className = 'ai-quota'; p.textContent = r.note; out.appendChild(p); }
   }
 
