@@ -1,6 +1,8 @@
 // Host routing for the HTML entry (_routes.json limits this to "/" and
 // "/index.html", so static assets never invoke a Function):
 //  - mobile.* hosts serve the mobile app (mobile.html) from the same project.
+//  - Non-phones hitting mobile.* are redirected to genzeditor.com, unless they
+//    opted to stay (?mobile → remembered in a cookie).
 //  - Phones hitting the main site are redirected to mobile.genzeditor.com,
 //    unless they chose the desktop site (?desktop=1 → remembered in a cookie)
 //    or already use the desktop site on this phone (gz-seen cookie, set by the
@@ -13,6 +15,7 @@ interface Ctx {
 
 const MOBILE_ORIGIN = 'https://mobile.genzeditor.com';
 const PHONE_UA = /iPhone|iPod|Android.+Mobile|Windows Phone|BlackBerry|Opera Mini|IEMobile|Mobile Safari/i;
+const DESKTOP_ORIGIN = 'https://genzeditor.com';
 const YEAR = 60 * 60 * 24 * 365;
 
 function noCache(res: Response, extra: Record<string, string> = {}): Response {
@@ -29,6 +32,29 @@ export const onRequest = async (ctx: Ctx): Promise<Response> => {
   if (!isEntry) return ctx.next();
 
   if (url.hostname.startsWith('mobile.')) {
+    const cookies = ctx.request.headers.get('Cookie') ?? '';
+    if (url.searchParams.has('mobile')) {
+      url.searchParams.delete('mobile');
+      const qs = url.searchParams.toString();
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: `/${qs ? `?${qs}` : ''}`,
+          'Cache-Control': 'no-store',
+          'Set-Cookie': `gz-stay-mobile=1; Max-Age=${YEAR}; Path=/; Secure; SameSite=Lax`,
+        },
+      });
+    }
+    const ua = ctx.request.headers.get('User-Agent') ?? '';
+    const phone = ctx.request.headers.get('Sec-CH-UA-Mobile') === '?1' || PHONE_UA.test(ua);
+    const stay = /(?:^|;\s*)gz-stay-mobile=1/.test(cookies);
+    if (!phone && !stay) {
+      // The #fragment (share links) is carried over by the browser on redirect.
+      return new Response(null, {
+        status: 302,
+        headers: { Location: `${DESKTOP_ORIGIN}/${url.search}`, 'Cache-Control': 'no-store', Vary: 'User-Agent, Cookie' },
+      });
+    }
     url.pathname = '/mobile'; // Pages serves mobile.html at its pretty URL
     return noCache(await ctx.env.ASSETS.fetch(new Request(url.toString(), ctx.request)));
   }
