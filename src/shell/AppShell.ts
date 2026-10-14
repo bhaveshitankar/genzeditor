@@ -148,6 +148,7 @@ export class AppShell {
   retrySaveShares(): Promise<void> { return this.handleSaveShares(); }
 
   /** Create a new file from a template id ('document', 'csv', 'scan'…) — used by app shortcuts. */
+  async hasFiles(): Promise<boolean> { return (await this.store.list()).length > 0; }
   async newFromTemplate(id: string): Promise<void> { await this.api().createFromTemplate(id); }
 
   private api(): ShellApi {

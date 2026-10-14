@@ -153,6 +153,11 @@ export async function bootstrap(
     history.replaceState(null, '', location.pathname + location.hash);
     void shell.newFromTemplate(wanted);
   }
+  // SEO tool landing pages (/pdf-editor/ …): open that tool's blank doc on an empty workspace.
+  const tool = document.querySelector('meta[name="gz-tool"]')?.getAttribute('content');
+  if (tool && !wanted && !location.hash) {
+    void shell.hasFiles().then((has) => { if (!has) void shell.newFromTemplate(tool); });
+  }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void importSharedInbox(); });
 
   // Offline + installable: register the service worker in production builds only.

@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { seoPages } from './scripts/seo-pages.mjs';
 
 // Build-time app version (package version + short git sha) for telemetry/feedback.
 const pkgVersion = (JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as { version: string }).version;
@@ -18,6 +19,7 @@ const DEPLOYED_CSP =
   "object-src 'none'; base-uri 'none'";
 
 export default defineConfig({
+  plugins: [seoPages()],
   define: {
     __APP_VERSION__: JSON.stringify(APP_VERSION),
   },
