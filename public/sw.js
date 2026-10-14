@@ -7,7 +7,16 @@
 const STATIC = 'gz-static-v1';
 const INBOX = 'gz-share-inbox';
 
-self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('install', (e) => {
+  // Precache the shell so the app works offline on first visit.
+  e.waitUntil((async () => {
+    try {
+      const res = await fetch('/');
+      if (res.ok) (await caches.open(STATIC)).put(new Request(location.origin + '/'), res);
+    } catch { /* skip if network is down — cache will be populated on first successful load */ }
+    self.skipWaiting();
+  })());
+});
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
     for (const k of await caches.keys()) if (k.startsWith('gz-static-') && k !== STATIC) await caches.delete(k);
