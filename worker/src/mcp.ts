@@ -1,6 +1,7 @@
 // worker/src/mcp.ts
 // Minimal MCP server (Streamable HTTP, stateless JSON responses) at /mcp.
 import type { Env } from './env';
+import { planBeatEdit, type PlanMedia, type TransitionType } from '../../src/editors/video/beatSync';
 import { chargeUnits, costFor, runGenerate, GenError, type GenKind, type GenParams } from './generate';
 
 const PROTOCOL = '2025-03-26';
@@ -20,6 +21,15 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: { prompt: { type: 'string' }, scenes: { type: 'integer', minimum: 2, maximum: 6 }, characters: { type: 'string', description: 'Visual description of recurring characters' }, frames: { type: 'boolean' } }, required: ['prompt'] } },
   { name: 'compose_song', description: 'Write song lyrics plus a musical plan (mood, tempo, key, minor/major) from a description. Audio is performed client-side from the plan.',
     inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] } },
+  { name: 'plan_beat_edit', description: 'Plan a beat-synced reel (Instagram-style): given the song\'s beat times (or just bpm) and the available videos/photos, returns cut segments — which media, which source range, speed, and a transition into each cut. Free; the editor applies the plan client-side. Use pace fast/medium/slow = cut every 1/2/4 beats.',
+    inputSchema: { type: 'object', properties: {
+      duration: { type: 'number', description: 'Length of the output video in seconds (<= 180)' },
+      beats: { type: 'array', items: { type: 'number' }, description: 'Beat times in seconds from the start of the (trimmed) song' },
+      bpm: { type: 'number', description: 'Used to synthesize a beat grid when beats is omitted' },
+      media: { type: 'array', maxItems: 100, items: { type: 'object', properties: { kind: { enum: ['video', 'image'] }, duration: { type: 'number' } }, required: ['kind'] } },
+      pace: { enum: ['fast', 'medium', 'slow'] },
+      transition: { enum: ['auto', 'none', 'fade', 'fadeblack', 'slideleft', 'wipeleft', 'circleopen', 'zoomin'] },
+    }, required: ['duration', 'media'] } },
 ] as const;
 
 const TOOL_KIND: Record<string, GenKind> = {
@@ -45,6 +55,16 @@ export async function mcpDispatch(env: Env, msg: Rpc, caller: McpCaller): Promis
     case 'tools/list': return ok(id, { tools: TOOLS });
     case 'tools/call': {
       const name = String(msg.params?.name ?? '');
+      if (name === 'plan_beat_edit') {
+        const a = (msg.params?.arguments ?? {}) as { duration?: number; beats?: number[]; bpm?: number; media?: { kind?: string; duration?: number }[]; pace?: 'fast' | 'medium' | 'slow'; transition?: 'auto' | 'none' | TransitionType };
+        const total = Math.min(180, Number(a.duration));
+        const media: PlanMedia[] = (a.media ?? []).slice(0, 100).map((m) => ({ kind: m.kind === 'video' ? 'video' : 'image', dur: Math.max(0.1, Number(m.duration) || 3) }));
+        if (!(total > 0) || !media.length) return ok(id, { isError: true, content: [{ type: 'text', text: 'invalid_args: duration and media required' }] });
+        let beats = Array.isArray(a.beats) ? a.beats.map(Number).filter((b) => b >= 0 && b < total).sort((x, y) => x - y).slice(0, 2000) : [];
+        if (!beats.length && a.bpm && a.bpm > 30 && a.bpm < 300) { const p = 60 / a.bpm; for (let t = 0; t < total; t += p) beats.push(t); }
+        const result = { segments: planBeatEdit(beats, total, media, { pace: a.pace, transition: a.transition }) };
+        return ok(id, { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result });
+      }
       const kind = TOOL_KIND[name];
       if (!kind) return err(id, -32602, `Unknown tool: ${name}`);
       const args = (msg.params?.arguments ?? {}) as GenParams;

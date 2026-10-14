@@ -593,3 +593,41 @@ html.is-mobile .cm-content { line-height: 1.6; }
 
 /* Desktop "try the mobile app" banner never shows inside the mobile app */
 html.is-mobile .mobile-app-banner { display: none; }
+
+/* ---------- Video editor, phone-first (Instagram Edits / CapCut style) ---------- */
+/* Primary actions first in the strip; power-user ones scroll off to the right. */
+html.is-mobile .vid-transport [data-act="play"] { order: 0; }
+html.is-mobile .vid-transport .vid-time { order: 1; align-self: center; }
+html.is-mobile .vid-transport [data-act="split"] { order: 2; }
+html.is-mobile .vid-transport [data-act="beat"] { order: 3; }
+html.is-mobile .vid-transport [data-act="addClip"] { order: 4; }
+html.is-mobile .vid-transport [data-act="addAudio"] { order: 5; }
+html.is-mobile .vid-transport [data-act="addText"] { order: 6; }
+html.is-mobile .vid-transport [data-act="delete"] { order: 7; }
+html.is-mobile .vid-transport [data-act="undo"] { order: 8; }
+html.is-mobile .vid-transport [data-act="redo"] { order: 9; }
+html.is-mobile .vid-transport [data-act="duplicate"],
+html.is-mobile .vid-transport [data-act="left"],
+html.is-mobile .vid-transport [data-act="right"],
+html.is-mobile .vid-transport [data-act="addOverlay"] { order: 10; }
+html.is-mobile .vid-transport .vid-sep { display: none; }
+html.is-mobile .vid-transport .vid-btn { min-height: 44px; border-radius: 999px; }
+/* Tabs become an icon dock: big tap targets, label under the glyph. */
+html.is-mobile .vid-tabs { gap: 4px; padding: 6px 8px calc(6px + var(--m-safe-bottom, 0px)); }
+html.is-mobile .vid-tab { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 64px; font-size: 0.72rem; padding: 6px 8px; border-radius: 12px; }
+html.is-mobile .vid-tab::before { font-size: 1.25rem; line-height: 1; }
+html.is-mobile .vid-tab[data-tab="clip"]::before { content: "✂️"; }
+html.is-mobile .vid-tab[data-tab="layout"]::before { content: "🧩"; }
+html.is-mobile .vid-tab[data-tab="transform"]::before { content: "🔄"; }
+html.is-mobile .vid-tab[data-tab="resize"]::before { content: "📐"; }
+html.is-mobile .vid-tab[data-tab="adjust"]::before { content: "🎨"; }
+html.is-mobile .vid-tab[data-tab="audio"]::before { content: "🎵"; }
+html.is-mobile .vid-tab[data-tab="thumbnail"]::before { content: "🖼️"; }
+html.is-mobile .vid-tab[data-tab="export"]::before { content: "⬆️"; }
+/* Controls: finger-sized sliders/chips, one control per row. */
+html.is-mobile .vid-field input[type="range"] { width: 100%; height: 32px; }
+html.is-mobile .vid-props-group .vid-field input[type="range"] { width: 100%; }
+html.is-mobile .vid-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 4px; }
+html.is-mobile .vid-chip { flex: 0 0 auto; min-height: 40px; padding: 0 16px; }
+html.is-mobile .vid-panel .vid-btn, html.is-mobile .vid-panel select { min-height: 44px; }
+html.is-mobile .vid-zoom { display: none; } /* pinch the timeline instead */

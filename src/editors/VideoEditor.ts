@@ -3,6 +3,7 @@ import type { FFmpeg } from '@ffmpeg/ffmpeg';
 import type { DocEditor } from './registry';
 import { getFfmpeg } from './ffmpegLoader';
 import { type Quality, type OutFps, CRF, estimateBytes, fmtBytes, memoryWarning, abortAndReload } from './video/exportOpts';
+import { type TransitionType, type Pace, detectBeats, planBeatEdit, loudestWindow } from './video/beatSync';
 import { type EditCommands, getAppClipboard, setAppClipboard } from './editCommands';
 
 // Multi-clip, client-side video editor.
@@ -29,6 +30,7 @@ interface Clip {
   volume: number; // 0..2
   fadeIn?: number;  // seconds, fade from black (main track)
   fadeOut?: number; // seconds, fade to black
+  transition?: { type: TransitionType; dur: number }; // main track: how this clip comes in from the previous one
 }
 
 interface Overlay extends Clip {
@@ -100,6 +102,10 @@ export interface VideoEditorOptions {
   toast?: (msg: string, kind?: 'success' | 'error' | 'info') => void;
 }
 const MIN_LEN = 0.1;
+const TRANSITIONS: [TransitionType, string][] = [
+  ['fade', 'Crossfade'], ['fadeblack', 'Dip to black'], ['slideleft', 'Slide'],
+  ['wipeleft', 'Wipe'], ['circleopen', 'Circle reveal'], ['zoomin', 'Zoom'],
+];
 const IMAGE_DEFAULT_DUR = 3;
 const IMAGE_MAX_DUR = 600;
 const FULL: Rect = { x: 0, y: 0, w: 1, h: 1 };
@@ -411,7 +417,7 @@ export class VideoEditor implements DocEditor {
       return;
     }
     this.pushHistory();
-    const b: Clip = { ...cur.clip, id: uid(), in: local, crop: cur.clip.crop && { ...cur.clip.crop } };
+    const b: Clip = { ...cur.clip, id: uid(), in: local, crop: cur.clip.crop && { ...cur.clip.crop }, transition: undefined };
     cur.clip.out = local;
     this.main.splice(cur.index + 1, 0, b);
     this.sel = { track: 'main', id: b.id };
@@ -719,6 +725,15 @@ export class VideoEditor implements DocEditor {
     const br = num(patch.brightness); if (br != null) { this.brightness = clamp(br / 100, -1, 1); done.push('brightness'); }
     const ct = num(patch.contrast); if (ct != null) { this.contrast = clamp(1 + ct / 100, 0, 2); done.push('contrast'); }
     const sa = num(patch.saturation); if (sa != null) { this.saturation = clamp(1 + sa / 100, 0, 3); done.push('saturation'); }
+    const tr = patch.transition as { type?: string; duration?: number } | string | undefined;
+    const trType = typeof tr === 'string' ? tr : tr?.type;
+    if (trType && TRANSITIONS.some(([v]) => v === trType) && this.main.length > 1) {
+      const dur = clamp(typeof tr === 'object' && typeof tr.duration === 'number' ? tr.duration : 0.5, 0.1, 2);
+      this.main.forEach((m, i) => { if (i > 0) m.transition = { type: trType as TransitionType, dur }; });
+      done.push(`${trType} transitions`);
+    }
+    const bs = patch.beatSync as { pace?: Pace; transition?: string; length?: number } | true | undefined;
+    if (bs) { void this.beatSyncRun(undefined, bs === true ? {} : bs); done.push('beat sync'); }
     if (patch.outFmt === 'mp4' || patch.outFmt === 'webm') { this.outFmt = patch.outFmt; done.push(`format ${patch.outFmt}`); }
     if (typeof patch.text === 'string' && patch.text) {
       const x = this.addText(patch.text, true);
@@ -890,8 +905,7 @@ export class VideoEditor implements DocEditor {
     this.main.forEach((c, i) => {
       const k = addInput(c);
       const sp = c.kind === 'video' && c.speed !== 1 ? `,setpts=PTS/${f3(c.speed)}` : '';
-      parts.push(`[${k}:v]setpts=PTS-STARTPTS${sp},${cropFilter(c)}${fitFilter(this.mainFit, mb.w, mb.h)},setsar=1,fps=${this.outFps},format=yuv420p${this.fadeFilter(c)}[v${i}]`);
-      segs.push(`[v${i}]`);
+      parts.push(`[${k}:v]setpts=PTS-STARTPTS${sp},${cropFilter(c)}${fitFilter(this.mainFit, mb.w, mb.h)},setsar=1,fps=${this.outFps},format=yuv420p${this.fadeFilter(c)},settb=AVTB[v${i}]`);
       if (wantAudio) {
         if (audioOf(c) && !this.muteOriginal) {
           const tempo = c.speed !== 1 ? `,${atempoChain(c.speed).join(',')}` : '';
@@ -903,7 +917,20 @@ export class VideoEditor implements DocEditor {
         segs.push(`[a${i}]`);
       }
     });
-    parts.push(`${segs.join('')}concat=n=${this.main.length}:v=1:a=${wantAudio ? 1 : 0}[vm]${wantAudio ? '[am]' : ''}`);
+    // Video: hard cuts concat; transitions xfade the previous clip's held last frame into this
+    // clip's start, so the timeline length (and audio sync) never changes.
+    let acc = '[v0]', accLen = len(this.main[0]!);
+    if (this.main.length === 1) parts.push('[v0]null[vm]');
+    for (let i = 1; i < this.main.length; i++) {
+      const c = this.main[i]!, d = this.transDur(c), out = i === this.main.length - 1 ? '[vm]' : `[x${i}]`;
+      if (d > 0) {
+        parts.push(`${acc}tpad=stop_mode=clone:stop_duration=${f3(d)}[xp${i}]`);
+        parts.push(`[xp${i}][v${i}]xfade=transition=${c.transition!.type}:duration=${f3(d)}:offset=${f3(accLen)},settb=AVTB${out}`);
+      } else parts.push(`${acc}[v${i}]concat=n=2:v=1:a=0,settb=AVTB${out}`);
+      accLen += len(c);
+      acc = out;
+    }
+    if (wantAudio) parts.push(`${segs.join('')}concat=n=${this.main.length}:v=0:a=1[am]`);
 
     let base = '[vm]';
     if (!isFull(this.mainBox)) {
@@ -981,6 +1008,13 @@ export class VideoEditor implements DocEditor {
     return [...inputs, '-filter_complex', parts.join(';'), ...maps, ...this.codecArgs(), outName];
   }
 
+  // Effective transition length for a main clip (0 = hard cut).
+  private transDur(c: Clip): number {
+    const i = this.main.indexOf(c);
+    if (i <= 0 || !c.transition) return 0;
+    return Math.min(c.transition.dur, len(c) / 2, len(this.main[i - 1]!), 2);
+  }
+
   private fadeFilter(c: Clip): string {
     const L = len(c);
     const fi = clamp(c.fadeIn ?? 0, 0, L / 2), fo = clamp(c.fadeOut ?? 0, 0, L / 2);
@@ -1048,6 +1082,7 @@ export class VideoEditor implements DocEditor {
           <button type="button" class="vid-btn" data-act="left" title="Move selected clip earlier">◀ Move</button>
           <button type="button" class="vid-btn" data-act="right" title="Move selected clip later">Move ▶</button>
           <span class="vid-sep"></span>
+          <button type="button" class="vid-btn vid-magic-btn" data-act="beat" title="Auto-edit your clips to the beat of a song">✨ Beat sync</button>
           <button type="button" class="vid-btn" data-act="addClip" title="Append videos or images to the main track">+ Add video/image</button>
           <button type="button" class="vid-btn" data-act="addOverlay" title="Place another video or image on top">+ Add overlay</button>
           <button type="button" class="vid-btn" data-act="addAudio" title="Add music / voice-over clips (overlapping clips are mixed)">+ Add audio</button>
@@ -1135,6 +1170,29 @@ export class VideoEditor implements DocEditor {
           <button type="button" class="vid-btn" data-role="pickAudio">+ Add audio clip…</button>
           <button type="button" class="vid-btn" data-role="extractAudio">Extract audio (.m4a)</button>
           <span class="vid-hint">Audio clips live on their own rows; overlapping clips are mixed. Select one for volume and fades.</span>
+          <div class="vid-props-group vid-magic">
+            <span class="vid-group-title">✨ Beat-sync edit</span>
+            <label class="vid-field">Cut pace
+              <select data-role="bsPace">
+                <option value="fast">Fast — every beat</option>
+                <option value="medium" selected>Medium — every 2 beats</option>
+                <option value="slow">Slow — every 4 beats</option>
+              </select></label>
+            <label class="vid-field">Transitions
+              <select data-role="bsTrans">
+                <option value="auto" selected>Auto mix</option>
+                <option value="none">None (hard cuts)</option>
+                ${TRANSITIONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
+              </select></label>
+            <label class="vid-field">Video length
+              <select data-role="bsLen">
+                <option value="15">15 s</option><option value="30" selected>30 s</option>
+                <option value="60">60 s</option><option value="0">Whole song</option>
+              </select></label>
+            <button type="button" class="vid-btn" data-role="beatSync">✨ Sync clips to music</button>
+            <span class="vid-hint">Add your videos and photos to the main track, then pick a song. They're cut to the beat with transitions; videos play on through their footage, photos get beat-length slots.</span>
+            <input type="file" accept="audio/*" data-role="bsFile" hidden>
+          </div>
         </div>
 
         <div class="vid-panel" data-panel="thumbnail">
@@ -1223,6 +1281,7 @@ export class VideoEditor implements DocEditor {
       else if (act === 'duplicate') this.duplicateSelected();
       else if (act === 'addAudio') this.auFile.click();
       else if (act === 'addText') this.addText();
+      else if (act === 'beat') void this.beatSyncRun();
       else if (act === 'left') this.moveMain(-1);
       else if (act === 'right') this.moveMain(1);
       else if (act === 'addClip') this.clipFile.click();
@@ -1297,6 +1356,12 @@ export class VideoEditor implements DocEditor {
     vol.addEventListener('input', () => { this.volume = Number(vol.value); this.syncControls(); });
     this.q('extractAudio').addEventListener('click', () => void this.extractAudio());
     this.q('pickAudio').addEventListener('click', () => this.auFile.click());
+    this.q('beatSync').addEventListener('click', () => void this.beatSyncRun());
+    this.q<HTMLInputElement>('bsFile').addEventListener('change', (e) => {
+      const f = (e.target as HTMLInputElement).files?.[0];
+      (e.target as HTMLInputElement).value = '';
+      if (f) void this.beatSyncRun(f);
+    });
     this.q('muteOriginal').addEventListener('click', () => { this.muteOriginal = !this.muteOriginal; this.syncControls(); });
 
     // Thumbnail.
@@ -1535,6 +1600,8 @@ export class VideoEditor implements DocEditor {
         this.slider('Fade out', 0, Math.min(5, fh), 0.1, Math.min(c.fadeOut ?? 0, fh), secs, (v) => { c.fadeOut = v; }),
       );
       row.appendChild(g);
+      const mi = this.main.indexOf(c);
+      if (mi > 0) row.appendChild(this.transitionGroup(c));
     }
 
     // Crop (per clip): edges in percent of the source frame.
@@ -1674,6 +1741,97 @@ export class VideoEditor implements DocEditor {
     const [o] = this.overlays.splice(i, 1);
     this.overlays.splice(j, 0, o!);
     this.structureChanged();
+  }
+
+  // Transition picker for the cut into main clip `c` (chips + length + apply-to-all).
+  private transitionGroup(c: Clip): HTMLElement {
+    const g = el('div', 'vid-props-group');
+    const gt = el('span', 'vid-group-title');
+    gt.textContent = 'Transition from previous clip';
+    g.appendChild(gt);
+    const chips = el('div', 'vid-chips');
+    const opts: [TransitionType | null, string][] = [[null, 'None'], ...TRANSITIONS];
+    const refresh = (): void => chips.querySelectorAll('button').forEach((b, k) => b.classList.toggle('active', (opts[k]![0] ?? null) === (c.transition?.type ?? null)));
+    opts.forEach(([type, label]) => {
+      const b = el('button', 'vid-chip') as HTMLButtonElement;
+      b.type = 'button'; b.textContent = label;
+      b.addEventListener('click', () => {
+        this.pushHistory();
+        c.transition = type ? { type, dur: c.transition?.dur ?? 0.5 } : undefined;
+        refresh();
+        this.setStatus(type ? `${label} transition set.` : 'Transition removed (hard cut).');
+        this.tlDirty = true;
+        if (type) { this.setPlaying(false); this.t = this.startOf(c) + 0.01; }
+      });
+      chips.appendChild(b);
+    });
+    refresh();
+    g.appendChild(chips);
+    g.appendChild(this.slider('Length', 0.1, 2, 0.05, c.transition?.dur ?? 0.5, (v) => `${v.toFixed(2)}s`, (v) => { if (c.transition) c.transition.dur = v; }));
+    const all = el('button', 'vid-btn') as HTMLButtonElement;
+    all.type = 'button'; all.textContent = 'Apply to all cuts';
+    all.addEventListener('click', () => {
+      if (!c.transition) { this.setStatus('Pick a transition first.'); return; }
+      this.pushHistory();
+      this.main.forEach((m, i) => { if (i > 0) m.transition = { ...c.transition! }; });
+      this.setStatus('Transition applied to every cut.');
+      this.tlDirty = true;
+    });
+    g.appendChild(all);
+    return g;
+  }
+
+  // ✨ Beat sync: cut the main-track clips/photos to the beat of a song, with transitions.
+  // Uses the selected (else first) audio clip, or `file` / a picker when there's none.
+  private async beatSyncRun(file?: File, o: { pace?: Pace; transition?: string; length?: number } = {}): Promise<void> {
+    if (!this.main.length) { this.setStatus('Add some videos or photos first, then sync them to music.'); return; }
+    let au = file ? undefined : (this.sel?.track === 'au' ? this.audios.find((a) => a.id === this.sel!.id) : undefined) ?? this.audios[0];
+    if (!au && !file) { this.q<HTMLInputElement>('bsFile').click(); return; }
+    const pace = o.pace ?? (this.q<HTMLSelectElement>('bsPace')?.value as Pace | undefined) ?? 'medium';
+    const trans = o.transition ?? this.q<HTMLSelectElement>('bsTrans')?.value ?? 'auto';
+    const want = o.length ?? Number(this.q<HTMLSelectElement>('bsLen')?.value ?? 30);
+    this.setPlaying(false);
+    this.setStatus('Listening for the beat…');
+    try {
+      const blob: Blob = au ? au.blob : file!;
+      const AC = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ac = new AC();
+      let buf: AudioBuffer;
+      try { buf = await ac.decodeAudioData(await blob.arrayBuffer()); } finally { void ac.close(); }
+      let srcStart = au ? au.in : 0, T = au ? len(au) : (want > 0 ? Math.min(want, buf.duration) : buf.duration);
+      if (au && want > 0 && T > want && au.in === 0) T = want;
+      if (!au) srcStart = want > 0 ? loudestWindow(buf, T) : 0;
+      const info = detectBeats(buf);
+      const beats = info.beats.filter((b) => b >= srcStart && b < srcStart + T).map((b) => b - srcStart);
+      // Unique source media (a clip used twice counts once); videos advance through their footage.
+      const seen = new Map<Blob, Clip>();
+      for (const c of this.main) if (!seen.has(c.blob)) seen.set(c.blob, c);
+      const tpl = [...seen.values()];
+      const plan = planBeatEdit(beats, T, tpl.map((c) => ({ kind: c.kind, dur: c.srcDur })),
+        { pace, transition: trans as 'none' | 'auto' | TransitionType });
+      if (!plan.length) { this.setStatus('Could not build an edit from this audio.'); return; }
+      this.pushHistory();
+      this.main = plan.map((sg) => {
+        const t = tpl[sg.media]!;
+        return { ...t, id: uid(), in: sg.srcIn, out: sg.srcOut, speed: sg.speed, crop: t.crop && { ...t.crop },
+          fadeIn: undefined, fadeOut: undefined, transition: sg.transition ?? undefined };
+      });
+      this.mainFit = 'cover';
+      this.muteOriginal = true;
+      if (!au) {
+        au = { id: uid(), blob: file!, name: file!.name.replace(/\.[^.]+$/, '') || file!.name, srcDur: buf.duration,
+          in: srcStart, out: srcStart + T, start: 0, volume: 1, fadeIn: 0, fadeOut: 0 };
+        this.audios.push(au);
+      } else { au.start = 0; au.in = srcStart; au.out = srcStart + T; }
+      au.fadeOut = Math.min(1, T / 4);
+      this.sel = { track: 'au', id: au.id };
+      this.t = 0;
+      this.setStatus(`✨ Synced ${plan.length} cuts to ${info.bpm} BPM · ${fmtT(T)}. Press play, or tweak any cut.`);
+      this.structureChanged();
+      this.syncControls();
+    } catch (err) {
+      this.setStatus(`Beat sync failed: ${err instanceof Error ? err.message : 'could not read that audio'}`);
+    }
   }
 
   private slider(label: string, min: number, max: number, step: number, value: number,
@@ -2179,7 +2337,9 @@ export class VideoEditor implements DocEditor {
       if (fi > 0) a = Math.min(a, loc / fi);
       if (fo > 0) a = Math.min(a, (L - loc) / fo);
       ctx.globalAlpha = clamp(a, 0, 1);
-      this.drawSource(this.mediaFor(cur.clip), cur.clip, px(this.mainBox), this.mainFit);
+      const d = this.transDur(cur.clip), prev = this.main[cur.index - 1];
+      if (d > 0 && prev && loc < d) this.drawTransition(cur.clip, prev, cur.clip.transition!.type, loc / d, px(this.mainBox));
+      else this.drawSource(this.mediaFor(cur.clip), cur.clip, px(this.mainBox), this.mainFit);
       ctx.globalAlpha = 1;
     }
 
@@ -2222,6 +2382,34 @@ export class VideoEditor implements DocEditor {
         ctx.restore();
       }
     }
+  }
+
+  // Preview of an xfade: the previous clip's last frame (held) giving way to the new clip.
+  private drawTransition(cur: Clip, prev: Clip, type: TransitionType, p: number, b: Rect): void {
+    const ctx = this.ctx, base = ctx.globalAlpha;
+    const A = (): void => this.drawSource(this.mediaFor(prev), prev, b, this.mainFit);
+    const B = (): void => this.drawSource(this.mediaFor(cur), cur, b, this.mainFit);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(b.x, b.y, b.w, b.h); ctx.clip();
+    if (type === 'fade') { A(); ctx.globalAlpha = base * p; B(); }
+    else if (type === 'fadeblack') {
+      if (p < 0.5) { ctx.globalAlpha = base * (1 - 2 * p); A(); } else { ctx.globalAlpha = base * (2 * p - 1); B(); }
+    } else if (type === 'slideleft') {
+      ctx.save(); ctx.translate(-b.w * p, 0); A(); ctx.restore();
+      ctx.save(); ctx.translate(b.w * (1 - p), 0); B(); ctx.restore();
+    } else if (type === 'wipeleft') {
+      A();
+      ctx.beginPath(); ctx.rect(b.x + b.w * (1 - p), b.y, b.w * p, b.h); ctx.clip(); B();
+    } else if (type === 'circleopen') {
+      A();
+      ctx.beginPath(); ctx.arc(b.x + b.w / 2, b.y + b.h / 2, p * Math.hypot(b.w, b.h) / 2, 0, Math.PI * 2); ctx.clip(); B();
+    } else { // zoomin
+      A();
+      const k = 1 + 0.4 * (1 - p), cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+      ctx.globalAlpha = base * p; ctx.translate(cx, cy); ctx.scale(k, k); ctx.translate(-cx, -cy); B();
+    }
+    ctx.restore();
+    ctx.globalAlpha = base;
   }
 
   // Preview-only overlay: platform UI zones (top 10%, bottom 20%, right 14%) and

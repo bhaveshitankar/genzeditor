@@ -77,7 +77,9 @@ function systemPrompt(kind: AiKind, meta: Record<string, unknown> = {}): string 
         '{"patch":{...}} using only these keys: trimStart (sec), trimEnd (sec),',
         'mute (bool), speed (number), rotate (0|90|180|270), flipH (bool), flipV (bool),',
         'brightness, contrast, saturation (numbers, 0 = no change),',
-        'outFmt ("mp4"|"webm"), text (string overlay).',
+        'outFmt ("mp4"|"webm"), text (string overlay),',
+        'transition ({type:"fade"|"fadeblack"|"slideleft"|"wipeleft"|"circleopen"|"zoomin", duration?:seconds} — applied to every cut between clips),',
+        'beatSync ({pace?:"fast"|"medium"|"slow", transition?:"auto"|"none"|<transition type>, length?:seconds} — auto-cut the clips/photos to the beat of the song on the audio track; use for "make it like an Instagram reel / sync to the music").',
         `Video duration is ${String(meta.duration ?? '?')} seconds.`,
         'Only include keys the user actually requested. No commentary.',
       ].join('\n');

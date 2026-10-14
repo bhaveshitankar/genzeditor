@@ -376,3 +376,13 @@
   .vid-btn, .vid-tab { min-height: 44px; }
   .vid-editor { padding-bottom: env(safe-area-inset-bottom, 0); }
 }
+
+/* ---- Transitions picker + ✨ beat sync ---- */
+.vid-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.vid-chip {
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  border-radius: 999px; padding: 6px 12px; font-size: 0.85rem; cursor: pointer;
+}
+.vid-chip.active { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
+.vid-magic-btn { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; font-weight: 600; }
+.vid-magic { border: 1px dashed var(--brand-500); border-radius: var(--r-md, 10px); padding: 10px; margin-top: 10px; }
