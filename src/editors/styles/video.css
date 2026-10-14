@@ -130,7 +130,8 @@
 }
 .vt-clip.au .vt-clip-name { bottom: 3px; }
 .vt-clip.img { background-size: auto 100%; }
-.vt-clip.sel { border-color: #fff; box-shadow: 0 0 0 2px var(--brand-500); z-index: 2; }
+.vt-clip.sel { border-color: var(--brand-500); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45), 0 2px 10px color-mix(in srgb, var(--brand-500) 55%, transparent); z-index: 2; }
+.vt-clip:not(.sel) { opacity: 0.88; }
 .vt-clip.dragging { opacity: 0.75; cursor: grabbing; z-index: 3; }
 .vt-clip-name {
   position: absolute;
@@ -156,7 +157,13 @@
 }
 .vt-handle.l { left: 0; }
 .vt-handle.r { right: 0; }
-.vt-handle:hover, .vt-clip.sel .vt-handle { background: rgba(255, 255, 255, 0.85); }
+/* Grips: slim rounded bars, only prominent on the selected clip. */
+.vt-handle { background: transparent; display: flex; align-items: center; justify-content: center; }
+.vt-handle::after { content: ""; width: 3px; height: 40%; min-height: 12px; border-radius: 2px; background: rgba(255, 255, 255, 0.45); }
+.vt-clip.sel .vt-handle { background: color-mix(in srgb, var(--brand-500) 70%, transparent); }
+.vt-clip.sel .vt-handle::after { background: #fff; }
+@media (hover: hover) { .vt-handle:hover::after { background: #fff; } }
+@media (pointer: coarse) { .vt-handle { width: 16px; } }
 
 .vt-playhead {
   position: absolute;
@@ -288,7 +295,7 @@
   transition: all 0.14s var(--ease);
   white-space: nowrap;
 }
-.vid-btn:hover:not(:disabled) { border-color: var(--brand-500); background: var(--surface-hover); }
+@media (hover: hover) { .vid-btn:hover:not(:disabled) { border-color: var(--brand-500); background: var(--surface-hover); } }
 .vid-btn.active { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
 .vid-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
