@@ -195,7 +195,7 @@ html.is-mobile .m-drawer-quick button {
   color: var(--text);
   font-weight: 600;
 }
-html.is-mobile .m-drawer-quick button:first-child { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
+html.is-mobile .m-drawer-quick button:first-child svg { color: var(--brand-500); }
 html.is-mobile .files-panel > .panel-head { padding: 6px 14px 2px; }
 html.is-mobile .files-panel .panel-search { padding: 0 12px 6px; }
 html.is-mobile .files-panel .panel-search input { min-height: 44px; font-size: 16px; }
