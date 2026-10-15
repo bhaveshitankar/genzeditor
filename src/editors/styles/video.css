@@ -79,7 +79,7 @@
   border-bottom: 1px solid var(--border);
 }
 .vt-scroll { flex: 1 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
-.vt-inner { position: relative; min-width: 100%; padding-right: 16px; cursor: text; }
+.vt-inner { position: relative; min-width: 100%; padding-right: 16px; cursor: text; touch-action: none; }
 
 .vt-label.ruler, .vt-ruler { height: 22px; }
 .vt-label.main, .vt-row.main { height: 58px; }
@@ -393,3 +393,14 @@
 .vid-chip.active { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; }
 .vid-magic-btn { background: var(--brand-gradient); color: var(--on-brand, #fff); border-color: transparent; font-weight: 600; }
 .vid-magic { border: 1px dashed var(--brand-500); border-radius: var(--r-md, 10px); padding: 10px; margin-top: 10px; }
+
+/* Transition markers between main clips */
+.vt-join {
+  position: absolute; top: 50%; transform: translate(-50%, -50%); z-index: 4;
+  width: 26px; height: 26px; padding: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(20, 16, 30, 0.88); color: #fff; font-size: 13px; line-height: 1;
+  border: 2px solid var(--brand-500); cursor: pointer; touch-action: none;
+}
+.vt-join.has { background: var(--brand-gradient); border-color: #fff; }
+@media (pointer: coarse) { .vt-join { width: 32px; height: 32px; font-size: 15px; } }

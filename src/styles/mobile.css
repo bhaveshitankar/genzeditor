@@ -631,3 +631,28 @@ html.is-mobile .vid-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width
 html.is-mobile .vid-chip { flex: 0 0 auto; min-height: 40px; padding: 0 16px; }
 html.is-mobile .vid-panel .vid-btn, html.is-mobile .vid-panel select { min-height: 44px; }
 html.is-mobile .vid-zoom { display: none; } /* pinch the timeline instead */
+
+/* Phone video editor: preview + timeline own the screen; tool panels float as a
+   semi-transparent sheet that only opens when a tab is tapped. */
+html.is-mobile .vid-editor { position: relative; height: calc(100dvh - 60px); gap: 6px; overflow: hidden; padding-bottom: 0; }
+html.is-mobile .vid-stage { flex: 1 1 0; min-height: 0; padding: 4px; }
+html.is-mobile .vid-canvas { max-height: 100%; max-width: 100%; }
+html.is-mobile .vid-panel {
+  display: none !important;
+  position: absolute; left: 6px; right: 6px; bottom: calc(78px + var(--m-safe-bottom, 0px));
+  max-height: 46%; overflow-y: auto; z-index: 30; border-radius: 18px;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+}
+html.is-mobile .vid-editor.sheet-open .vid-panel.active { display: flex !important; }
+/* A tab only looks selected while its sheet is open. */
+html.is-mobile .vid-editor:not(.sheet-open) .vid-tab.active { background: var(--surface); color: var(--text-muted); border-color: var(--border); }
+/* Status text floats over the preview instead of eating a row. */
+html.is-mobile .vid-statusbar {
+  position: absolute; left: 10px; right: 10px; top: 8px; z-index: 10; pointer-events: none;
+  font-size: 12px; color: #fff; min-height: 0;
+}
+html.is-mobile .vid-statusbar .vid-status { background: rgba(0, 0, 0, 0.55); border-radius: 999px; padding: 3px 10px; }
+html.is-mobile .vid-statusbar .vid-status:empty { display: none; }
+html.is-mobile .vid-statusbar .vid-cancel { pointer-events: auto; }

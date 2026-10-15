@@ -421,8 +421,17 @@ export class ImageEditor {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.beginPath();
-      l.points.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-      if (l.points.length === 1) { ctx.lineTo(l.points[0].x + 0.01, l.points[0].y); }
+      const pts = l.points;
+      if (pts.length === 1) { ctx.moveTo(pts[0].x, pts[0].y); ctx.lineTo(pts[0].x + 0.01, pts[0].y); }
+      else {
+        // Midpoint quadratic smoothing: round, even strokes instead of a polyline of raw samples.
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length - 1; i++) {
+          ctx.quadraticCurveTo(pts[i].x, pts[i].y, (pts[i].x + pts[i + 1].x) / 2, (pts[i].y + pts[i + 1].y) / 2);
+        }
+        const last = pts[pts.length - 1];
+        ctx.lineTo(last.x, last.y);
+      }
       ctx.stroke();
     } else if (l.kind === 'text') {
       ctx.fillStyle = l.color;
@@ -545,6 +554,7 @@ export class ImageEditor {
   // ---- Pointer handling ----
 
   // One-finger pan state (touch + Select tool on empty space).
+  private drawRaf = 0;
   private touchPan: { x: number; y: number; moved: boolean } | null = null;
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -684,7 +694,11 @@ export class ImageEditor {
     if (!cur) return;
 
     if (this.drag.mode === 'draw' && (cur.kind === 'brush' || cur.kind === 'eraser')) {
-      cur.points.push(p);
+      // Every sample the browser coalesced between frames, so fast strokes stay accurate.
+      const evs = e.getCoalescedEvents?.() ?? [];
+      if (evs.length) for (const ev of evs) cur.points.push(this.toImage(ev)); else cur.points.push(p);
+      if (!this.drawRaf) this.drawRaf = requestAnimationFrame(() => { this.drawRaf = 0; this.render(); });
+      return;
     } else if (this.drag.mode === 'shape' && (cur.kind === 'rect' || cur.kind === 'ellipse' || cur.kind === 'arrow')) {
       cur.w = dx; cur.h = dy;
     } else if (this.drag.mode === 'move' && this.drag.orig) {

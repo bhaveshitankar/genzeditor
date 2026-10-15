@@ -218,6 +218,7 @@ export class VideoEditor implements DocEditor {
     this.raf = 0;
     document.removeEventListener('pointermove', this.onDocMove);
     document.removeEventListener('pointerup', this.onDocUp);
+    document.removeEventListener('pointercancel', this.onDocUp);
     document.removeEventListener('keydown', this.onKey);
     this.resizeObs?.disconnect();
     for (const el of this.media.values()) {
@@ -1307,6 +1308,10 @@ export class VideoEditor implements DocEditor {
       this.host.addEventListener(ev, wake, { passive: true });
     }
     this.tlInner.addEventListener('pointerdown', this.onTlDown);
+    const closeSheet = (): void => { if (isMobileUi()) this.host.querySelector('.vid-editor')?.classList.remove('sheet-open'); };
+    this.host.querySelector('.vid-stage')?.addEventListener('pointerdown', closeSheet);
+    this.tlScroll.addEventListener('pointerdown', closeSheet);
+    document.addEventListener('pointercancel', this.onDocUp);
     this.canvas.addEventListener('pointerdown', this.onCanvasDown);
     this.canvas.addEventListener('pointermove', this.onCanvasHover);
     document.addEventListener('pointermove', this.onDocMove);
@@ -1317,7 +1322,12 @@ export class VideoEditor implements DocEditor {
 
     // Tabs.
     this.host.querySelectorAll<HTMLElement>('.vid-tab').forEach((t) => {
-      t.addEventListener('click', () => this.showTab(t.dataset.tab!));
+      t.addEventListener('click', () => {
+        const root = this.host.querySelector('.vid-editor')!;
+        // Phone: tapping the open tab again collapses its sheet.
+        if (isMobileUi() && t.classList.contains('active') && root.classList.contains('sheet-open')) { root.classList.remove('sheet-open'); return; }
+        this.showTab(t.dataset.tab!, true);
+      });
     });
 
     // Layout.
@@ -1451,7 +1461,9 @@ export class VideoEditor implements DocEditor {
     }
   }
 
-  private showTab(tab: string): void {
+  // On phones the panels are a floating sheet: closed until a tab is tapped (`open`).
+  private showTab(tab: string, open = true): void {
+    if (open && isMobileUi()) this.host.querySelector('.vid-editor')?.classList.add('sheet-open');
     if (tab === 'export') this.updateEstimate();
     this.host.querySelectorAll<HTMLElement>('.vid-tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === tab));
     this.host.querySelectorAll<HTMLElement>('.vid-panel').forEach((x) => x.classList.toggle('active', x.dataset.panel === tab));
@@ -1508,7 +1520,7 @@ export class VideoEditor implements DocEditor {
     this.sel = s;
     this.tlInner.querySelectorAll<HTMLElement>('.vt-clip').forEach((n) => n.classList.toggle('sel', n.dataset.id === s?.id));
     if (changed) this.renderProps();
-    if (switchTab && s) this.showTab('clip');
+    if (switchTab && s) this.showTab('clip', false);
   }
 
   // ---- Clip properties panel --------------------------------------------------
@@ -1745,7 +1757,7 @@ export class VideoEditor implements DocEditor {
 
   // Transition picker for the cut into main clip `c` (chips + length + apply-to-all).
   private transitionGroup(c: Clip): HTMLElement {
-    const g = el('div', 'vid-props-group');
+    const g = el('div', 'vid-props-group vid-trans-group');
     const gt = el('span', 'vid-group-title');
     gt.textContent = 'Transition from previous clip';
     g.appendChild(gt);
@@ -1885,7 +1897,18 @@ export class VideoEditor implements DocEditor {
 
     const mainRow = el('div', 'vt-row main');
     let s = 0;
-    for (const c of this.main) { mainRow.appendChild(this.clipEl(c, s, 'main')); s += len(c); }
+    this.main.forEach((c, i) => {
+      mainRow.appendChild(this.clipEl(c, s, 'main'));
+      if (i > 0) {
+        const j = el('button', `vt-join${c.transition ? ' has' : ''}`) as HTMLButtonElement;
+        j.type = 'button'; j.dataset.id = c.id; j.textContent = '⇄';
+        j.title = c.transition ? 'Change transition' : 'Add transition';
+        j.setAttribute('aria-label', j.title);
+        j.style.left = `${s * pps}px`;
+        mainRow.appendChild(j);
+      }
+      s += len(c);
+    });
     inner.appendChild(mainRow);
     labels.push({ cls: 'main', text: 'Video' });
 
@@ -1964,8 +1987,21 @@ export class VideoEditor implements DocEditor {
     const x = this.tlX(e);
     const node = target.closest<HTMLElement>('.vt-clip');
     e.preventDefault();
+    const join = target.closest<HTMLElement>('.vt-join');
+    if (join) {
+      const c = this.main.find((m) => m.id === join.dataset.id);
+      if (c) {
+        this.select({ track: 'main', id: c.id }, false);
+        this.showTab('clip', true);
+        this.t = this.startOf(c) + 0.01;
+        requestAnimationFrame(() => this.propsEl.querySelector('.vid-trans-group')?.scrollIntoView({ block: 'nearest' }));
+      }
+      return;
+    }
     if (!node) {
       this.drag = { kind: 'scrub' };
+      // Keep receiving moves even if the finger leaves the strip; stops the browser taking over the gesture.
+      try { this.tlInner.setPointerCapture(e.pointerId); } catch { /* not supported */ }
       this.seek(x / this.pps);
       return;
     }
@@ -2001,7 +2037,14 @@ export class VideoEditor implements DocEditor {
       return;
     }
     const x = this.tlX(e);
-    if (d.kind === 'scrub') { this.seek(x / this.pps); return; }
+    if (d.kind === 'scrub') {
+      this.seek(x / this.pps);
+      // Edge auto-scroll so the playhead can be dragged past the visible part.
+      const r = this.tlScroll.getBoundingClientRect();
+      if (e.clientX > r.right - 28) this.tlScroll.scrollLeft += 14;
+      else if (e.clientX < r.left + 28) this.tlScroll.scrollLeft -= 14;
+      return;
+    }
     const dt = (x - d.x0) / this.pps;
     if (d.kind === 'reorder') {
       if (Math.abs(x - d.x0) > 5) d.moved = true;
@@ -2662,6 +2705,8 @@ function fmtT(sec: number): string {
 }
 
 function f3(n: number): string { return (Math.round(n * 1000) / 1000).toString(); }
+
+const isMobileUi = (): boolean => document.documentElement.classList.contains('is-mobile');
 
 function el(tag: string, cls = ''): HTMLElement {
   const n = document.createElement(tag);
