@@ -1511,6 +1511,11 @@ export class AppShell {
       const ext = current.contentType === 'image/jpeg' ? 'jpg' : 'png';
       if (!new RegExp(`\\.${ext}$`, 'i').test(name)) name = name.replace(/\.[^.]+$/, '') + '.' + ext;
     }
+    // Video exports honour the Format chosen in the Export tab (MP4 / WebM).
+    if (this.currentFileKind === 'video') {
+      const ext = /mp4/i.test(current.contentType) ? 'mp4' : /webm/i.test(current.contentType) ? 'webm' : '';
+      if (ext && !new RegExp(`\\.${ext}$`, 'i').test(name)) name = name.replace(/\.[^.]+$/, '') + '.' + ext;
+    }
     const url = URL.createObjectURL(current.blob);
     const a = document.createElement('a');
     a.href = url;

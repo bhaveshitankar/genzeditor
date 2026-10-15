@@ -1202,7 +1202,7 @@ export class VideoEditor implements DocEditor {
         </div>
 
         <div class="vid-panel" data-panel="export">
-          <label class="vid-field">Format
+          <label class="vid-field">Download as
             <select data-role="fmt">
               <option value="mp4">MP4 (H.264)</option>
               <option value="webm">WebM (VP9)</option>
