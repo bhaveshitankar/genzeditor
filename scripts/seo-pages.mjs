@@ -94,7 +94,7 @@ function body(t) {
   return `<main id="seo">${STYLE}<h1>${esc(t.h1)}</h1><p>${esc(t.lead)}</p>
 <h2>What you can do</h2><ul>${t.points.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>
 <h2>Private by design</h2><p>GenZ Editor runs entirely in your browser. Your files are processed on your own device and are never uploaded unless you choose to create a share link. No account, no watermark, no limits.</p>
-<h2>Frequently asked questions</h2>${faq}${nav()}</main>`;
+<h2>Frequently asked questions</h2>${faq}</main>`;
 }
 
 function ld(t, url) {
