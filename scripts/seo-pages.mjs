@@ -146,7 +146,7 @@ export function seoPages() {
       writeFileSync(resolve(outDir, 'tools/index.html'), stamp(home, hub, `${SITE}/tools/`));
       // Home page: add crawlable links to every tool.
       writeFileSync(resolve(outDir, 'index.html'),
-        home.replace('<div id="app"></div>', `<div id="app"></div>\n<div id="seo">${STYLE}${nav()}</div>`));
+        home.replace('<div id="app"></div>', `<div id="app"></div>\n<div style="position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0">${nav()}</div>`));
       const today = new Date().toISOString().slice(0, 10);
       const urls = [['/', '1.0'], ['/tools/', '0.8'], ...TOOLS.map((t) => [`/${t.slug}/`, '0.9'])];
       writeFileSync(resolve(outDir, 'sitemap.xml'), `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${
