@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx';
 import './styles/spreadsheet.css';
 import type { DocEditor } from './registry';
 import { actionForKey, getAppClipboard, isNativeTextTarget, setAppClipboard, type EditCommands } from './editCommands';
-import { XlsxPackage, SheetMeta, gridFromSheet, applyFmt, chartSvg, key as mkey } from './xlsxPackage';
+import { XlsxPackage, SheetMeta, gridFromSheet, applyFmt, chartSvg, chartDataFor, key as mkey, type AddedChart, type Pos, type Rng, type SheetObject } from './xlsxPackage';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -567,6 +567,8 @@ export class SpreadsheetEditor implements DocEditor {
       td.textContent = this.fmtShown(r, c, v);
       if (this.isFormulaError(v)) td.dataset.err = '1'; else delete td.dataset.err;
     }
+    const tbl = this.grid.querySelector<HTMLElement>('.sheet-table');
+    if (tbl && this.meta().addedCharts.length) this.renderObjects(tbl);
   }
 
   // Apply the cell's Excel number format (dates, %, currency…) to a display value.
@@ -700,6 +702,12 @@ export class SpreadsheetEditor implements DocEditor {
     opBtn('⊞ Merge ▾', 'Merge cells options', () => {});
     const mergeBtn = ops.lastElementChild as HTMLButtonElement;
     mergeBtn.addEventListener('click', () => this.openMergeMenu(mergeBtn));
+    if (this.pkg) {
+      opBtn('📊 Chart ▾', 'Insert chart from selected cells', () => {});
+      const chartBtn = ops.lastElementChild as HTMLButtonElement;
+      chartBtn.addEventListener('click', () => this.openPopMenu(chartBtn, this.chartItems()));
+      opBtn('▦ Table', 'Format selected cells as a table', () => this.withHistory(() => this.insertTable()));
+    }
     opBtn('A→Z', 'Sort rows by selected column, ascending', () => this.sortByColumn(true));
     opBtn('Z→A', 'Sort rows by selected column, descending', () => this.sortByColumn(false));
     opBtn('↶', 'Undo (Cmd/Ctrl+Z)', () => this.undo());
@@ -789,6 +797,15 @@ export class SpreadsheetEditor implements DocEditor {
     const td = this.tdAt(r, c);
     if (td) td.classList.add('sel');
     this.range = { r1: r, c1: c, r2: r, c2: c };
+    this.paintRange();
+    this.positionFillHandle();
+    this.syncBar();
+  }
+
+  // Shift+click: grow the selection from the anchor cell to (r, c).
+  private extendTo(r: number, c: number) {
+    this.selFocus = { r, c };
+    this.range = this.norm(this.selAnchor, this.selFocus);
     this.paintRange();
     this.positionFillHandle();
     this.syncBar();
@@ -1025,12 +1042,12 @@ export class SpreadsheetEditor implements DocEditor {
     ];
   }
 
-  private openMergeMenu(anchor: HTMLElement) {
+  private openPopMenu(anchor: HTMLElement, items: [string, () => void][]) {
     this.root.querySelector('.sheet-popmenu')?.remove();
     const menu = document.createElement('div');
     menu.className = 'sheet-popmenu';
     menu.setAttribute('role', 'menu');
-    for (const [label, fn] of this.mergeItems()) {
+    for (const [label, fn] of items) {
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = label;
@@ -1044,6 +1061,99 @@ export class SpreadsheetEditor implements DocEditor {
     this.root.appendChild(menu);
     const close = (e: Event) => { if (!menu.contains(e.target as Node)) { menu.remove(); document.removeEventListener('pointerdown', close, true); } };
     setTimeout(() => document.addEventListener('pointerdown', close, true), 0);
+  }
+
+  private openMergeMenu(anchor: HTMLElement) { this.openPopMenu(anchor, this.mergeItems()); }
+
+  private chartItems(): [string, () => void][] {
+    return [
+      ['Column chart', () => this.insertChart('col')],
+      ['Bar chart', () => this.insertChart('bar')],
+      ['Line chart', () => this.insertChart('line')],
+      ['Area chart', () => this.insertChart('area')],
+      ['Pie chart', () => this.insertChart('pie')],
+    ];
+  }
+
+  // The selected range; for a single cell, its contiguous data region (else the used range).
+  private regionOf(): Rng | null {
+    const g = this.aoa();
+    const filled = (r: number, c: number) => (g[r]?.[c] ?? '') !== '';
+    const rg = this.curRange();
+    if (rg.r1 !== rg.r2 || rg.c1 !== rg.c2) return { ...rg };
+    let { r1, c1, r2, c2 } = rg;
+    if (!filled(r1, c1)) {
+      let ur = -1, uc = -1;
+      g.forEach((row, r) => (row ?? []).forEach((v, c) => { if ((v ?? '') !== '') { ur = Math.max(ur, r); uc = Math.max(uc, c); } }));
+      return ur < 0 ? null : { r1: 0, c1: 0, r2: ur, c2: uc };
+    }
+    const any = (ra: number, rb: number, ca: number, cb: number) => {
+      for (let r = Math.max(0, ra); r <= rb; r++) for (let c = Math.max(0, ca); c <= cb; c++) if (filled(r, c)) return true;
+      return false;
+    };
+    for (let grew = true; grew;) {
+      grew = false;
+      if (r1 > 0 && any(r1 - 1, r1 - 1, c1 - 1, c2 + 1)) { r1--; grew = true; }
+      if (r2 < g.length - 1 && any(r2 + 1, r2 + 1, c1 - 1, c2 + 1)) { r2++; grew = true; }
+      if (c1 > 0 && any(r1 - 1, r2 + 1, c1 - 1, c1 - 1)) { c1--; grew = true; }
+      if (any(r1 - 1, r2 + 1, c2 + 1, c2 + 1) && c2 < 300) { c2++; grew = true; }
+    }
+    return { r1, c1, r2, c2 };
+  }
+
+  private insertChart(type: AddedChart['type']) {
+    const rg = this.regionOf();
+    if (!rg) return;
+    const txt = (r: number, c: number) => { const v = this.cellValue(r, c); return v !== '' && !Number.isFinite(Number(v)); };
+    const rows = rg.r2 - rg.r1 + 1, cols = rg.c2 - rg.c1 + 1;
+    let catCol = false;
+    if (cols > 1 && rows > 1) { catCol = true; for (let r = rg.r1 + 1; r <= rg.r2; r++) if (!txt(r, rg.c1)) { catCol = false; break; } }
+    let headerRow = rows > 1;
+    for (let c = rg.c1 + (catCol ? 1 : 0); c <= rg.c2 && headerRow; c++) if (!txt(rg.r1, c)) headerRow = false;
+    const anchorCol = rg.c2 + 2;
+    this.withHistory(() => {
+      const ac: AddedChart = {
+        id: `ch${Date.now().toString(36)}`, type, title: '', range: { ...rg }, headerRow, catCol,
+        from: { col: anchorCol, row: rg.r1, colOff: 0, rowOff: 0 }, w: 480, h: 300,
+      };
+      const d = chartDataFor(ac, (r, c) => this.displayValue(this.aoa(), r, c));
+      if (d.series.length === 1) ac.title = d.series[0]!.name.startsWith('Series ') ? '' : d.series[0]!.name;
+      this.meta().addedCharts.push(ac);
+      this.renderGrid();
+    });
+  }
+
+  private insertTable() {
+    const rg = this.regionOf();
+    if (!rg) return;
+    const m = this.meta();
+    const seen = new Set<string>();
+    for (let c = rg.c1; c <= rg.c2; c++) {
+      let name = this.cellValue(rg.r1, c).trim() || `Column${c - rg.c1 + 1}`;
+      while (seen.has(name.toLowerCase())) name += '_';
+      seen.add(name.toLowerCase());
+      if (name !== this.cellValue(rg.r1, c)) this.setCellValue(rg.r1, c, name);
+    }
+    m.addedTables = m.addedTables.filter((t) => t.range.r2 < rg.r1 || t.range.r1 > rg.r2 || t.range.c2 < rg.c1 || t.range.c1 > rg.c2);
+    let n = m.addedTables.length + 1;
+    while (m.addedTables.some((t) => t.name === `Table${n}`)) n++;
+    m.addedTables.push({ name: `Table${n}`, range: { ...rg } });
+    this.renderGrid();
+  }
+
+  // Convert a pixel position inside the table to a cell anchor (for dragging charts).
+  private anchorAtPx(table: HTMLElement, x: number, y: number): Pos {
+    const t0 = table.getBoundingClientRect();
+    const cols = Array.from(table.querySelectorAll<HTMLElement>('thead th')).slice(1);
+    const rows = Array.from(table.querySelectorAll<HTMLElement>('th.sheet-rownum'));
+    const find = (els: HTMLElement[], v: number, axis: 'x' | 'y') => {
+      let hit = 0;
+      els.forEach((e, i) => { const r = e.getBoundingClientRect(); if ((axis === 'x' ? r.left - t0.left : r.top - t0.top) <= v) hit = i; });
+      const r = els[hit]?.getBoundingClientRect();
+      return { i: hit, off: Math.max(0, Math.round(v - (axis === 'x' ? (r?.left ?? t0.left) - t0.left : (r?.top ?? t0.top) - t0.top))) };
+    };
+    const cx = find(cols, x, 'x'), ry = find(rows, y, 'y');
+    return { col: cx.i, row: ry.i, colOff: cx.off * 9525, rowOff: ry.off * 9525 };
   }
 
   private addSheet() {
@@ -1296,6 +1406,8 @@ export class SpreadsheetEditor implements DocEditor {
         if (xf?.css) td.style.cssText = xf.css;
         const colW = meta.colW.get(c);
         if (colW) { td.style.minWidth = td.style.maxWidth = `${colW}px`; }
+        const tb = meta.addedTables.find((t) => r >= t.range.r1 && r <= t.range.r2 && c >= t.range.c1 && c <= t.range.c2);
+        if (tb) { td.classList.add('tbl'); if (r === tb.range.r1) td.classList.add('tbl-head'); else if ((r - tb.range.r1) % 2 === 0) td.classList.add('tbl-band'); }
         if (!this.pkg && meta.centered.has(mkey(r, c))) td.style.textAlign = 'center';
         const mg = anchors.get(mkey(r, c));
         if (mg) {
@@ -1310,12 +1422,12 @@ export class SpreadsheetEditor implements DocEditor {
           // long-press menu acts on this cell.
           td.addEventListener('pointerdown', (e) => {
             if (this.formulaEditing()) { e.preventDefault(); return; }
-            if (this.rangeMode || e.pointerType === 'mouse') return;
+            if (this.rangeMode || e.shiftKey || e.pointerType === 'mouse') return;
             const rg = this.curRange();
             const inside = r >= rg.r1 && r <= rg.r2 && c >= rg.c1 && c <= rg.c2;
             if (!inside) this.select(r, c);
           });
-          td.addEventListener('click', () => this.touchTap(r, c));
+          td.addEventListener('click', (e) => { if (e.shiftKey) { this.extendTo(r, c); return; } this.touchTap(r, c); });
           td.addEventListener('dblclick', () => this.focusBar());
           if (r === this.sel.r && c === this.sel.c) td.classList.add('sel');
           tr.appendChild(td);
@@ -1344,7 +1456,11 @@ export class SpreadsheetEditor implements DocEditor {
           if (this.sel.r === r && this.sel.c === c) this.cellInput.value = td.textContent ?? '';
         });
         td.addEventListener('keydown', (e) => this.onCellKey(e, r, c));
-        td.addEventListener('pointerdown', (e) => this.startSelectDrag(e, r, c));
+        td.addEventListener('mousedown', (e) => { if (e.shiftKey) e.preventDefault(); });
+        td.addEventListener('pointerdown', (e) => {
+          if (e.shiftKey) { e.preventDefault(); this.extendTo(r, c); return; }
+          this.startSelectDrag(e, r, c);
+        });
         if (r === this.sel.r && c === this.sel.c) td.classList.add('sel');
         tr.appendChild(td);
       }
@@ -1364,7 +1480,15 @@ export class SpreadsheetEditor implements DocEditor {
   // cell anchors. They are display-only; the originals are kept untouched on save.
   private renderObjects(table: HTMLElement) {
     this.grid.querySelector('.sheet-objects')?.remove();
-    const objs = this.meta().objects;
+    const meta = this.meta();
+    const grid = this.aoa();
+    const objs: SheetObject[] = [
+      ...meta.objects,
+      ...meta.addedCharts.map((ac): SheetObject => ({
+        kind: 'chart', from: ac.from, ext: { cx: ac.w * 9525, cy: ac.h * 9525 }, added: ac,
+        chart: chartDataFor(ac, (r, c) => this.displayValue(grid, r, c)),
+      })),
+    ];
     if (!objs.length) return;
     const layer = document.createElement('div');
     layer.className = 'sheet-objects';
@@ -1390,6 +1514,45 @@ export class SpreadsheetEditor implements DocEditor {
         box.appendChild(img);
       } else if (o.chart) {
         box.innerHTML = chartSvg(o.chart, W, H);
+      }
+      const ac = o.added;
+      if (ac) {
+        box.classList.add('added');
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'sheet-object-del';
+        del.textContent = '×';
+        del.title = 'Delete chart';
+        del.setAttribute('aria-label', 'Delete chart');
+        del.addEventListener('pointerdown', (e) => e.stopPropagation());
+        del.addEventListener('click', () => this.withHistory(() => { meta.addedCharts = meta.addedCharts.filter((c) => c !== ac); this.renderGrid(); }));
+        const grip = document.createElement('div');
+        grip.className = 'sheet-object-resize';
+        box.append(del, grip);
+        const drag = (e: PointerEvent, mode: 'move' | 'resize') => {
+          e.preventDefault();
+          e.stopPropagation();
+          const sx = e.clientX, sy = e.clientY, bl = left, bt = top;
+          box.setPointerCapture(e.pointerId);
+          const move = (ev: PointerEvent) => {
+            if (mode === 'move') { box.style.left = `${bl + ev.clientX - sx}px`; box.style.top = `${bt + ev.clientY - sy}px`; }
+            else { box.style.width = `${Math.max(120, W + ev.clientX - sx)}px`; box.style.height = `${Math.max(90, H + ev.clientY - sy)}px`; }
+          };
+          const up = (ev: PointerEvent) => {
+            box.removeEventListener('pointermove', move);
+            box.removeEventListener('pointerup', up);
+            if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
+            this.withHistory(() => {
+              if (mode === 'move') ac.from = this.anchorAtPx(table, Math.max(0, bl + ev.clientX - sx), Math.max(0, bt + ev.clientY - sy));
+              else { ac.w = Math.max(120, Math.round(W + ev.clientX - sx)); ac.h = Math.max(90, Math.round(H + ev.clientY - sy)); }
+              this.renderObjects(table);
+            });
+          };
+          box.addEventListener('pointermove', move);
+          box.addEventListener('pointerup', up);
+        };
+        box.addEventListener('pointerdown', (e) => { if (e.target !== del && e.target !== grip) drag(e, 'move'); });
+        grip.addEventListener('pointerdown', (e) => drag(e, 'resize'));
       }
       layer.appendChild(box);
     }
@@ -1642,6 +1805,7 @@ export class SpreadsheetEditor implements DocEditor {
       ['Clear cells', () => this.clearRange()],
       ['Bold', () => this.toggleBold()],
       ...this.mergeItems(),
+      ...(this.pkg ? [...this.chartItems().map(([l, f]): [string, () => void] => [`Insert ${l.toLowerCase()}`, f]), ['Format as table', () => this.withHistory(() => this.insertTable())] as [string, () => void]] : []),
       ['Add sheet', () => this.addSheet()],
       ['Select row', () => this.selectRow(this.sel.r)],
       ['Select column', () => this.selectColumn(this.sel.c)],

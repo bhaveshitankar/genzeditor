@@ -7,7 +7,7 @@ import * as XLSX from 'xlsx';
 
 export type Rng = { r1: number; c1: number; r2: number; c2: number };
 export interface CellOrig { raw: string; t: 'n' | 's' | 'b' | 'e'; f?: string }
-interface Pos { col: number; row: number; colOff: number; rowOff: number }
+export interface Pos { col: number; row: number; colOff: number; rowOff: number }
 export interface ChartData {
   title: string;
   type: 'col' | 'bar' | 'line' | 'area' | 'pie' | 'scatter';
@@ -21,7 +21,20 @@ export interface SheetObject {
   ext?: { cx: number; cy: number };
   src?: string;
   chart?: ChartData;
+  added?: AddedChart;
 }
+export interface AddedChart {
+  id: string;
+  type: ChartData['type'];
+  title: string;
+  range: Rng;
+  headerRow: boolean; // first row holds series names
+  catCol: boolean; // first column holds category labels
+  from: Pos;
+  w: number; // px
+  h: number;
+}
+export interface AddedTable { name: string; range: Rng }
 export interface Xf { css: string; fmt: number | string | 0 }
 
 const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -38,16 +51,21 @@ export class SheetMeta {
   rowAttrs = new Map<number, string>();
   orig = new Map<string, CellOrig>();
   objects: SheetObject[] = [];
+  drawingPart = '';
+  addedCharts: AddedChart[] = [];
+  addedTables: AddedTable[] = [];
   centered = new Set<string>(); // view-only centering when there is no package to hold a style
 
   snapshot() {
-    return { styles: [...this.styles], merges: this.merges.map((m) => ({ ...m })), rowH: [...this.rowH], rowAttrs: [...this.rowAttrs] };
+    return { styles: [...this.styles], merges: this.merges.map((m) => ({ ...m })), rowH: [...this.rowH], rowAttrs: [...this.rowAttrs], charts: JSON.parse(JSON.stringify(this.addedCharts)) as AddedChart[], tables: JSON.parse(JSON.stringify(this.addedTables)) as AddedTable[] };
   }
   restore(s: ReturnType<SheetMeta['snapshot']>) {
     this.styles = new Map(s.styles);
     this.merges = s.merges.map((m) => ({ ...m }));
     this.rowH = new Map(s.rowH);
     this.rowAttrs = new Map(s.rowAttrs);
+    this.addedCharts = s.charts ?? [];
+    this.addedTables = s.tables ?? [];
   }
 
   mergeAt(r: number, c: number): Rng | undefined {
@@ -364,7 +382,7 @@ export class XlsxPackage {
       try {
         const rels = await this.rels(info.part);
         const dpath = rels.get(rid);
-        if (dpath) meta.objects = await this.parseDrawing(dpath);
+        if (dpath) { meta.drawingPart = dpath; meta.objects = await this.parseDrawing(dpath); }
       } catch { /* decorative only; the original drawing is preserved on save */ }
     }
     return meta;
@@ -414,14 +432,114 @@ export class XlsxPackage {
     return out;
   }
 
+  private async addDrawingsAndTables(zip: JSZip, sh: ExportSheet, part: string, xmlIn: string, state: { tableId: number; tableNames: Set<string>; drawingTag: number }): Promise<string> {
+    let xml = xmlIn;
+    const meta = sh.meta;
+    if (!meta.addedCharts.length && !meta.addedTables.length) return xml;
+    const ctAdds = (state as any).ctAdds as string[];
+    const dir = part.slice(0, part.lastIndexOf('/'));
+    const file = part.slice(part.lastIndexOf('/') + 1);
+    const relsPath = `${dir}/_rels/${file}.rels`;
+    const REL_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">';
+    let srels = (await zip.file(relsPath)?.async('string')) ?? `${REL_HEAD}</Relationships>`;
+    const addRel = (rels: string, type: string, target: string): [string, string] => {
+      const ids = [...rels.matchAll(/Id="rId(\d+)"/g)].map((m) => Number(m[1]));
+      const id = `rId${Math.max(0, ...ids) + 1}`;
+      return [rels.replace('</Relationships>', `<Relationship Id="${id}" Type="${REL_NS}/${type}" Target="${target}"/></Relationships>`), id];
+    };
+    if (!/<worksheet\b[^>]*xmlns:r=/.test(xml)) xml = xml.replace('<worksheet', `<worksheet xmlns:r="${REL_NS}"`);
+    const before = (tags: string) => new RegExp(`<(${tags})\\b`).exec(xml)?.index ?? xml.lastIndexOf('</worksheet>');
+    const grid = sh.grid;
+    const val = (r: number, c: number) => sh.computed(r, c) || (grid[r]?.[c] ?? '');
+
+    if (meta.addedCharts.length) {
+      let dpath = meta.drawingPart;
+      let dxml: string, drels: string;
+      if (dpath && zip.file(dpath)) {
+        dxml = await zip.file(dpath)!.async('string');
+        const dd = dpath.slice(0, dpath.lastIndexOf('/')), df = dpath.slice(dpath.lastIndexOf('/') + 1);
+        drels = (await zip.file(`${dd}/_rels/${df}.rels`)?.async('string')) ?? `${REL_HEAD}</Relationships>`;
+      } else {
+        let n = 1;
+        while (zip.file(`xl/drawings/drawing${n}.xml`)) n++;
+        dpath = `xl/drawings/drawing${n}.xml`;
+        dxml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"></xdr:wsDr>';
+        drels = `${REL_HEAD}</Relationships>`;
+        ctAdds.push(`<Override PartName="/${dpath}" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`);
+        const [r2, rid] = addRel(srels, 'drawing', `../drawings/drawing${n}.xml`);
+        srels = r2;
+        const at = before('legacyDrawing|legacyDrawingHF|picture|oleObjects|controls|webPublishItems|tableParts|extLst');
+        xml = xml.slice(0, at) + `<drawing r:id="${rid}"/>` + xml.slice(at);
+      }
+      const px = /<(\w+):wsDr\b/.exec(dxml)?.[1] ?? 'xdr';
+      let anchors = '';
+      for (const ac of meta.addedCharts) {
+        let n = 1;
+        while (zip.file(`xl/charts/chart${n}.xml`)) n++;
+        const cpath = `xl/charts/chart${n}.xml`;
+        zip.file(cpath, chartPartXml(ac, sh.name, val));
+        ctAdds.push(`<Override PartName="/${cpath}" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`);
+        const dd = dpath.slice(0, dpath.lastIndexOf('/'));
+        let rid: string;
+        [drels, rid] = addRel(drels, 'chart', `${resolvePath(dd, '../charts').replace(/^xl\//, '../')}/chart${n}.xml`);
+        const tag = ++state.drawingTag;
+        anchors += `<${px}:oneCellAnchor><${px}:from><${px}:col>${ac.from.col}</${px}:col><${px}:colOff>${ac.from.colOff}</${px}:colOff><${px}:row>${ac.from.row}</${px}:row><${px}:rowOff>${ac.from.rowOff}</${px}:rowOff></${px}:from><${px}:ext cx="${Math.round(ac.w * EMU_PX)}" cy="${Math.round(ac.h * EMU_PX)}"/><${px}:graphicFrame macro=""><${px}:nvGraphicFramePr><${px}:cNvPr id="${tag}" name="Chart ${tag}"/><${px}:cNvGraphicFramePr/></${px}:nvGraphicFramePr><${px}:xfrm><a:off xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" x="0" y="0"/><a:ext xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" cx="0" cy="0"/></${px}:xfrm><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="${REL_NS}" r:id="${rid}"/></a:graphicData></a:graphic></${px}:graphicFrame><${px}:clientData/></${px}:oneCellAnchor>`;
+      }
+      dxml = dxml.replace(new RegExp(`</${px}:wsDr>\\s*$`), anchors + `</${px}:wsDr>`);
+      const dd = dpath.slice(0, dpath.lastIndexOf('/')), df = dpath.slice(dpath.lastIndexOf('/') + 1);
+      zip.file(dpath, dxml);
+      zip.file(`${dd}/_rels/${df}.rels`, drels);
+    }
+
+    if (meta.addedTables.length) {
+      const parts: string[] = [];
+      for (const t of meta.addedTables) {
+        let n = 1;
+        while (zip.file(`xl/tables/table${n}.xml`)) n++;
+        let name = t.name.replace(/[^A-Za-z0-9_]/g, '_') || 'Table';
+        while (state.tableNames.has(name.toLowerCase())) name += '_';
+        state.tableNames.add(name.toLowerCase());
+        const id = ++state.tableId;
+        const ref = `${colName(t.range.c1)}${t.range.r1 + 1}:${colName(t.range.c2)}${t.range.r2 + 1}`;
+        const cols = [];
+        for (let c = t.range.c1; c <= t.range.c2; c++) cols.push(`<tableColumn id="${c - t.range.c1 + 1}" name="${esc(sh.hdr?.get(key(t.range.r1, c)) ?? `Column${c - t.range.c1 + 1}`)}"/>`);
+        const tpath = `xl/tables/table${n}.xml`;
+        zip.file(tpath, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${id}" name="${name}" displayName="${name}" ref="${ref}" totalsRowShown="0"><autoFilter ref="${ref}"/><tableColumns count="${cols.length}">${cols.join('')}</tableColumns><tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/></table>`);
+        ctAdds.push(`<Override PartName="/${tpath}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>`);
+        let rid: string;
+        [srels, rid] = addRel(srels, 'table', `../tables/table${n}.xml`);
+        parts.push(`<tablePart r:id="${rid}"/>`);
+      }
+      const existing = /<tableParts\b([^>]*?)count="(\d+)"([^>]*)>/.exec(xml);
+      if (existing) {
+        xml = xml.replace(existing[0], `<tableParts${existing[1]}count="${Number(existing[2]) + parts.length}"${existing[3]}>`).replace('</tableParts>', parts.join('') + '</tableParts>');
+      } else {
+        const at = before('extLst');
+        xml = xml.slice(0, at) + `<tableParts count="${parts.length}">${parts.join('')}</tableParts>` + xml.slice(at);
+      }
+    }
+    zip.file(relsPath, srels);
+    return xml;
+  }
+
   /** Build the exported workbook: original package + patched sheet data. */
   async build(sheets: ExportSheet[]): Promise<ArrayBuffer> {
     const zip = await JSZip.loadAsync(this.bytes);
     let anyFormula = false;
+    const state = { ct: '', tableId: 0, tableNames: new Set<string>(), drawingTag: 3000 };
     let ctXml = (await zip.file('[Content_Types].xml')?.async('string')) ?? '';
     let wbXml = (await zip.file('xl/workbook.xml')!.async('string'));
     let relsXml = (await zip.file('xl/_rels/workbook.xml.rels')?.async('string')) ?? '';
 
+    for (const f of Object.keys(zip.files)) {
+      if (!/^xl\/tables\/[^/]+\.xml$/.test(f)) continue;
+      const t = await zip.file(f)!.async('string');
+      state.tableId = Math.max(state.tableId, Number(/\sid="(\d+)"/.exec(t)?.[1] ?? 0));
+      const dn = /displayName="([^"]*)"/.exec(t)?.[1];
+      if (dn) state.tableNames.add(dn.toLowerCase());
+    }
+    const ctAdds: string[] = [];
+    (state as any).ctAdds = ctAdds;
     for (const sh of sheets) {
       let part = sh.meta.part;
       let xml: string;
@@ -440,6 +558,18 @@ export class XlsxPackage {
         wbXml = wbXml.replace('</sheets>', `<sheet name="${esc(sh.name)}" sheetId="${Math.max(0, ...sids) + 1}" r:id="${rid}"/></sheets>`);
         if (!/xmlns:r=/.test(wbXml.slice(0, 600))) wbXml = wbXml.replace('<workbook ', `<workbook xmlns:r="${REL_NS}" `);
       }
+      if (sh.meta.addedTables.length) {
+        sh.hdr = new Map();
+        for (const t of sh.meta.addedTables) {
+          const seen = new Set<string>();
+          for (let c = t.range.c1; c <= t.range.c2; c++) {
+            let name = (sh.computed(t.range.r1, c) || `Column${c - t.range.c1 + 1}`).trim() || `Column${c - t.range.c1 + 1}`;
+            while (seen.has(name.toLowerCase())) name += '_';
+            seen.add(name.toLowerCase());
+            sh.hdr.set(key(t.range.r1, c), name);
+          }
+        }
+      }
       const res = buildSheetData(sh);
       anyFormula = anyFormula || res.formula;
       xml = xml.replace(/<sheetData\s*\/>|<sheetData[\s\S]*?<\/sheetData>/, res.xml);
@@ -450,6 +580,7 @@ export class XlsxPackage {
         const after = /<(phoneticPr|conditionalFormatting|dataValidations|hyperlinks|printOptions|pageMargins|pageSetup|headerFooter|rowBreaks|colBreaks|customProperties|cellWatches|ignoredErrors|smartTags|drawing|legacyDrawing|legacyDrawingHF|picture|oleObjects|controls|webPublishItems|tableParts|extLst)\b/.exec(xml);
         xml = after ? xml.slice(0, after.index) + mc + xml.slice(after.index) : xml.replace('</worksheet>', mc + '</worksheet>');
       }
+      xml = await this.addDrawingsAndTables(zip, sh, part, xml, state);
       zip.file(part, xml);
     }
 
@@ -463,6 +594,7 @@ export class XlsxPackage {
       if (/<calcPr\b/.test(wbXml)) wbXml = wbXml.replace(/<calcPr\b([^>]*?)(\/?)>/, (_m, a: string, s: string) => `<calcPr${a.replace(/\sfullCalcOnLoad="[^"]*"/, '')} fullCalcOnLoad="1"${s}>`);
       else wbXml = wbXml.replace(/(<extLst\b|<\/workbook>)/, '<calcPr fullCalcOnLoad="1"/>$1');
     }
+    if (ctAdds.length) ctXml = ctXml.replace('</Types>', ctAdds.join('') + '</Types>');
     if (this.pendingXfs.length) {
       let st = (await zip.file('xl/styles.xml')?.async('string')) ?? '';
       st = st.replace(/<cellXfs\b([^>]*?)count="(\d+)"/, (_m, a: string, n: string) => `<cellXfs${a}count="${Number(n) + this.pendingXfs.length}"`)
@@ -491,6 +623,7 @@ export interface ExportSheet {
   meta: SheetMeta;
   grid: string[][];
   computed: (r: number, c: number) => string;
+  hdr?: Map<string, string>;
 }
 
 const NUMERIC = /^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$/;
@@ -507,6 +640,8 @@ function buildSheetData(sh: ExportSheet): { xml: string; formula: boolean } {
   const cell = (r: number, c: number): string => {
     const raw = grid[r]?.[c] ?? '';
     const s = meta.styles.get(key(r, c));
+    const hn = sh.hdr?.get(key(r, c));
+    if (hn !== undefined) return `<c r="${colName(c)}${r + 1}"${s ? ` s="${s}"` : ''} t="inlineStr"><is><t xml:space="preserve">${esc(hn)}</t></is></c>`;
     const ref = `${colName(c)}${r + 1}`;
     const sa = s ? ` s="${s}"` : '';
     if (raw === '') return `<c r="${ref}"${sa}/>`;
@@ -532,6 +667,7 @@ function buildSheetData(sh: ExportSheet): { xml: string; formula: boolean } {
     return `<c r="${ref}"${sa} t="inlineStr"><is><t xml:space="preserve">${esc(raw)}</t></is></c>`;
   };
   grid.forEach((row, r) => (row ?? []).forEach((v, c) => { if ((v ?? '') !== '') put(r, c, cell(r, c)); }));
+  for (const k of sh.hdr?.keys() ?? []) { const [r, c] = k.split(',').map(Number) as [number, number]; if (!rows.get(r)?.has(c)) put(r, c, cell(r, c)); }
   for (const k of meta.styles.keys()) {
     const [r, c] = k.split(',').map(Number) as [number, number];
     if (!rows.get(r)?.has(c)) put(r, c, cell(r, c));
@@ -678,3 +814,54 @@ export function chartSvg(ch: ChartData, w: number, h: number): string {
 }
 
 export function emuToPx(n: number) { return n / EMU_PX; }
+
+
+/** Series/categories for a user-inserted chart, read live from the grid. */
+export function chartDataFor(ac: AddedChart, val: (r: number, c: number) => string): ChartData {
+  const { r1, c1, r2, c2 } = ac.range;
+  const d0 = r1 + (ac.headerRow ? 1 : 0), k0 = c1 + (ac.catCol ? 1 : 0);
+  const cats: string[] = [];
+  for (let r = d0; r <= r2; r++) cats.push(ac.catCol ? val(r, c1) : String(r - d0 + 1));
+  const series: ChartData['series'] = [];
+  for (let c = k0; c <= (ac.type === 'pie' ? k0 : c2); c++) {
+    const vals: number[] = [];
+    for (let r = d0; r <= r2; r++) { const n = Number(val(r, c)); vals.push(Number.isFinite(n) ? n : 0); }
+    series.push({ name: ac.headerRow ? val(r1, c) || `Series ${series.length + 1}` : `Series ${series.length + 1}`, vals });
+  }
+  return { title: ac.title, type: ac.type, cats, series };
+}
+
+function chartPartXml(ac: AddedChart, sheet: string, val: (r: number, c: number) => string): string {
+  const { r1, c1, r2, c2 } = ac.range;
+  const d0 = r1 + (ac.headerRow ? 1 : 0), k0 = c1 + (ac.catCol ? 1 : 0);
+  const sn = `'${sheet.replace(/'/g, "''")}'`;
+  const rng = (c: number, a: number, b: number) => `${sn}!$${colName(c)}$${a + 1}:$${colName(c)}$${b + 1}`;
+  const lastC = ac.type === 'pie' ? k0 : c2;
+  const sers: string[] = [];
+  for (let c = k0; c <= lastC; c++) {
+    const i = c - k0;
+    const nameXml = ac.headerRow
+      ? `<c:tx><c:strRef><c:f>${esc(`${sn}!$${colName(c)}$${r1 + 1}`)}</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${esc(val(r1, c))}</c:v></c:pt></c:strCache></c:strRef></c:tx>`
+      : `<c:tx><c:v>Series ${i + 1}</c:v></c:tx>`;
+    let cat = '';
+    if (ac.catCol) {
+      const pts = [];
+      for (let r = d0; r <= r2; r++) pts.push(`<c:pt idx="${r - d0}"><c:v>${esc(val(r, c1))}</c:v></c:pt>`);
+      cat = `<c:cat><c:strRef><c:f>${esc(rng(c1, d0, r2))}</c:f><c:strCache><c:ptCount val="${r2 - d0 + 1}"/>${pts.join('')}</c:strCache></c:strRef></c:cat>`;
+    }
+    const nums = [];
+    for (let r = d0; r <= r2; r++) { const n = Number(val(r, c)); nums.push(`<c:pt idx="${r - d0}"><c:v>${Number.isFinite(n) ? n : 0}</c:v></c:pt>`); }
+    const valXml = `<c:val><c:numRef><c:f>${esc(rng(c, d0, r2))}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${r2 - d0 + 1}"/>${nums.join('')}</c:numCache></c:numRef></c:val>`;
+    sers.push(`<c:ser><c:idx val="${i}"/><c:order val="${i}"/>${nameXml}${cat}${valXml}${ac.type === 'line' ? '<c:smooth val="0"/>' : ''}</c:ser>`);
+  }
+  const ax = '<c:axId val="111111"/><c:axId val="222222"/>';
+  let plot: string;
+  if (ac.type === 'pie') plot = `<c:pieChart><c:varyColors val="1"/>${sers.join('')}<c:firstSliceAng val="0"/></c:pieChart>`;
+  else if (ac.type === 'line') plot = `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${sers.join('')}<c:marker val="1"/>${ax}</c:lineChart>`;
+  else if (ac.type === 'area') plot = `<c:areaChart><c:grouping val="standard"/><c:varyColors val="0"/>${sers.join('')}${ax}</c:areaChart>`;
+  else plot = `<c:barChart><c:barDir val="${ac.type === 'bar' ? 'bar' : 'col'}"/><c:grouping val="clustered"/><c:varyColors val="0"/>${sers.join('')}<c:gapWidth val="150"/>${ax}</c:barChart>`;
+  const horiz = ac.type === 'bar';
+  const axes = ac.type === 'pie' ? '' : `<c:catAx><c:axId val="111111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${horiz ? 'l' : 'b'}"/><c:numFmt formatCode="General" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="222222"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx><c:valAx><c:axId val="222222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${horiz ? 'b' : 'l'}"/><c:majorGridlines/><c:numFmt formatCode="General" sourceLinked="1"/><c:tickLblPos val="nextTo"/><c:crossAx val="111111"/><c:crosses val="autoZero"/></c:valAx>`;
+  const title = ac.title ? `<c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>${esc(ac.title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/>` : '<c:autoTitleDeleted val="1"/>';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${REL_NS}"><c:chart>${title}<c:plotArea><c:layout/>${plot}${axes}</c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>`;
+}

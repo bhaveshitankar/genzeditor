@@ -132,3 +132,14 @@
 .sheet-popmenu { position: absolute; z-index: 20; min-width: 170px; display: flex; flex-direction: column; padding: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm, 6px); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
 .sheet-popmenu button { text-align: left; background: transparent; border: 0; color: var(--text); padding: 0.45rem 0.7rem; font-size: 0.82rem; border-radius: 4px; cursor: pointer; }
 .sheet-popmenu button:hover { background: color-mix(in srgb, var(--brand-500) 14%, transparent); }
+
+/* User-inserted charts: draggable, resizable, deletable. */
+.sheet-object.added { pointer-events: auto; cursor: move; touch-action: none; }
+.sheet-object-del { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; opacity: 0; transition: opacity 0.15s; }
+.sheet-object.added:hover .sheet-object-del, .sheet-object.added:active .sheet-object-del { opacity: 1; }
+@media (pointer: coarse) { .sheet-object-del { opacity: 1; } }
+.sheet-object-resize { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, rgba(0, 0, 0, 0.45) 50%); touch-action: none; }
+
+/* Tables (header + banded rows). */
+.sheet-table td.tbl-head { background-color: var(--brand-500); color: #fff; font-weight: 700; }
+.sheet-table td.tbl-band { background-color: color-mix(in srgb, var(--brand-500) 12%, var(--surface)); }

@@ -34,6 +34,7 @@ import { reportFailure, telemetryEnabled, setTelemetryEnabled } from '../telemet
 import { openFeedbackSheet } from '../ui/FeedbackSheet';
 import type { AiEditResult } from '../api/client';
 import { icon, iconNameForKind } from '../ui/icons';
+import { initModifierDock } from '../ui/modifierDock';
 import { actionForKey, runAction, isNativeTextTarget, editOverride, showEditMenu, bindLongPress, type EditCommands } from '../editors/editCommands';
 
 /** Hooks a mobile chrome implements to mirror shell state (title, home screen). */
@@ -1296,6 +1297,7 @@ export class AppShell {
       const node = t as Node;
       return ov ? ov.root.contains(node) : this.editorHost.contains(node);
     };
+    initModifierDock(() => this.currentDoc !== undefined);
     bindLongPress((e) => {
       if (!inScope(e.target) || isNativeTextTarget(e.target)) return;
       const cmds = this.activeCommands(e.target);

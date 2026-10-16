@@ -86,4 +86,37 @@ describe('xlsxPackage', () => {
     expect(back.Sheets['Data']!['!merges']).toHaveLength(1);
     expect(back.Sheets['Sheet3']!['B1']!.v).toBe(3);
   });
+
+  it('writes user-inserted charts and tables into the package', async () => {
+    const buf = await fixture();
+    const pkg = (await XlsxPackage.load(buf))!;
+    const meta = await pkg.loadSheet('Data');
+    const grid = [['Name', 'Qty'], ['a', '1'], ['b', '2']];
+    meta.addedCharts.push({ id: 'x', type: 'col', title: 'T', range: { r1: 0, c1: 0, r2: 2, c2: 1 }, headerRow: true, catCol: true, from: { col: 4, row: 0, colOff: 0, rowOff: 0 }, w: 400, h: 250 });
+    meta.addedTables.push({ name: 'Table1', range: { r1: 0, c1: 0, r2: 2, c2: 1 } });
+    const second = await pkg.loadSheet('Second');
+    second.addedCharts.push({ id: 'y', type: 'pie', title: '', range: { r1: 0, c1: 0, r2: 2, c2: 1 }, headerRow: false, catCol: false, from: { col: 0, row: 0, colOff: 0, rowOff: 0 }, w: 300, h: 200 });
+    const out = await pkg.build([
+      { name: 'Data', meta, grid, computed: (r, c) => grid[r]?.[c] ?? '' },
+      { name: 'Second', meta: second, grid: [['1'], ['2'], ['3']], computed: (r) => String(r + 1) },
+    ]);
+    const z = await JSZip.loadAsync(out);
+    const names = Object.keys(z.files);
+    expect(names.filter((n) => /^xl\/charts\/chart\d+\.xml$/.test(n))).toHaveLength(3); // 1 original + 2 new
+    expect(names).toContain('xl/tables/table1.xml');
+    const d1 = await z.file('xl/drawings/drawing1.xml')!.async('string');
+    expect((d1.match(/<xdr:(oneCellAnchor|twoCellAnchor)>/g) ?? []).length).toBe(2);
+    const s1 = await z.file('xl/worksheets/sheet1.xml')!.async('string');
+    expect(s1).toContain('<tableParts count="1">');
+    const ct = await z.file('[Content_Types].xml')!.async('string');
+    expect(ct).toContain('/xl/tables/table1.xml');
+    expect(ct).toContain('drawingml.chart+xml');
+    // Second sheet had no drawing: one is created and wired up.
+    const s2 = await z.file('xl/worksheets/sheet2.xml')!.async('string');
+    expect(s2).toMatch(/<drawing r:id="rId\d+"\/>/);
+    const t1 = await z.file('xl/tables/table1.xml')!.async('string');
+    expect(t1).toContain('ref="A1:B3"');
+    expect(t1).toContain('name="Name"');
+    expect(() => XLSX.read(out, { type: 'array' })).not.toThrow();
+  });
 });
