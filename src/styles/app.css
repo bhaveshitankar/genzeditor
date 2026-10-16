@@ -1554,27 +1554,28 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
 
 .sheet-tabs {
   display: flex;
+  align-items: stretch;
   gap: 0.25rem;
-  padding: 0.4rem 0.5rem 0;
+  padding: 0 0.5rem;
   background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
   overflow-x: auto;
-  position: sticky;
-  top: 0;
-  z-index: 2;
+  flex: 0 0 auto;
 }
 .sheet-tab {
   border: 1px solid transparent;
-  border-bottom: none;
+  border-top: none;
   background: transparent;
   color: var(--text-muted);
-  padding: 0.4rem 0.8rem;
-  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  padding: 0.45rem 0.9rem;
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
   font-size: 0.8rem;
   cursor: pointer;
   white-space: nowrap;
 }
-.sheet-tab.active { background: var(--bg); color: var(--text); border-color: var(--border); font-weight: 600; }
+.sheet-tab:hover { color: var(--text); }
+.sheet-tab.active { background: var(--bg); color: var(--text); border-color: var(--border); box-shadow: inset 0 2px 0 var(--brand-500); font-weight: 600; }
+.sheet-tab-add { font-size: 1rem; font-weight: 700; padding: 0.3rem 0.7rem; }
 .sheet-grid { flex: 1; overflow: auto; position: relative; }
 .sheet-fill-handle {
   position: absolute;
@@ -1616,10 +1617,10 @@ button, a, input, textarea, select { font: inherit; color: inherit; }
   background: var(--surface);
   color: var(--text);
 }
-.sheet-table td:focus { box-shadow: inset 0 0 0 2px var(--brand-500); background: color-mix(in srgb, var(--brand-500) 6%, var(--surface)); }
-.sheet-table td.sel { box-shadow: inset 0 0 0 2px var(--brand-500); background: color-mix(in srgb, var(--brand-500) 8%, var(--surface)); }
-.sheet-table td.in-range { background: color-mix(in srgb, var(--brand-500) 14%, var(--surface)); }
-.sheet-table td.fill-target { background: color-mix(in srgb, var(--brand-500) 20%, var(--surface)); box-shadow: inset 0 0 0 1px var(--brand-500); }
+.sheet-table td:focus { box-shadow: inset 0 0 0 2px var(--brand-500); background-image: linear-gradient(color-mix(in srgb, var(--brand-500) 6%, transparent), color-mix(in srgb, var(--brand-500) 6%, transparent)); }
+.sheet-table td.sel { box-shadow: inset 0 0 0 2px var(--brand-500); background-image: linear-gradient(color-mix(in srgb, var(--brand-500) 8%, transparent), color-mix(in srgb, var(--brand-500) 8%, transparent)); }
+.sheet-table td.in-range { background-image: linear-gradient(color-mix(in srgb, var(--brand-500) 18%, transparent), color-mix(in srgb, var(--brand-500) 18%, transparent)); }
+.sheet-table td.fill-target { background-image: linear-gradient(color-mix(in srgb, var(--brand-500) 24%, transparent), color-mix(in srgb, var(--brand-500) 24%, transparent)); box-shadow: inset 0 0 0 1px var(--brand-500); }
 
 /* PDF editor */
 .pdf-toolbar {

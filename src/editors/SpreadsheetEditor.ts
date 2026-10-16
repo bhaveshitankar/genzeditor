@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import './styles/spreadsheet.css';
 import type { DocEditor } from './registry';
 import { actionForKey, getAppClipboard, isNativeTextTarget, setAppClipboard, type EditCommands } from './editCommands';
+import { XlsxPackage, SheetMeta, gridFromSheet, applyFmt, chartSvg, key as mkey } from './xlsxPackage';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -129,6 +130,8 @@ export class SpreadsheetEditor implements DocEditor {
   private bold = new Map<string, Set<string>>(); // sheet -> set of "r,c"
   private order: string[] = [];
   private active = '';
+  private pkg: XlsxPackage | null = null;
+  private metas = new Map<string, SheetMeta>();
   private isCsv: boolean;
   private onChange?: () => void;
 
@@ -185,14 +188,18 @@ export class SpreadsheetEditor implements DocEditor {
     ed.onChange = onChange;
     const buf = await blob.arrayBuffer();
     const wb = XLSX.read(buf, { type: 'array' });
+    if (!isCsv) ed.pkg = await XlsxPackage.load(buf);
     for (const sheetName of wb.SheetNames) {
-      const ws = wb.Sheets[sheetName]!;
-      const aoa = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, blankrows: true, defval: '' });
+      if (ed.pkg && (!ed.pkg.hasSheet(sheetName) || ed.pkg.isHidden(sheetName))) continue;
+      const { grid, orig } = gridFromSheet(wb.Sheets[sheetName]!);
+      const meta = ed.pkg ? await ed.pkg.loadSheet(sheetName) : new SheetMeta();
+      meta.orig = orig;
       ed.order.push(sheetName);
-      ed.sheets.set(sheetName, aoa.map((row) => (row ?? []).map((c) => (c == null ? '' : String(c)))));
+      ed.sheets.set(sheetName, grid);
+      ed.metas.set(sheetName, meta);
       ed.bold.set(sheetName, new Set());
     }
-    if (ed.order.length === 0) { ed.order.push('Sheet1'); ed.sheets.set('Sheet1', [['']]); ed.bold.set('Sheet1', new Set()); }
+    if (ed.order.length === 0) { ed.order.push('Sheet1'); ed.sheets.set('Sheet1', [['']]); ed.bold.set('Sheet1', new Set()); ed.metas.set('Sheet1', new SheetMeta()); }
     ed.active = ed.order[0]!;
     ed.touch = window.matchMedia?.('(pointer: coarse)').matches || window.innerWidth < 700
       || !!host.closest('.app-shell.is-mobile');
@@ -223,6 +230,7 @@ export class SpreadsheetEditor implements DocEditor {
     return `updated ${rows.length} row(s)`;
   }
   private boldSet(): Set<string> { return this.bold.get(this.active)!; }
+  private meta(): SheetMeta { return this.metas.get(this.active)!; }
 
   private cellValue(r: number, c: number): string { return this.aoa()[r]?.[c] ?? ''; }
 
@@ -365,9 +373,15 @@ export class SpreadsheetEditor implements DocEditor {
       // cell (including freshly-committed ones) always shows its computed value.
       if (td === active) continue;
       const v = this.displayValue(grid, r, c);
-      td.textContent = v;
+      td.textContent = this.fmtShown(r, c, v);
       if (this.isFormulaError(v)) td.dataset.err = '1'; else delete td.dataset.err;
     }
+  }
+
+  // Apply the cell's Excel number format (dates, %, currency…) to a display value.
+  private fmtShown(r: number, c: number, v: string): string {
+    const xf = this.pkg?.xf(this.meta().styles.get(mkey(r, c)));
+    return xf ? applyFmt(xf, v) : v;
   }
 
   // ---- History -------------------------------------------------------------
@@ -378,6 +392,7 @@ export class SpreadsheetEditor implements DocEditor {
       active: this.active,
       sheets: this.order.map((n) => this.sheets.get(n)),
       bold: this.order.map((n) => Array.from(this.bold.get(n) ?? [])),
+      meta: this.order.map((n) => this.metas.get(n)?.snapshot()),
     });
   }
 
@@ -390,6 +405,8 @@ export class SpreadsheetEditor implements DocEditor {
     d.order.forEach((n: string, i: number) => {
       this.sheets.set(n, d.sheets[i]);
       this.bold.set(n, new Set(d.bold[i]));
+      if (!this.metas.has(n)) this.metas.set(n, new SheetMeta());
+      if (d.meta?.[i]) this.metas.get(n)!.restore(d.meta[i]);
     });
   }
 
@@ -489,26 +506,12 @@ export class SpreadsheetEditor implements DocEditor {
     opBtn('✕ Row', 'Delete current row', () => this.withHistory(() => this.deleteRow()));
     opBtn('✕ Col', 'Delete current column', () => this.withHistory(() => this.deleteCol()));
     opBtn('B', 'Bold (Cmd/Ctrl+B)', () => this.toggleBold());
+    opBtn('⊞ Merge', 'Merge / unmerge selected cells', () => this.mergeSelection());
     opBtn('A→Z', 'Sort rows by selected column, ascending', () => this.sortByColumn(true));
     opBtn('Z→A', 'Sort rows by selected column, descending', () => this.sortByColumn(false));
     opBtn('↶', 'Undo (Cmd/Ctrl+Z)', () => this.undo());
     opBtn('↷', 'Redo (Cmd/Ctrl+Shift+Z)', () => this.redo());
     wrap.appendChild(ops);
-
-    // --- Sheet tabs ---
-    if (this.order.length > 1) {
-      const tabs = document.createElement('div');
-      tabs.className = 'sheet-tabs';
-      this.tabsEl = tabs;
-      for (const name of this.order) {
-        const b = document.createElement('button');
-        b.className = 'sheet-tab' + (name === this.active ? ' active' : '');
-        b.textContent = name;
-        b.addEventListener('click', () => { this.active = name; this.sel = { r: 0, c: 0 }; this.renderGrid(); this.syncTabs(); this.syncBar(); });
-        tabs.appendChild(b);
-      }
-      wrap.appendChild(tabs);
-    }
 
     const grid = document.createElement('div');
     grid.className = 'sheet-grid';
@@ -530,6 +533,14 @@ export class SpreadsheetEditor implements DocEditor {
 
     grid.addEventListener('scroll', () => this.positionFillHandle());
     wrap.appendChild(grid);
+
+    // --- Sheet tabs (bottom, like Excel) ---
+    const tabs = document.createElement('div');
+    tabs.className = 'sheet-tabs';
+    this.tabsEl = tabs;
+    this.buildTabs();
+    wrap.appendChild(tabs);
+
     if (this.touch) wrap.appendChild(this.buildTouchBar(bar));
 
     this.host.appendChild(wrap);
@@ -537,12 +548,30 @@ export class SpreadsheetEditor implements DocEditor {
     this.syncBar();
   }
 
-  private syncTabs() {
-    if (!this.tabsEl) return;
-    for (const b of Array.from(this.tabsEl.children)) {
-      b.classList.toggle('active', b.textContent === this.active);
+  private buildTabs() {
+    const tabs = this.tabsEl;
+    if (!tabs) return;
+    tabs.replaceChildren();
+    for (const name of this.order) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sheet-tab' + (name === this.active ? ' active' : '');
+      b.textContent = name;
+      b.title = name;
+      b.addEventListener('click', () => { if (name !== this.active) this.switchSheet(name); });
+      tabs.appendChild(b);
     }
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'sheet-tab sheet-tab-add';
+    add.textContent = '+';
+    add.title = 'Add sheet';
+    add.setAttribute('aria-label', 'Add sheet');
+    add.addEventListener('click', () => this.addSheet());
+    tabs.appendChild(add);
   }
+
+  private syncTabs() { this.buildTabs(); }
 
   private syncBar() {
     const rg = this.curRange();
@@ -715,6 +744,15 @@ export class SpreadsheetEditor implements DocEditor {
   private moveTo(r: number, c: number, focusCell: boolean) {
     r = Math.max(0, Math.min(r, this.rows - 1));
     c = Math.max(0, Math.min(c, this.cols - 1));
+    // Cells hidden under a merge aren't in the DOM: hop over it or land on its anchor.
+    const m = this.meta().mergeAt(r, c);
+    if (m && (r !== m.r1 || c !== m.c1)) {
+      if (r > this.sel.r && m.r1 <= this.sel.r) r = Math.min(m.r2 + 1, this.rows - 1);
+      else if (c > this.sel.c && m.c1 <= this.sel.c) c = Math.min(m.c2 + 1, this.cols - 1);
+      else { r = m.r1; c = m.c1; }
+      const m2 = this.meta().mergeAt(r, c);
+      if (m2) { r = m2.r1; c = m2.c1; }
+    }
     this.select(r, c);
     const td = this.tdAt(r, c);
     if (td) {
@@ -733,22 +771,71 @@ export class SpreadsheetEditor implements DocEditor {
     sel?.addRange(range);
   }
 
-  private insertRow() { this.aoa().splice(this.sel.r + 1, 0, []); this.renderGrid(); this.moveTo(this.sel.r + 1, this.sel.c, false); }
+  private insertRow() {
+    this.aoa().splice(this.sel.r + 1, 0, []);
+    this.meta().shift('row', this.sel.r + 1, 1);
+    this.renderGrid();
+    this.moveTo(this.sel.r + 1, this.sel.c, false);
+  }
   private insertCol() {
     for (const row of this.aoa()) row.splice(this.sel.c + 1, 0, '');
+    this.meta().shift('col', this.sel.c + 1, 1);
     this.renderGrid();
     this.moveTo(this.sel.r, this.sel.c + 1, false);
   }
   private deleteRow() {
     const a = this.aoa();
-    if (a.length <= 1) { a[0] = []; } else { a.splice(this.sel.r, 1); }
+    if (a.length <= 1) { a[0] = []; } else { a.splice(this.sel.r, 1); this.meta().shift('row', this.sel.r, -1); }
     this.renderGrid();
     this.moveTo(Math.min(this.sel.r, this.rows - 1), this.sel.c, false);
   }
   private deleteCol() {
     for (const row of this.aoa()) if (row.length > this.sel.c) row.splice(this.sel.c, 1);
+    this.meta().shift('col', this.sel.c, -1);
     this.renderGrid();
     this.moveTo(this.sel.r, Math.min(this.sel.c, this.cols - 1), false);
+  }
+
+  // Merge the selection into one cell; selecting an existing merge unmerges it.
+  private mergeSelection() {
+    const rg = this.curRange();
+    const m = this.meta();
+    this.withHistory(() => {
+      const hit = m.merges.findIndex((x) => x.r1 === rg.r1 && x.c1 === rg.c1 && x.r2 === rg.r2 && x.c2 === rg.c2);
+      if (hit >= 0) { m.merges.splice(hit, 1); this.renderGrid(); return; }
+      if (rg.r1 === rg.r2 && rg.c1 === rg.c2) return;
+      m.merges = m.merges.filter((x) => x.r2 < rg.r1 || x.r1 > rg.r2 || x.c2 < rg.c1 || x.c1 > rg.c2);
+      m.merges.push({ ...rg });
+      for (let r = rg.r1; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) {
+        if ((r !== rg.r1 || c !== rg.c1) && (this.aoa()[r]?.[c] ?? '') !== '') this.setCellValue(r, c, '');
+      }
+      this.renderGrid();
+    });
+  }
+
+  private addSheet() {
+    let n = this.order.length + 1;
+    while (this.order.includes(`Sheet${n}`)) n++;
+    const name = `Sheet${n}`;
+    this.withHistory(() => {
+      this.order.push(name);
+      this.sheets.set(name, [['']]);
+      this.bold.set(name, new Set());
+      this.metas.set(name, new SheetMeta());
+      this.switchSheet(name);
+    });
+  }
+
+  private switchSheet(name: string) {
+    this.endEdit();
+    this.active = name;
+    this.sel = { r: 0, c: 0 };
+    this.range = { r1: 0, c1: 0, r2: 0, c2: 0 };
+    this.selAnchor = { r: 0, c: 0 };
+    this.selFocus = { r: 0, c: 0 };
+    this.renderGrid();
+    this.syncTabs();
+    this.syncBar();
   }
 
   // ---- Selection / clipboard / formatting shortcuts ------------------------
@@ -896,8 +983,11 @@ export class SpreadsheetEditor implements DocEditor {
         else r = xv.localeCompare(yv);
         return asc ? r : -r;
       };
-      // Only sort the populated rows; preserve trailing padding implicitly.
-      a.sort(cmp);
+      const idx = a.map((_, i) => i);
+      idx.sort((i, j) => cmp(a[i]!, a[j]!));
+      const sorted = idx.map((i) => a[i]!);
+      a.splice(0, a.length, ...sorted);
+      this.meta().permuteRows(idx);
       this.renderGrid();
     });
   }
@@ -905,8 +995,28 @@ export class SpreadsheetEditor implements DocEditor {
   private renderGrid() {
     const aoa = this.aoa();
     const grid = aoa;
-    this.rows = Math.max(aoa.length + 6, 24);
-    this.cols = Math.max(aoa.reduce((m, r) => Math.max(m, r.length), 0) + 3, 10);
+    const meta = this.meta();
+    let nRows = Math.max(aoa.length + 6, 24);
+    let nCols = Math.max(aoa.reduce((m, r) => Math.max(m, r.length), 0) + 3, 10);
+    for (const m of meta.merges) { nRows = Math.max(nRows, m.r2 + 1); nCols = Math.max(nCols, m.c2 + 1); }
+    for (const o of meta.objects) { const p = o.to ?? o.from; nRows = Math.max(nRows, p.row + 2); nCols = Math.max(nCols, p.col + 2); }
+    let styledRows = 0, styledCols = 0;
+    for (const k of meta.styles.keys()) {
+      const [sr, sc] = k.split(',').map(Number) as [number, number];
+      if (sr + 1 > styledRows) styledRows = sr + 1;
+      if (sc + 1 > styledCols) styledCols = sc + 1;
+    }
+    this.rows = Math.min(Math.max(nRows, Math.min(styledRows, 3000)), Math.max(aoa.length + 6, 3000));
+    this.cols = Math.min(Math.max(nCols, Math.min(styledCols, 200)), Math.max(aoa.reduce((m, r) => Math.max(m, r.length), 0) + 3, 200));
+
+    const anchors = new Map<string, { r1: number; c1: number; r2: number; c2: number }>();
+    const covered = new Set<string>();
+    for (const m of meta.merges) {
+      anchors.set(mkey(m.r1, m.c1), m);
+      for (let r = m.r1; r <= Math.min(m.r2, this.rows - 1); r++) for (let c = m.c1; c <= Math.min(m.c2, this.cols - 1); c++) {
+        if (r !== m.r1 || c !== m.c1) covered.add(mkey(r, c));
+      }
+    }
 
     const table = document.createElement('table');
     table.className = 'sheet-table';
@@ -919,6 +1029,8 @@ export class SpreadsheetEditor implements DocEditor {
     for (let c = 0; c < this.cols; c++) {
       const th = document.createElement('th');
       th.textContent = colLabel(c);
+      const cw = meta.colW.get(c);
+      if (cw) { th.style.minWidth = th.style.maxWidth = `${cw}px`; }
       th.addEventListener('click', () => this.selectColumn(c));
       // Touch: select on press so the shell's long-press edit menu acts on it.
       if (this.touch) th.addEventListener('pointerdown', () => { if (!this.formulaEditing()) this.selectColumn(c); });
@@ -931,6 +1043,8 @@ export class SpreadsheetEditor implements DocEditor {
     const tbody = document.createElement('tbody');
     for (let r = 0; r < this.rows; r++) {
       const tr = document.createElement('tr');
+      const rowH = meta.rowH.get(r);
+      if (rowH) tr.style.height = `${rowH}px`;
       const rh = document.createElement('th');
       rh.className = 'sheet-rownum';
       rh.textContent = String(r + 1);
@@ -938,12 +1052,24 @@ export class SpreadsheetEditor implements DocEditor {
       if (this.touch) rh.addEventListener('pointerdown', () => { if (!this.formulaEditing()) this.selectRow(r); });
       tr.appendChild(rh);
       for (let c = 0; c < this.cols; c++) {
+        if (covered.has(mkey(r, c))) continue;
         const td = document.createElement('td');
         td.dataset.r = String(r);
         td.dataset.c = String(c);
         const disp = this.displayValue(grid, r, c);
-        td.textContent = disp;
+        td.textContent = this.fmtShown(r, c, disp);
         if (this.isFormulaError(disp)) td.dataset.err = '1';
+        const xf = this.pkg?.xf(meta.styles.get(mkey(r, c)));
+        if (xf?.css) td.style.cssText = xf.css;
+        const colW = meta.colW.get(c);
+        if (colW) { td.style.minWidth = td.style.maxWidth = `${colW}px`; }
+        const mg = anchors.get(mkey(r, c));
+        if (mg) {
+          td.rowSpan = Math.min(mg.r2, this.rows - 1) - mg.r1 + 1;
+          td.colSpan = Math.min(mg.c2, this.cols - 1) - mg.c1 + 1;
+          if (!xf?.css.includes('text-align')) td.style.textAlign = 'center';
+          td.classList.add('merged');
+        }
         if (boldSet.has(r + ',' + c)) td.classList.add('bold');
         if (this.touch) {
           // While typing a formula, keep the bar focused so a tap inserts a ref.
@@ -996,8 +1122,44 @@ export class SpreadsheetEditor implements DocEditor {
     // Preserve the fill handle (a grid child) across re-renders.
     this.grid.querySelector('.sheet-table')?.remove();
     this.grid.insertBefore(table, this.fillHandle);
+    this.renderObjects(table);
     this.paintRange();
     this.positionFillHandle();
+  }
+
+  // Images and charts from the workbook's drawings, laid over the grid at their
+  // cell anchors. They are display-only; the originals are kept untouched on save.
+  private renderObjects(table: HTMLElement) {
+    this.grid.querySelector('.sheet-objects')?.remove();
+    const objs = this.meta().objects;
+    if (!objs.length) return;
+    const layer = document.createElement('div');
+    layer.className = 'sheet-objects';
+    this.grid.insertBefore(layer, this.fillHandle);
+    const t0 = table.getBoundingClientRect();
+    const colHeads = table.querySelectorAll<HTMLElement>('thead th');
+    const rowHeads = table.querySelectorAll<HTMLElement>('th.sheet-rownum');
+    const x = (col: number, off: number) => (colHeads[Math.min(col + 1, colHeads.length - 1)]?.getBoundingClientRect().left ?? t0.left) - t0.left + off / 9525;
+    const y = (row: number, off: number) => (rowHeads[Math.min(row, rowHeads.length - 1)]?.getBoundingClientRect().top ?? t0.top) - t0.top + off / 9525;
+    for (const o of objs) {
+      const left = x(o.from.col, o.from.colOff), top = y(o.from.row, o.from.rowOff);
+      const w = o.to ? x(o.to.col, o.to.colOff) - left : (o.ext?.cx ?? 3000000) / 9525;
+      const h = o.to ? y(o.to.row, o.to.rowOff) - top : (o.ext?.cy ?? 2000000) / 9525;
+      const box = document.createElement('div');
+      box.className = 'sheet-object';
+      const W = Math.max(40, Math.round(w)), H = Math.max(30, Math.round(h));
+      box.style.cssText = `left:${Math.round(left)}px;top:${Math.round(top)}px;width:${W}px;height:${H}px`;
+      if (o.kind === 'image' && o.src) {
+        const img = document.createElement('img');
+        img.src = o.src;
+        img.alt = '';
+        img.draggable = false;
+        box.appendChild(img);
+      } else if (o.chart) {
+        box.innerHTML = chartSvg(o.chart, W, H);
+      }
+      layer.appendChild(box);
+    }
   }
 
   private onCellKey(e: KeyboardEvent, r: number, c: number) {
@@ -1246,6 +1408,8 @@ export class SpreadsheetEditor implements DocEditor {
       ['Paste', () => void this.paste()],
       ['Clear cells', () => this.clearRange()],
       ['Bold', () => this.toggleBold()],
+      ['Merge / unmerge cells', () => this.mergeSelection()],
+      ['Add sheet', () => this.addSheet()],
       ['Select row', () => this.selectRow(this.sel.r)],
       ['Select column', () => this.selectColumn(this.sel.c)],
     ]);
@@ -1300,6 +1464,14 @@ export class SpreadsheetEditor implements DocEditor {
       const csv = XLSX.utils.sheet_to_csv(ws);
       return { blob: new Blob([csv], { type: 'text/csv' }), contentType: 'text/csv' };
     }
+    if (this.pkg) {
+      // Patch cells/merges into the original package so styles, images and charts survive.
+      const out = await this.pkg.build(this.order.map((name) => {
+        const grid = this.sheets.get(name)!;
+        return { name, meta: this.metas.get(name)!, grid, computed: (r: number, c: number) => this.displayValue(grid, r, c) };
+      }));
+      return { blob: new Blob([out], { type: XLSX_MIME }), contentType: XLSX_MIME };
+    }
     const wb = XLSX.utils.book_new();
     for (const name of this.order) {
       const ws = XLSX.utils.aoa_to_sheet(this.trimmed(this.computed(this.sheets.get(name)!)));
@@ -1322,6 +1494,7 @@ export class SpreadsheetEditor implements DocEditor {
   }
 
   destroy() {
+    this.pkg?.dispose();
     this.sheetEl?.remove();
     window.removeEventListener('keydown', this.onKey);
     document.removeEventListener('pointermove', this.onPointerMove);
