@@ -51,7 +51,7 @@ function colIndex(s: string): number {
 
 // "B3" -> { r: 2, c: 1 } (zero-based). Throws on malformed refs.
 function refToRC(ref: string): { r: number; c: number } {
-  const m = /^([A-Za-z]+)(\d+)$/.exec(ref);
+  const m = /^\$?([A-Za-z]+)\$?(\d+)$/.exec(ref);
   if (!m) throw { code: 'ERR' };
   return { c: colIndex(m[1]!), r: Number(m[2]) - 1 };
 }
@@ -59,7 +59,7 @@ function refToRC(ref: string): { r: number; c: number } {
 // Tokenizer for the formula mini-language. Recognises A1 refs, function
 // names, numbers and the single-char operators / punctuation.
 function tokenize(expr: string): string[] {
-  const re = /\s*("[^"]*"|[A-Za-z]+\d+|[A-Za-z]+|\d+\.?\d*|\.\d+|>=|<=|<>|[-+*/(),:=<>])/g;
+  const re = /\s*("[^"]*"|(?:'[^']+'|[A-Za-z_][A-Za-z0-9_.]*)!\$?[A-Za-z]+\$?\d+|\$?[A-Za-z]+\$?\d+|[A-Za-z_][A-Za-z0-9_.]*|\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+|>=|<=|<>|[-+*/^&(),:=<>])/g;
   const out: string[] = [];
   let m: RegExpExecArray | null;
   let last = 0;
@@ -72,8 +72,8 @@ function tokenize(expr: string): string[] {
   return out;
 }
 
-function isRef(t: string | undefined): boolean { return !!t && /^[A-Za-z]+\d+$/.test(t); }
-function isName(t: string | undefined): boolean { return !!t && /^[A-Za-z]+$/.test(t); }
+function isRef(t: string | undefined): boolean { return !!t && /^((?:'[^']+'|[A-Za-z_][A-Za-z0-9_.]*)!)?\$?[A-Za-z]+\$?\d+$/.test(t); }
+function isName(t: string | undefined): boolean { return !!t && /^[A-Za-z_][A-Za-z0-9_.]*$/.test(t); }
 function isNumTok(t: string | undefined): boolean { return !!t && /^(\d+\.?\d*|\.\d+)$/.test(t); }
 
 function toScalar(v: Val): Scalar { if (Array.isArray(v)) throw { code: 'ERR' }; return v; }
@@ -194,6 +194,9 @@ export class SpreadsheetEditor implements DocEditor {
       const { grid, orig } = gridFromSheet(wb.Sheets[sheetName]!);
       const meta = ed.pkg ? await ed.pkg.loadSheet(sheetName) : new SheetMeta();
       meta.orig = orig;
+      if (!meta.merges.length) {
+        for (const mg of (wb.Sheets[sheetName]!['!merges'] ?? [])) meta.merges.push({ r1: mg.s.r, c1: mg.s.c, r2: mg.e.r, c2: mg.e.c });
+      }
       ed.order.push(sheetName);
       ed.sheets.set(sheetName, grid);
       ed.metas.set(sheetName, meta);
@@ -248,52 +251,193 @@ export class SpreadsheetEditor implements DocEditor {
   private getRaw(grid: Grid, r: number, c: number): string { return grid[r]?.[c] ?? ''; }
 
   // Evaluate the cell at (r,c) against `grid`, returning a scalar. `visited`
-  // tracks the active dependency chain to catch circular references.
-  private evalRef(grid: Grid, r: number, c: number, visited: Set<string>): Scalar {
-    const k = r + ',' + c;
+  // tracks the active dependency chain (tagged by sheet) to catch circular refs.
+  private evalRef(grid: Grid, r: number, c: number, visited: Set<string>, tag = ''): Scalar {
+    const k = tag + '!' + r + ',' + c;
     if (visited.has(k)) throw { code: 'CIRC' };
     const raw = this.getRaw(grid, r, c);
     if (raw === '' || raw[0] !== '=') return raw;
     visited.add(k);
-    try { return toScalar(this.evalExpr(grid, raw.slice(1), visited)); }
+    try { return toScalar(this.evalExpr(grid, raw.slice(1), visited, tag)); }
     finally { visited.delete(k); }
   }
 
-  private evalRange(grid: Grid, start: string, end: string, visited: Set<string>): Scalar[] {
+  // Ranges come back as flat arrays tagged with their width (`w`) so lookup
+  // functions can treat them as 2-D.
+  private evalRange(grid: Grid, start: string, end: string, visited: Set<string>, tag = ''): Scalar[] {
     const a = refToRC(start), b = refToRC(end);
     const r1 = Math.min(a.r, b.r), r2 = Math.max(a.r, b.r);
     const c1 = Math.min(a.c, b.c), c2 = Math.max(a.c, b.c);
     const out: Scalar[] = [];
-    for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) out.push(this.evalRef(grid, r, c, visited));
+    for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) out.push(this.evalRef(grid, r, c, visited, tag));
+    (out as any).w = c2 - c1 + 1;
     return out;
   }
 
   private callFunc(name: string, args: Val[]): Scalar {
-    if (name.toUpperCase() === 'IF') {
-      if (args.length < 2) throw { code: 'ERR' };
-      const cond = toScalar(args[0]!);
-      const truthy = typeof cond === 'number' ? cond !== 0 : cond !== '' && cond.toUpperCase() !== 'FALSE' && cond !== '0';
-      return toScalar(truthy ? args[1]! : (args[2] ?? 0));
-    }
-    const nums = numericArgs(args);
-    switch (name.toUpperCase()) {
-      case 'SUM': return nums.reduce((a, b) => a + b, 0);
-      case 'AVERAGE': return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
-      case 'COUNT': return nums.length;
-      case 'MIN': return nums.length ? Math.min(...nums) : 0;
-      case 'MAX': return nums.length ? Math.max(...nums) : 0;
+    const N = name.toUpperCase();
+    const flat = (v: Val | undefined): Scalar[] => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
+    const width = (v: Val | undefined) => (Array.isArray(v) ? ((v as any).w as number) || 1 : 1);
+    const str = (v: Val | undefined) => (v === undefined ? '' : formatVal(toScalar(v)));
+    const nm = (i: number, d?: number) => (args[i] === undefined ? (d ?? 0) : toNum(args[i]!));
+    const truthy = (v: Scalar) => (typeof v === 'number' ? v !== 0 : v !== '' && v.toUpperCase() !== 'FALSE' && v !== '0');
+    const isNum = (v: Scalar) => typeof v === 'number' || (String(v).trim() !== '' && Number.isFinite(Number(v)));
+    const eq = (a: Scalar, b: Scalar) => (isNum(a) && isNum(b) ? Number(a) === Number(b) : String(a).toLowerCase() === String(b).toLowerCase());
+    const cmp = (a: Scalar, b: Scalar) => (isNum(a) && isNum(b) ? Number(a) - Number(b) : String(a).toLowerCase().localeCompare(String(b).toLowerCase()));
+    // SUMIF-style criteria: ">5", "<=3", "<>x", "=x", plain value, simple * / ? wildcards.
+    const matcher = (crit: Scalar): ((v: Scalar) => boolean) => {
+      const s = String(crit);
+      const m = /^(>=|<=|<>|>|<|=)?(.*)$/s.exec(s)!;
+      const op = m[1] ?? '=', rhs = m[2]!;
+      if (op === '=' || op === '<>') {
+        const wild = /[*?]/.test(rhs) && !isNum(rhs);
+        const re = wild ? new RegExp('^' + rhs.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i') : null;
+        return (v) => { const hit = re ? re.test(String(v)) : eq(v, rhs); return op === '=' ? hit : !hit; };
+      }
+      return (v) => {
+        if (String(v).trim() === '') return false;
+        const d = cmp(v, rhs);
+        return op === '>' ? d > 0 : op === '<' ? d < 0 : op === '>=' ? d >= 0 : d <= 0;
+      };
+    };
+    const serialNow = () => Date.now() / 86400000 + 25569;
+    const fromSerial = (n: number) => new Date(Math.round((n - 25569) * 86400000));
+    const nums = () => numericArgs(args);
+
+    switch (N) {
+      case 'SUM': return nums().reduce((a, b) => a + b, 0);
+      case 'AVERAGE': { const n = nums(); if (!n.length) throw { code: 'ERR' }; return n.reduce((a, b) => a + b, 0) / n.length; }
+      case 'COUNT': return nums().length;
+      case 'COUNTA': return args.flatMap(flat).filter((v) => String(v) !== '').length;
+      case 'COUNTBLANK': return args.flatMap(flat).filter((v) => String(v) === '').length;
+      case 'MIN': { const n = nums(); return n.length ? Math.min(...n) : 0; }
+      case 'MAX': { const n = nums(); return n.length ? Math.max(...n) : 0; }
+      case 'PRODUCT': return nums().reduce((a, b) => a * b, 1);
+      case 'MEDIAN': { const n = nums().sort((a, b) => a - b); if (!n.length) throw { code: 'ERR' }; const h = n.length >> 1; return n.length % 2 ? n[h]! : (n[h - 1]! + n[h]!) / 2; }
+      case 'ABS': return Math.abs(nm(0));
+      case 'INT': return Math.floor(nm(0));
+      case 'SQRT': { const x = nm(0); if (x < 0) throw { code: 'ERR' }; return Math.sqrt(x); }
+      case 'POWER': return Math.pow(nm(0), nm(1));
+      case 'MOD': { const d = nm(1); if (d === 0) throw { code: 'ERR' }; const x = nm(0); return x - d * Math.floor(x / d); }
+      case 'PI': return Math.PI;
+      case 'EXP': return Math.exp(nm(0));
+      case 'LN': return Math.log(nm(0));
+      case 'LOG10': return Math.log10(nm(0));
+      case 'ROUND': case 'ROUNDUP': case 'ROUNDDOWN': {
+        const f = Math.pow(10, nm(1, 0)), x = nm(0) * f;
+        const y = N === 'ROUND' ? Math.sign(x) * Math.round(Math.abs(x)) : N === 'ROUNDUP' ? Math.sign(x) * Math.ceil(Math.abs(x)) : Math.trunc(x);
+        return y / f;
+      }
+      case 'CEILING': { const s = nm(1, 1) || 1; return Math.ceil(nm(0) / s) * s; }
+      case 'FLOOR': { const s = nm(1, 1) || 1; return Math.floor(nm(0) / s) * s; }
+      case 'SUMIF': case 'COUNTIF': case 'AVERAGEIF': {
+        const rng = flat(args[0]), test = matcher(toScalar(args[1]!));
+        const sumRng = N === 'COUNTIF' ? rng : flat(args[2] ?? args[0]);
+        const hit: number[] = [];
+        rng.forEach((v, i) => { if (test(v)) { const x = sumRng[i]; if (N === 'COUNTIF') hit.push(1); else if (x !== undefined && isNum(x)) hit.push(Number(x)); } });
+        if (N === 'COUNTIF') return hit.length;
+        if (N === 'AVERAGEIF') { if (!hit.length) throw { code: 'ERR' }; return hit.reduce((a, b) => a + b, 0) / hit.length; }
+        return hit.reduce((a, b) => a + b, 0);
+      }
+      case 'SUMPRODUCT': {
+        const arrs = args.map(flat);
+        const n = arrs[0]?.length ?? 0;
+        let t = 0;
+        for (let i = 0; i < n; i++) t += arrs.reduce((p, a) => p * (isNum(a[i] ?? '') ? Number(a[i]) : 0), 1);
+        return t;
+      }
+      // Logic
+      case 'IF': { if (args.length < 2) throw { code: 'ERR' }; return toScalar(truthy(toScalar(args[0]!)) ? args[1]! : (args[2] ?? 0)); }
+      case 'AND': return args.flatMap(flat).every(truthy) ? 1 : 0;
+      case 'OR': return args.flatMap(flat).some(truthy) ? 1 : 0;
+      case 'NOT': return truthy(toScalar(args[0]!)) ? 0 : 1;
+      case 'ISBLANK': return str(args[0]) === '' ? 1 : 0;
+      case 'ISNUMBER': return isNum(toScalar(args[0]!)) ? 1 : 0;
+      case 'ISTEXT': { const v = toScalar(args[0]!); return v !== '' && !isNum(v) ? 1 : 0; }
+      // Text
+      case 'CONCAT': case 'CONCATENATE': return args.flatMap(flat).map((v) => formatVal(v)).join('');
+      case 'LEN': return str(args[0]).length;
+      case 'UPPER': return str(args[0]).toUpperCase();
+      case 'LOWER': return str(args[0]).toLowerCase();
+      case 'PROPER': return str(args[0]).toLowerCase().replace(/(^|[^a-z0-9])([a-z])/g, (_m, a: string, b: string) => a + b.toUpperCase());
+      case 'TRIM': return str(args[0]).trim().replace(/\s+/g, ' ');
+      case 'LEFT': return str(args[0]).slice(0, nm(1, 1));
+      case 'RIGHT': { const s = str(args[0]), n = nm(1, 1); return n <= 0 ? '' : s.slice(-n); }
+      case 'MID': { const s = str(args[0]), st = nm(1) - 1; return s.slice(Math.max(0, st), Math.max(0, st) + nm(2)); }
+      case 'REPT': return str(args[0]).repeat(Math.max(0, nm(1)));
+      case 'SUBSTITUTE': { const f = str(args[1]); return f ? str(args[0]).split(f).join(str(args[2])) : str(args[0]); }
+      case 'FIND': case 'SEARCH': {
+        const hay = N === 'FIND' ? str(args[1]) : str(args[1]).toLowerCase();
+        const i = hay.indexOf(N === 'FIND' ? str(args[0]) : str(args[0]).toLowerCase(), nm(2, 1) - 1);
+        if (i < 0) throw { code: 'ERR' };
+        return i + 1;
+      }
+      case 'VALUE': { const v = toScalar(args[0]!); const n = Number(String(v).replace(/[,$%\s]/g, '')); if (!Number.isFinite(n)) throw { code: 'ERR' }; return String(v).includes('%') ? n / 100 : n; }
+      case 'TEXT': { try { return String((XLSX as any).SSF.format(str(args[1]), nm(0))); } catch { throw { code: 'ERR' }; } }
+      // Dates (serial numbers, as in Excel)
+      case 'TODAY': return Math.floor(serialNow());
+      case 'NOW': return serialNow();
+      case 'YEAR': return fromSerial(nm(0)).getUTCFullYear();
+      case 'MONTH': return fromSerial(nm(0)).getUTCMonth() + 1;
+      case 'DAY': return fromSerial(nm(0)).getUTCDate();
+      case 'DATE': return Math.round(Date.UTC(nm(0), nm(1) - 1, nm(2)) / 86400000 + 25569);
+      // Lookup
+      case 'VLOOKUP': case 'HLOOKUP': {
+        const rng = flat(args[1]), w = width(args[1]), h = Math.ceil(rng.length / w);
+        const vert = N === 'VLOOKUP', idx = nm(2) - 1, v = toScalar(args[0]!);
+        const exact = args[3] !== undefined && !truthy(toScalar(args[3]));
+        const span = vert ? h : w;
+        if (idx < 0 || idx >= (vert ? w : h)) throw { code: 'ERR' };
+        const keyAt = (i: number) => rng[vert ? i * w : i]!;
+        let hit = -1;
+        if (exact) { for (let i = 0; i < span; i++) if (eq(keyAt(i), v)) { hit = i; break; } }
+        else { for (let i = 0; i < span; i++) { if (String(keyAt(i)) === '') continue; if (cmp(keyAt(i), v) <= 0) hit = i; else break; } }
+        if (hit < 0) throw { code: 'ERR' };
+        return rng[vert ? hit * w + idx : idx * w + hit]!;
+      }
+      case 'INDEX': {
+        const rng = flat(args[0]), w = width(args[0]), h = rng.length / w;
+        const a1 = nm(1, 1);
+        let r: number, c: number;
+        if (args[2] !== undefined) { r = a1 - 1; c = nm(2) - 1; }
+        else if (h === 1) { r = 0; c = a1 - 1; }
+        else { r = a1 - 1; c = 0; }
+        const v = r < 0 || c < 0 || c >= w ? undefined : rng[r * w + c];
+        if (v === undefined) throw { code: 'ERR' };
+        return v;
+      }
+      case 'MATCH': {
+        const rng = flat(args[1]), v = toScalar(args[0]!), t = nm(2, 1);
+        if (t === 0) { const i = rng.findIndex((x) => eq(x, v)); if (i < 0) throw { code: 'ERR' }; return i + 1; }
+        let hit = -1;
+        for (let i = 0; i < rng.length; i++) { const d = cmp(rng[i]!, v) * (t > 0 ? 1 : -1); if (d <= 0) hit = i; else break; }
+        if (hit < 0) throw { code: 'ERR' };
+        return hit + 1;
+      }
+      case 'XLOOKUP': {
+        const keys = flat(args[1]), vals = flat(args[2]), v = toScalar(args[0]!);
+        const i = keys.findIndex((x) => eq(x, v));
+        if (i < 0) { if (args[3] !== undefined) return toScalar(args[3]); throw { code: 'ERR' }; }
+        return vals[i] ?? '';
+      }
       default: throw { code: 'ERR' };
     }
   }
 
   // Recursive-descent evaluator (no eval()). Returns a scalar or, for a bare
   // range, an array of scalars (only meaningful as a function argument).
-  private evalExpr(grid: Grid, expr: string, visited: Set<string>): Val {
+  private evalExpr(grid: Grid, expr: string, visited: Set<string>, tag = ''): Val {
     const tokens = tokenize(expr);
     let pos = 0;
     const peek = () => tokens[pos];
     const next = () => tokens[pos++];
     const expect = (t: string) => { if (tokens[pos] !== t) throw { code: 'ERR' }; pos++; };
+    const splitRef = (t: string) => {
+      const i = t.lastIndexOf('!');
+      let sheet: string | undefined;
+      if (i >= 0) { sheet = t.slice(0, i); if (sheet[0] === "'") sheet = sheet.slice(1, -1); }
+      return { sheet, ref: t.slice(i + 1).replace(/\$/g, '') };
+    };
 
     const parseFactor = (): Val => {
       const t = peek();
@@ -304,24 +448,66 @@ export class SpreadsheetEditor implements DocEditor {
       if (isNumTok(t)) { next(); return Number(t); }
       if (t[0] === '"') { next(); return t.slice(1, -1); }
       if (isName(t) && tokens[pos + 1] === '(') {
-        const fn = next(); next(); // consume name and '('
+        const fn = next()!; next(); // consume name and '('
         const args: Val[] = [];
-        if (peek() !== ')') { args.push(parseExpr()); while (peek() === ',') { next(); args.push(parseExpr()); } }
+        const upper = fn.toUpperCase();
+        if (peek() !== ')') {
+          do {
+            if (peek() === ',') next();
+            const startPos = pos;
+            if (upper === 'IFERROR' && args.length === 0) {
+              // Lazy first arg: on error, skip its tokens and use the fallback.
+              try { args.push(parseExpr()); }
+              catch {
+                pos = startPos; let depth = 0;
+                while (pos < tokens.length && !(depth === 0 && (tokens[pos] === ',' || tokens[pos] === ')'))) {
+                  if (tokens[pos] === '(') depth++; else if (tokens[pos] === ')') depth--;
+                  pos++;
+                }
+                args.push(new Error('iferror') as any);
+              }
+            } else args.push(parseExpr());
+          } while (peek() === ',');
+        }
         expect(')');
+        if (upper === 'IFERROR') {
+          if (args.length < 2) throw { code: 'ERR' };
+          return args[0] instanceof Error ? args[1]! : args[0]!;
+        }
         return this.callFunc(fn, args);
       }
       if (isRef(t)) {
         const start = next()!;
-        if (peek() === ':') { next(); const end = next(); if (!isRef(end)) throw { code: 'ERR' }; return this.evalRange(grid, start, end!, visited); }
-        const { r, c } = refToRC(start);
-        return this.evalRef(grid, r, c, visited);
+        const { sheet, ref } = splitRef(start);
+        const g = sheet ? this.sheets.get(sheet) : grid;
+        if (!g) throw { code: 'ERR' };
+        const tg = sheet ?? tag;
+        if (peek() === ':') {
+          next();
+          const end = next();
+          if (!isRef(end)) throw { code: 'ERR' };
+          return this.evalRange(g, ref, splitRef(end!).ref, visited, tg);
+        }
+        const { r, c } = refToRC(ref);
+        return this.evalRef(g, r, c, visited, tg);
+      }
+      if (isName(t)) {
+        const u = next()!.toUpperCase();
+        if (u === 'TRUE') return 1;
+        if (u === 'FALSE') return 0;
       }
       throw { code: 'ERR' };
     };
-    const parseTerm = (): Val => {
+    const parsePow = (): Val => {
       let v: Val = parseFactor();
+      while (peek() === '^') { next(); v = Math.pow(toNum(v), toNum(parseFactor())); }
+      return v;
+    };
+    const parseTerm = (): Val => {
+      let v: Val = parsePow();
       while (peek() === '*' || peek() === '/') {
-        const op = next(); const r = toNum(parseFactor());
+        const op = next(); const r = toNum(parsePow());
+        if (op === '/' && r === 0) throw { code: 'ERR' };
         v = op === '*' ? toNum(v) * r : toNum(v) / r;
       }
       return v;
@@ -334,13 +520,18 @@ export class SpreadsheetEditor implements DocEditor {
       }
       return v;
     };
+    const parseConcat = (): Val => {
+      let v: Val = parseAdd();
+      while (peek() === '&') { next(); v = formatVal(toScalar(v)) + formatVal(toScalar(parseAdd())); }
+      return v;
+    };
     // Comparisons yield 1/0 (numeric when both sides are numbers, else text).
     const CMP = new Set(['=', '<>', '<', '>', '<=', '>=']);
     const parseExpr = (): Val => {
-      const left = parseAdd();
+      const left = parseConcat();
       if (!CMP.has(peek() ?? '')) return left;
       const op = next()!;
-      const a = toScalar(left), b = toScalar(parseAdd());
+      const a = toScalar(left), b = toScalar(parseConcat());
       const na = Number(a), nb = Number(b);
       const numeric = String(a).trim() !== '' && String(b).trim() !== '' && Number.isFinite(na) && Number.isFinite(nb);
       const d = numeric ? na - nb : String(a).localeCompare(String(b));
@@ -506,7 +697,9 @@ export class SpreadsheetEditor implements DocEditor {
     opBtn('✕ Row', 'Delete current row', () => this.withHistory(() => this.deleteRow()));
     opBtn('✕ Col', 'Delete current column', () => this.withHistory(() => this.deleteCol()));
     opBtn('B', 'Bold (Cmd/Ctrl+B)', () => this.toggleBold());
-    opBtn('⊞ Merge', 'Merge / unmerge selected cells', () => this.mergeSelection());
+    opBtn('⊞ Merge ▾', 'Merge cells options', () => {});
+    const mergeBtn = ops.lastElementChild as HTMLButtonElement;
+    mergeBtn.addEventListener('click', () => this.openMergeMenu(mergeBtn));
     opBtn('A→Z', 'Sort rows by selected column, ascending', () => this.sortByColumn(true));
     opBtn('Z→A', 'Sort rows by selected column, descending', () => this.sortByColumn(false));
     opBtn('↶', 'Undo (Cmd/Ctrl+Z)', () => this.undo());
@@ -796,21 +989,61 @@ export class SpreadsheetEditor implements DocEditor {
     this.moveTo(this.sel.r, Math.min(this.sel.c, this.cols - 1), false);
   }
 
-  // Merge the selection into one cell; selecting an existing merge unmerges it.
-  private mergeSelection() {
+  // Excel-style merge actions: Merge & Center, Merge Across, Merge Cells, Unmerge Cells.
+  private applyMerge(mode: 'center' | 'across' | 'merge' | 'unmerge') {
     const rg = this.curRange();
     const m = this.meta();
     this.withHistory(() => {
-      const hit = m.merges.findIndex((x) => x.r1 === rg.r1 && x.c1 === rg.c1 && x.r2 === rg.r2 && x.c2 === rg.c2);
-      if (hit >= 0) { m.merges.splice(hit, 1); this.renderGrid(); return; }
-      if (rg.r1 === rg.r2 && rg.c1 === rg.c2) return;
       m.merges = m.merges.filter((x) => x.r2 < rg.r1 || x.r1 > rg.r2 || x.c2 < rg.c1 || x.c1 > rg.c2);
-      m.merges.push({ ...rg });
-      for (let r = rg.r1; r <= rg.r2; r++) for (let c = rg.c1; c <= rg.c2; c++) {
-        if ((r !== rg.r1 || c !== rg.c1) && (this.aoa()[r]?.[c] ?? '') !== '') this.setCellValue(r, c, '');
+      if (mode !== 'unmerge') {
+        const parts = mode === 'across'
+          ? Array.from({ length: rg.r2 - rg.r1 + 1 }, (_, i) => ({ r1: rg.r1 + i, r2: rg.r1 + i, c1: rg.c1, c2: rg.c2 }))
+          : [{ ...rg }];
+        for (const p of parts) {
+          if (p.r1 === p.r2 && p.c1 === p.c2) continue;
+          m.merges.push(p);
+          for (let r = p.r1; r <= p.r2; r++) for (let c = p.c1; c <= p.c2; c++) {
+            if ((r !== p.r1 || c !== p.c1) && (this.aoa()[r]?.[c] ?? '') !== '') this.setCellValue(r, c, '');
+          }
+          if (mode === 'center') {
+            const k = mkey(p.r1, p.c1);
+            if (this.pkg) m.styles.set(k, this.pkg.deriveCenter(m.styles.get(k) ?? 0));
+            else m.centered.add(k);
+          }
+        }
       }
       this.renderGrid();
     });
+  }
+
+  private mergeItems(): [string, () => void][] {
+    return [
+      ['Merge & Center', () => this.applyMerge('center')],
+      ['Merge Across', () => this.applyMerge('across')],
+      ['Merge Cells', () => this.applyMerge('merge')],
+      ['Unmerge Cells', () => this.applyMerge('unmerge')],
+    ];
+  }
+
+  private openMergeMenu(anchor: HTMLElement) {
+    this.root.querySelector('.sheet-popmenu')?.remove();
+    const menu = document.createElement('div');
+    menu.className = 'sheet-popmenu';
+    menu.setAttribute('role', 'menu');
+    for (const [label, fn] of this.mergeItems()) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.setAttribute('role', 'menuitem');
+      b.addEventListener('click', () => { menu.remove(); fn(); });
+      menu.appendChild(b);
+    }
+    const a = anchor.getBoundingClientRect(), w = this.root.getBoundingClientRect();
+    menu.style.left = `${Math.max(0, a.left - w.left)}px`;
+    menu.style.top = `${a.bottom - w.top + 2}px`;
+    this.root.appendChild(menu);
+    const close = (e: Event) => { if (!menu.contains(e.target as Node)) { menu.remove(); document.removeEventListener('pointerdown', close, true); } };
+    setTimeout(() => document.addEventListener('pointerdown', close, true), 0);
   }
 
   private addSheet() {
@@ -1063,11 +1296,11 @@ export class SpreadsheetEditor implements DocEditor {
         if (xf?.css) td.style.cssText = xf.css;
         const colW = meta.colW.get(c);
         if (colW) { td.style.minWidth = td.style.maxWidth = `${colW}px`; }
+        if (!this.pkg && meta.centered.has(mkey(r, c))) td.style.textAlign = 'center';
         const mg = anchors.get(mkey(r, c));
         if (mg) {
           td.rowSpan = Math.min(mg.r2, this.rows - 1) - mg.r1 + 1;
           td.colSpan = Math.min(mg.c2, this.cols - 1) - mg.c1 + 1;
-          if (!xf?.css.includes('text-align')) td.style.textAlign = 'center';
           td.classList.add('merged');
         }
         if (boldSet.has(r + ',' + c)) td.classList.add('bold');
@@ -1408,7 +1641,7 @@ export class SpreadsheetEditor implements DocEditor {
       ['Paste', () => void this.paste()],
       ['Clear cells', () => this.clearRange()],
       ['Bold', () => this.toggleBold()],
-      ['Merge / unmerge cells', () => this.mergeSelection()],
+      ...this.mergeItems(),
       ['Add sheet', () => this.addSheet()],
       ['Select row', () => this.selectRow(this.sel.r)],
       ['Select column', () => this.selectColumn(this.sel.c)],
@@ -1475,6 +1708,8 @@ export class SpreadsheetEditor implements DocEditor {
     const wb = XLSX.utils.book_new();
     for (const name of this.order) {
       const ws = XLSX.utils.aoa_to_sheet(this.trimmed(this.computed(this.sheets.get(name)!)));
+      const mgs = this.metas.get(name)?.merges ?? [];
+      if (mgs.length) ws['!merges'] = mgs.map((m) => ({ s: { r: m.r1, c: m.c1 }, e: { r: m.r2, c: m.c2 } }));
       XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
     }
     const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;

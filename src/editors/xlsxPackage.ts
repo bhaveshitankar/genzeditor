@@ -38,6 +38,7 @@ export class SheetMeta {
   rowAttrs = new Map<number, string>();
   orig = new Map<string, CellOrig>();
   objects: SheetObject[] = [];
+  centered = new Set<string>(); // view-only centering when there is no package to hold a style
 
   snapshot() {
     return { styles: [...this.styles], merges: this.merges.map((m) => ({ ...m })), rowH: [...this.rowH], rowAttrs: [...this.rowAttrs] };
@@ -173,6 +174,9 @@ function luminance(hex: string): number {
 export class XlsxPackage {
   private constructor(private bytes: ArrayBuffer, private zip: JSZip) {}
   private xfs: Xf[] = [];
+  private xfXml: string[] = [];
+  private pendingXfs: string[] = [];
+  private centerCache = new Map<number, number>();
   private theme: string[] = [];
   private sheetParts = new Map<string, { part: string; hidden: boolean }>();
   private urls: string[] = [];
@@ -185,6 +189,24 @@ export class XlsxPackage {
     const pkg = new XlsxPackage(bytes, zip);
     try { await pkg.parseWorkbook(); await pkg.parseTheme(); await pkg.parseStyles(); } catch { return null; }
     return pkg;
+  }
+
+  /** Style index = `base` plus centered text (added to styles.xml on export). */
+  deriveCenter(base: number): number {
+    const hit = this.centerCache.get(base);
+    if (hit !== undefined) return hit;
+    let xml = this.xfXml[base] ?? '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>';
+    xml = xml.replace(/<alignment\b[^>]*\/>|<alignment\b[\s\S]*?<\/alignment>/, '').replace(/\sapplyAlignment="[^"]*"/, '');
+    xml = /\/>\s*$/.test(xml)
+      ? xml.replace(/\s*\/>\s*$/, ' applyAlignment="1"><alignment horizontal="center"/></xf>')
+      : xml.replace(/^(<xf\b[^>]*?)>/, '$1 applyAlignment="1"><alignment horizontal="center"/>');
+    const idx = this.xfs.length;
+    const baseXf = this.xfs[base];
+    this.xfs.push({ css: `${baseXf?.css ?? ''};text-align:center`, fmt: baseXf?.fmt ?? 0 });
+    this.xfXml.push(xml);
+    this.pendingXfs.push(xml);
+    this.centerCache.set(base, idx);
+    return idx;
   }
 
   hasSheet(name: string) { return this.sheetParts.has(name); }
@@ -296,6 +318,7 @@ export class XlsxPackage {
         if (al.getAttribute('wrapText') === '1' || al.getAttribute('wrapText') === 'true') css.push('white-space:normal;word-break:break-word');
       }
       const id = num(xf.getAttribute('numFmtId'));
+      this.xfXml.push(new XMLSerializer().serializeToString(xf));
       this.xfs.push({ css: css.join(';'), fmt: id === 0 ? 0 : id >= 164 ? (custom.get(id) ?? 0) : id });
     }
   }
@@ -439,6 +462,12 @@ export class XlsxPackage {
     if (anyFormula) {
       if (/<calcPr\b/.test(wbXml)) wbXml = wbXml.replace(/<calcPr\b([^>]*?)(\/?)>/, (_m, a: string, s: string) => `<calcPr${a.replace(/\sfullCalcOnLoad="[^"]*"/, '')} fullCalcOnLoad="1"${s}>`);
       else wbXml = wbXml.replace(/(<extLst\b|<\/workbook>)/, '<calcPr fullCalcOnLoad="1"/>$1');
+    }
+    if (this.pendingXfs.length) {
+      let st = (await zip.file('xl/styles.xml')?.async('string')) ?? '';
+      st = st.replace(/<cellXfs\b([^>]*?)count="(\d+)"/, (_m, a: string, n: string) => `<cellXfs${a}count="${Number(n) + this.pendingXfs.length}"`)
+        .replace('</cellXfs>', this.pendingXfs.join('') + '</cellXfs>');
+      zip.file('xl/styles.xml', st);
     }
     zip.file('[Content_Types].xml', ctXml);
     zip.file('xl/workbook.xml', wbXml);
