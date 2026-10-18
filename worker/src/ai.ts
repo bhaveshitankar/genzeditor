@@ -183,7 +183,7 @@ export function extractJson(raw: string): unknown {
 // the provider validate the argument structure, so we get well-formed ops
 // instead of hand-parsed freeform JSON (which Llama frequently mangled).
 
-interface Tool { name: string; description: string; parameters: Record<string, unknown>; }
+export interface Tool { name: string; description: string; parameters: Record<string, unknown>; }
 
 const anyArray = { type: 'array', items: { type: 'object' } };
 function toolFor(kind: AiKind): Tool | null {
@@ -307,6 +307,32 @@ export interface RunOptions {
   byokProvider?: string | null; // 'openai' | 'anthropic' hint
 }
 
+// One tiered LLM call (BYOK → Workers AI → server fallback). Shared by the edit
+// endpoint and the request router so both get the same resilience.
+export async function runLlm(
+  env: Env, system: string, prompt: string, tool: Tool | null, opts: RunOptions,
+): Promise<{ raw: string; provider: AiEditResult['provider'] }> {
+  if (opts.byokKey) {
+    // Tier 1: bring-your-own-key, direct.
+    const p = providerForKey(opts.byokKey, opts.byokProvider);
+    const raw = p === 'anthropic'
+      ? await callAnthropic(opts.byokKey, system, prompt, tool)
+      : await callOpenAI(opts.byokKey, system, prompt, tool);
+    return { raw, provider: p };
+  }
+  // Tier 2: Workers AI, with Tier 3 server-provider fallback on error.
+  try {
+    return { raw: await callWorkersAI(env, system, prompt, tool), provider: 'workers-ai' };
+  } catch {
+    const fb = serverProvider(env);
+    if (!fb) throw new Error('ai_unavailable');
+    const raw = fb.provider === 'anthropic'
+      ? await callAnthropic(fb.key, system, prompt, tool)
+      : await callOpenAI(fb.key, system, prompt, tool);
+    return { raw, provider: fb.provider };
+  }
+}
+
 export async function runAiEdit(env: Env, req: AiEditRequest, opts: RunOptions): Promise<AiEditResult> {
   const json = wantsJson(req.kind);
   const system = systemPrompt(req.kind, req.meta ?? {});
@@ -318,31 +344,7 @@ export async function runAiEdit(env: Env, req: AiEditRequest, opts: RunOptions):
   // Tool-calling (MCP-style): for structured kinds the model invokes a typed
   // tool whose args the provider validates, instead of emitting freeform JSON.
   const tool = json ? toolFor(req.kind) : null;
-
-  let raw: string;
-  let provider: AiEditResult['provider'];
-
-  if (opts.byokKey) {
-    // Tier 1: bring-your-own-key, direct.
-    const p = providerForKey(opts.byokKey, opts.byokProvider);
-    raw = p === 'anthropic'
-      ? await callAnthropic(opts.byokKey, system, userMsg, tool)
-      : await callOpenAI(opts.byokKey, system, userMsg, tool);
-    provider = p;
-  } else {
-    // Tier 2: Workers AI, with Tier 3 server-provider fallback on error.
-    try {
-      raw = await callWorkersAI(env, system, userMsg, tool);
-      provider = 'workers-ai';
-    } catch {
-      const fb = serverProvider(env);
-      if (!fb) throw new Error('ai_unavailable');
-      raw = fb.provider === 'anthropic'
-        ? await callAnthropic(fb.key, system, userMsg, tool)
-        : await callOpenAI(fb.key, system, userMsg, tool);
-      provider = fb.provider;
-    }
-  }
+  const { raw, provider } = await runLlm(env, system, userMsg, tool, opts);
 
   if (!json) return { provider, text: stripFences(raw) };
 

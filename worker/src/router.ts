@@ -12,6 +12,8 @@ import { checkThrottle, recordStrike, clearThrottle } from './throttle';
 import { verifyTurnstile } from './turnstile';
 import { runAiEdit, type AiKind } from './ai';
 import { chargeUnits, costFor, runGenerate, isGenKind, GenError, type GenParams } from './generate';
+import { routeRequest } from './agent';
+import { heuristicIntent, sanitizeContext, clip } from '../../src/ai/agentPlan';
 import { mcpHandle, mcpKeyOwner } from './mcp';
 
 const WINDOW = 60_000;
@@ -141,6 +143,26 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     } catch (e) {
       return json({ error: 'ai_failed', detail: (e as Error).message }, env, { status: 502 });
     }
+  }
+
+  // --- AI router: decides what the user wants (one cheap call; falls back to a local heuristic) ---
+  if (req.method === 'POST' && path === '/api/ai/route') {
+    if (!originAllowed(req, env)) return error('bad_origin', env, 403);
+    if (!userId) return error('unauthorized', env, 401);
+    if (!(await rateLimit(env.DB, owner, 'ai_route', 20, WINDOW)).ok) return error('rate_limited', env, 429);
+    const raw = await req.text();
+    if (raw.length > 30_000) return error('too_large', env, 413);
+    let b: { text?: unknown; context?: unknown } | null = null;
+    try { b = JSON.parse(raw); } catch { b = null; }
+    if (!b || !clip(b.text, 1500)) return error('bad_request', env, 400);
+    const byokKey = req.headers.get('X-AI-Key');
+    const byokProvider = req.headers.get('X-AI-Provider');
+    // Out of daily units → still route, but with the free offline heuristic.
+    if (!byokKey && !(await chargeUnits(env.DB, owner, 1)).ok) {
+      return json({ intent: heuristicIntent(clip(b.text, 1500), sanitizeContext(b.context)), provider: 'heuristic' }, env);
+    }
+    try { return json(await routeRequest(env, b, { byokKey, byokProvider }), env); }
+    catch { return json({ error: 'route_failed' }, env, { status: 502 }); }
   }
 
   // --- MCP server (Streamable HTTP, JSON-RPC). Session cookie OR Bearer API key. ---

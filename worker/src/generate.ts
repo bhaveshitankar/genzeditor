@@ -4,13 +4,14 @@
 // (free 10k neurons/day account-wide), metered per user in weighted "units".
 import type { Env } from './env';
 import { extractJson } from './ai';
+import { parseLyrics, clip, LANG_CODES } from '../../src/ai/agentPlan';
 
-export type GenKind = 'image' | 'audio' | 'describe' | 'interior' | 'storyboard' | 'song';
+export type GenKind = 'image' | 'audio' | 'describe' | 'interior' | 'storyboard' | 'song' | 'script' | 'write';
 
 // Weighted daily budget per user. Tuned so the account-wide 10k-neuron/day
 // free allowance stretches across many users (1 unit ~ <= 25 neurons).
 export const DAILY_UNITS = 60;
-export const COST = { image: 4, audio: 2, describe: 3, interiorBase: 3, interiorVariant: 5, storyboard: 3, storyboardFrame: 4, song: 3 };
+export const COST = { image: 4, audio: 2, describe: 3, interiorBase: 3, interiorVariant: 5, storyboard: 3, storyboardFrame: 4, song: 3, script: 3, write: 3 };
 
 export const MAX_IMAGES = 4;
 const MAX_IMAGE_CHARS = 1_500_000; // per data URL (~1.1 MB binary)
@@ -56,6 +57,8 @@ export function costFor(kind: GenKind, p: GenParams): number {
     case 'describe': return COST.describe;
     case 'interior': return COST.interiorBase + COST.interiorVariant * n;
     case 'song': return COST.song;
+    case 'script': return COST.script;
+    case 'write': return COST.write;
     case 'storyboard': return COST.storyboard + (p.frames ? COST.storyboardFrame * clampInt(p.scenes, 2, 6, 4) : 0);
   }
 }
@@ -71,6 +74,11 @@ export interface GenParams {
   scenes?: number;     // storyboard scenes
   frames?: boolean;    // storyboard: also render frames
   characters?: string; // storyboard: visual description of recurring characters
+  context?: string;    // story/song/storyboard/write: what happened in earlier parts (continuity)
+  length?: string;     // song: short | medium | long
+  language?: string;   // song/script: language to write in
+  chapters?: number;   // script: chapters per call
+  words?: number;      // script: words per chapter
   question?: string;   // describe
   width?: number; height?: number;
 }
@@ -186,11 +194,11 @@ export async function describeImages(env: Env, images: string[], question?: stri
   return parts.join('\n\n');
 }
 
-async function llmJson(env: Env, system: string, user: string): Promise<unknown> {
+async function llmJson(env: Env, system: string, user: string, maxTokens = 1200): Promise<unknown> {
   try {
     const r = (await env.AI.run(M_TEXT as never, {
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      max_tokens: 1200,
+      max_tokens: maxTokens,
     } as never)) as { response?: unknown };
     const raw = typeof r?.response === 'string' ? r.response : JSON.stringify(r?.response ?? '');
     return extractJson(raw);
@@ -292,22 +300,80 @@ export async function designInterior(env: Env, p: GenParams): Promise<GenResult>
 const MOODS = ['chill', 'upbeat', 'sad', 'epic', 'lofi'];
 const KEYS = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
 
+const LANG_NAME: Record<string, string> = { en: 'English', es: 'Spanish', fr: 'French', zh: 'Chinese', jp: 'Japanese', kr: 'Korean' };
+const langOf = (p: GenParams): string => (LANG_CODES.includes(String(p.language)) ? String(p.language) : 'en');
+const ctxOf = (p: GenParams, n = 900): string => clip(p.context, n);
+
 export async function songPlan(env: Env, p: GenParams): Promise<GenResult> {
   const idea = cleanPrompt(p.prompt);
+  const L = p.length === 'short' || p.length === 'long' ? p.length : 'medium';
+  const structure = L === 'short' ? '[Verse 1] and [Chorus]' : L === 'long' ? '[Verse 1] [Chorus] [Verse 2] [Bridge]' : '[Verse 1] [Chorus] [Verse 2]';
+  const lang = langOf(p);
+  const ctx = ctxOf(p);
   const raw = (await llmJson(env,
     'You are a songwriter. Reply with ONLY JSON: {"title":string,"lyrics":string,"mood":"chill"|"upbeat"|"sad"|"epic"|"lofi","tempo":number,"key":"C"|"D"|"E"|"F"|"G"|"A"|"B","minor":boolean}. ' +
-    'lyrics: 2 verses and a chorus, short lines, labelled [Verse 1] [Chorus] [Verse 2], under 900 characters. tempo 70-150 BPM.', idea)) as Record<string, unknown>;
-  const lyrics = String(raw?.lyrics ?? '').trim().slice(0, 1200);
+    `lyrics: sections ${structure}, labelled in square brackets, each written ONCE (the arranger repeats the chorus). ` +
+    'Every section is exactly 4 short singable lines of 4-8 words that rhyme (AABB or ABAB), vivid and concrete, no filler, no stage directions; under 1100 characters in total. tempo 70-150 BPM. ' +
+    `Write the lyrics in ${LANG_NAME[lang] ?? 'English'}.` +
+    (ctx ? ` This continues earlier work — keep the same voice, characters and imagery, do not repeat lines: ${ctx}` : ''), idea)) as Record<string, unknown>;
+  const lyrics = String(raw?.lyrics ?? '').trim().slice(0, 1400);
   if (!lyrics) throw new GenError('llm_failed', 502);
   const mood = MOODS.includes(String(raw.mood)) ? String(raw.mood) : 'chill';
   const key = KEYS.includes(String(raw.key)) ? String(raw.key) : 'C';
   return {
     provider: 'workers-ai', title: String(raw.title ?? 'Untitled song').slice(0, 80), lyrics, mood,
     tempo: clampInt(raw.tempo, 60, 160, 100), key, minor: typeof raw.minor === 'boolean' ? raw.minor : mood === 'sad',
+    sections: parseLyrics(lyrics),
   };
 }
 
+// ---- script (story narration, chapters) and free-form writing ----------------
+
+export async function script(env: Env, p: GenParams): Promise<GenResult> {
+  const idea = cleanPrompt(p.prompt);
+  const n = clampInt(p.chapters, 1, 4, 1);
+  const words = clampInt(p.words, 30, 160, 90);
+  const lang = LANG_NAME[langOf(p)] ?? 'English';
+  const ctx = ctxOf(p);
+  const raw = (await llmJson(env,
+    'You are a scriptwriter and storyteller. Reply with ONLY JSON: {"title":string,"style":string,"characters":string,"summary":string,"chapters":[{"title":string,"narration":string}]}. ' +
+    `Exactly ${n} chapters. Each chapter narration is about ${words} words, written to be read aloud: natural spoken sentences, no stage directions, no markdown, no emojis, no chapter headings inside the text. ` +
+    '"style" is one shared visual art-style phrase. "characters" is a one-line visual description of the recurring characters. "summary" is 2 sentences on what happens in THIS part. ' +
+    `Write in ${lang}.` + (ctx ? ` This continues earlier work — pick up exactly where it ended, keep characters and tone, never repeat: ${ctx}` : ''),
+    idea, 2200)) as { title?: string; style?: string; characters?: string; summary?: string; chapters?: Record<string, unknown>[] };
+  const chapters = (Array.isArray(raw?.chapters) ? raw.chapters : []).slice(0, n).map((c) => ({
+    title: String(c.title ?? '').slice(0, 80), narration: String(c.narration ?? '').slice(0, words * 9),
+  })).filter((c) => c.narration);
+  if (!chapters.length) throw new GenError('llm_failed', 502);
+  return {
+    provider: 'workers-ai', title: String(raw?.title ?? 'Story').slice(0, 100), style: String(raw?.style ?? '').slice(0, 120),
+    characters: String(raw?.characters ?? '').slice(0, 300), summary: String(raw?.summary ?? '').slice(0, 400), chapters,
+  };
+}
+
+export async function write(env: Env, p: GenParams): Promise<GenResult> {
+  const idea = cleanPrompt(p.prompt, 1500);
+  const ctx = ctxOf(p);
+  try {
+    const r = (await env.AI.run(M_TEXT as never, {
+      messages: [
+        { role: 'system', content: 'You are a skilled writer. Do exactly what the user asks and output only the finished text — no preamble, no markdown fences, no commentary. Keep it under 600 words unless asked otherwise.' + (ctx ? ` Earlier work for continuity: ${ctx}` : '') },
+        { role: 'user', content: idea },
+      ],
+      max_tokens: 1400,
+    } as never)) as { response?: unknown };
+    const text = String(typeof r?.response === 'string' ? r.response : '').trim();
+    if (!text) throw new GenError('llm_failed', 502);
+    return { provider: 'workers-ai', text };
+  } catch (e) {
+    if (e instanceof GenError) throw e;
+    throw new GenError('llm_failed', 502);
+  }
+}
+
 // ---- storyboard ----------------------------------------------------------
+
+const MOTIONS = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'pan-up', 'pan-down', 'drift', 'push'];
 
 export async function storyboard(env: Env, p: GenParams): Promise<GenResult> {
   const idea = cleanPrompt(p.prompt);
@@ -317,14 +383,16 @@ export async function storyboard(env: Env, p: GenParams): Promise<GenResult> {
     'You write short video storyboards. Reply with ONLY JSON: {"title":string,"style":string,"scenes":[{"prompt":string,"narration":string,"durationSec":number,"motion":"zoom-in"|"zoom-out"|"pan-left"|"pan-right"}]}. ' +
     `Exactly ${n} scenes. "style" is one shared art-style phrase (e.g. "soft watercolor storybook") used for every scene. ` +
     'Each scene prompt: a vivid image-generation prompt, vertical 9:16 composition, same art style across all scenes, no text in the image. ' +
-    'Each narration: max ~22 words, spoken aloud, first person or narrator voice matching the story. durationSec 3-7.' +
+    'Each narration: max ~22 words, spoken aloud, first person or narrator voice matching the story. durationSec 3-7. ' +
+    'Vary "motion" between scenes (camera move on the still image): zoom-in, zoom-out, pan-left, pan-right, pan-up, pan-down, drift, push.' +
+    (ctxOf(p) ? ` Story so far (continue seamlessly, never repeat it): ${ctxOf(p)}.` : '') +
     (chars ? ` Recurring characters (repeat their key visual traits verbatim in EVERY scene prompt so images stay consistent): ${chars}` : ''),
     idea)) as { title?: string; style?: string; scenes?: Record<string, unknown>[] };
-  const scenes = (Array.isArray(raw?.scenes) ? raw.scenes : []).slice(0, n).map((s) => ({
+  const scenes = (Array.isArray(raw?.scenes) ? raw.scenes : []).slice(0, n).map((s, i) => ({
     prompt: String(s.prompt ?? '').slice(0, 700),
     narration: String(s.narration ?? '').slice(0, 400),
     durationSec: Math.min(7, Math.max(3, Number(s.durationSec) || 4)),
-    motion: ['zoom-in', 'zoom-out', 'pan-left', 'pan-right'].includes(String(s.motion)) ? String(s.motion) : 'zoom-in',
+    motion: MOTIONS.includes(String(s.motion)) ? String(s.motion) : MOTIONS[i % MOTIONS.length]!,
     image: null as string | null,
   })).filter((s) => s.prompt);
   if (!scenes.length) throw new GenError('llm_failed', 502);
@@ -345,10 +413,12 @@ export async function runGenerate(env: Env, kind: GenKind, p: GenParams, byokKey
     case 'interior': return designInterior(env, p);
     case 'storyboard': return storyboard(env, p);
     case 'song': return songPlan(env, p);
+    case 'script': return script(env, p);
+    case 'write': return write(env, p);
     default: throw new GenError('bad_kind');
   }
 }
 
 export function isGenKind(k: unknown): k is GenKind {
-  return k === 'image' || k === 'audio' || k === 'describe' || k === 'interior' || k === 'storyboard' || k === 'song';
+  return k === 'image' || k === 'audio' || k === 'describe' || k === 'interior' || k === 'storyboard' || k === 'song' || k === 'script' || k === 'write';
 }

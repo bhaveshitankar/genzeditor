@@ -21,6 +21,8 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: { prompt: { type: 'string' }, scenes: { type: 'integer', minimum: 2, maximum: 6 }, characters: { type: 'string', description: 'Visual description of recurring characters' }, frames: { type: 'boolean' } }, required: ['prompt'] } },
   { name: 'compose_song', description: 'Write song lyrics plus a musical plan (mood, tempo, key, minor/major) from a description. Audio is performed client-side from the plan.',
     inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] } },
+  { name: 'write_script', description: 'Write a narrated story / script as 1-4 chapters of spoken narration (for audio stories, voice-overs, video narration). Pass `context` (summary of earlier parts) to continue a longer work.',
+    inputSchema: { type: 'object', properties: { prompt: { type: 'string' }, chapters: { type: 'integer', minimum: 1, maximum: 4 }, words: { type: 'integer', minimum: 30, maximum: 160 }, context: { type: 'string' }, language: { type: 'string', default: 'en' } }, required: ['prompt'] } },
   { name: 'plan_beat_edit', description: 'Plan a beat-synced reel (Instagram-style): given the song\'s beat times (or just bpm) and the available videos/photos, returns cut segments — which media, which source range, speed, and a transition into each cut. Free; the editor applies the plan client-side. Use pace fast/medium/slow = cut every 1/2/4 beats.',
     inputSchema: { type: 'object', properties: {
       duration: { type: 'number', description: 'Length of the output video in seconds (<= 180)' },
@@ -34,7 +36,7 @@ export const TOOLS = [
 
 const TOOL_KIND: Record<string, GenKind> = {
   generate_image: 'image', generate_audio: 'audio', describe_images: 'describe',
-  design_interior: 'interior', storyboard_video: 'storyboard', compose_song: 'song',
+  design_interior: 'interior', storyboard_video: 'storyboard', compose_song: 'song', write_script: 'script',
 };
 
 export interface McpCaller { owner: string }

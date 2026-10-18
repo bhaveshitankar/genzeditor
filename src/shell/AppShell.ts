@@ -134,6 +134,13 @@ export class AppShell {
         await this.refreshLibrary();
         this.toast(`Added “${rec.name}”`, 'success', 2500);
       },
+      listLibrary: async () => (await this.store.list()).map((f) => ({ id: f.id, name: f.name, kind: f.kind, size: f.size })),
+      readLibrary: (id) => this.store.read(id),
+      openFile: async () => {
+        if (!this.currentFileId) return null;
+        const rec = (await this.store.list()).find((f) => f.id === this.currentFileId);
+        return rec ? { name: rec.name, blob: await this.store.read(rec.id) } : null;
+      },
     });
     this.wireUpload();
     this.wirePalette();
@@ -268,7 +275,7 @@ export class AppShell {
               <input type="file">
               <span class="rail-icon">${icon('upload')}</span><span class="rail-label">Upload</span>
             </label>
-            <button type="button" class="rail-btn" data-role="rail-ai" aria-label="AI edit" title="AI edit">
+            <button type="button" class="rail-btn" data-role="rail-ai" aria-label="AI studio" title="AI studio — edit, write, sing, make videos">
               <span class="rail-icon">${icon('sparkles')}</span><span class="rail-label">AI</span>
             </button>
             <span class="rail-spacer"></span>

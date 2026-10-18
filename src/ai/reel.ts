@@ -3,11 +3,24 @@
 // Keep the tab in the foreground while rendering (rAF is throttled in background tabs).
 
 export type ReelAspect = '9:16' | '1:1' | '16:9';
-export interface ReelScene { image: string; text: string; seconds: number; motion: 'zoom-in' | 'zoom-out' | 'pan-left' | 'pan-right'; }
+export type ReelMotion = 'zoom-in' | 'zoom-out' | 'pan-left' | 'pan-right' | 'pan-up' | 'pan-down' | 'drift' | 'push';
+export const REEL_MOTIONS: ReelMotion[] = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'pan-up', 'pan-down', 'drift', 'push'];
+export interface ReelScene { image: string; text: string; seconds: number; motion: ReelMotion | string; }
+export interface TimedCaption { text: string; start: number; end: number }
 export interface ReelOptions {
   aspect: ReelAspect; captions: boolean; title?: string;
   voice?: (AudioBuffer | null)[];
   music?: AudioBuffer | null; musicGain?: number;
+  /** A finished soundtrack (e.g. the song). Used as-is instead of voice + music. */
+  track?: AudioBuffer | null;
+  /** Scene lengths are exact (beat-aligned cuts, short crossfades) instead of stretching to the voice. */
+  fixedTimeline?: boolean;
+  /** Timed captions (lyrics) that replace per-scene text. */
+  lines?: TimedCaption[];
+  /** Beat times (s): the picture gives a tiny punch on each one. */
+  beats?: number[];
+  /** Camera energy: calm = slow & subtle, lively = bigger moves + beat pulse. */
+  intensity?: 'calm' | 'lively';
   fps?: number;
   onProgress?: (fraction: number, label: string) => void;
   signal?: AbortSignal;
@@ -16,13 +29,13 @@ export interface ReelOptions {
 const OVERLAP = 0.5;
 const BRAND = '#ff4d8d';
 
-export function planTimeline(scenes: ReelScene[], voice?: (AudioBuffer | null)[]): { start: number; end: number }[] {
+export function planTimeline(scenes: ReelScene[], voice?: (AudioBuffer | null)[], fixed = false): { start: number; end: number }[] {
   const out: { start: number; end: number }[] = [];
   let prevEnd = 0;
   scenes.forEach((s, i) => {
     const v = voice?.[i];
-    const len = Math.max(s.seconds || 0, v ? v.duration + 0.5 : 0);
-    const start = i === 0 ? 0 : Math.max(0, prevEnd - OVERLAP);
+    const len = fixed ? Math.max(0.3, s.seconds || 0) : Math.max(s.seconds || 0, v ? v.duration + 0.5 : 0);
+    const start = i === 0 ? 0 : fixed ? prevEnd : Math.max(0, prevEnd - OVERLAP);
     const end = start + len;
     out.push({ start, end });
     prevEnd = end;
@@ -88,6 +101,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 async function mixAudio(
   total: number, tl: { start: number; end: number }[], opts: ReelOptions,
 ): Promise<AudioBuffer | null> {
+  if (opts.track) return opts.track;
   const voice = opts.voice || [];
   const hasVoice = voice.some(Boolean);
   if (!hasVoice && !opts.music) return null;
@@ -156,8 +170,15 @@ export async function renderReel(
 
   const fps = opts.fps || 30;
   const [W, H] = SIZES[opts.aspect] || SIZES['9:16'];
-  const tl = planTimeline(scenes, opts.voice);
+  const fixed = !!opts.fixedTimeline;
+  const tl = planTimeline(scenes, opts.voice, fixed);
+  if (fixed && opts.track && tl[tl.length - 1].end < opts.track.duration - 0.05) tl[tl.length - 1].end = opts.track.duration;
   const total = tl[tl.length - 1].end;
+  const lively = (opts.intensity ?? 'lively') === 'lively';
+  const beats = opts.beats ?? [];
+  // Cuts land on the beat, so the incoming scene only needs a short dissolve.
+  const ovOf = (i: number): number => (fixed ? Math.min(0.22, (tl[i].end - tl[i].start) * 0.3) : OVERLAP);
+  const TRANS = ['fade', 'slide', 'zoom', 'wipe'] as const;
 
   prog(0, 'Loading images');
   const imgs: HTMLImageElement[] = [];
@@ -178,21 +199,44 @@ export async function renderReel(
   const fontPx = Math.round(W * (W > H ? 0.032 : 0.05));
   const font = `800 ${fontPx}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
 
-  const drawScene = (i: number, t: number, alpha: number) => {
+  const ease = (x: number) => x * x * (3 - 2 * x);
+  // Camera move on a still: eased push/pull/pan/drift + subtle handheld sway + a tiny punch on each beat.
+  const drawScene = (i: number, t: number, alpha: number, ex: { dx?: number; zoom?: number; clipW?: number } = {}) => {
     const img = imgs[i];
     const len = tl[i].end - tl[i].start;
     const p = Math.max(0, Math.min(1, (t - tl[i].start) / len));
-    const m = scenes[i].motion;
-    let scale = 1.15, dx = 0;
-    if (m === 'zoom-in') scale = 1 + 0.15 * p;
-    else if (m === 'zoom-out') scale = 1.15 - 0.15 * p;
-    else { scale = 1.14; dx = (m === 'pan-left' ? -1 : 1) * (p - 0.5) * 0.12 * W; }
+    const e = ease(p);
+    const A = lively ? 0.16 : 0.08;
+    let scale = 1, dx = 0, dy = 0, rot = 0;
+    switch (scenes[i].motion) {
+      case 'zoom-out': scale = 1 + A * (1 - e); break;
+      case 'pan-left': scale = 1 + A * 0.9; dx = -(e - 0.5) * 0.13 * W; break;
+      case 'pan-right': scale = 1 + A * 0.9; dx = (e - 0.5) * 0.13 * W; break;
+      case 'pan-up': scale = 1 + A * 0.9; dy = -(e - 0.5) * 0.11 * H; break;
+      case 'pan-down': scale = 1 + A * 0.9; dy = (e - 0.5) * 0.11 * H; break;
+      case 'drift': scale = 1 + A * (0.5 + 0.5 * e); dx = (e - 0.5) * 0.07 * W; dy = (0.5 - e) * 0.05 * H; rot = (e - 0.5) * 0.025; break;
+      case 'push': scale = 1 + A * 1.2 * e; dx = (0.5 - e) * 0.05 * W; break;
+      default: scale = 1 + A * e; // zoom-in
+    }
+    const sway = lively ? 1 : 0.5;
+    dx += Math.sin(t * 1.3 + i) * 0.004 * W * sway; dy += Math.sin(t * 1.7 + 1 + i) * 0.003 * H * sway;
+    if (beats.length && lively) {
+      let lo = 0, hi = beats.length - 1, k = -1;
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (beats[m] <= t) { k = m; lo = m + 1; } else hi = m - 1; }
+      if (k >= 0) scale *= 1 + Math.exp(-(t - beats[k]) * 8) * 0.02;
+    }
+    if (rot) scale *= 1.04; // keep corners covered while rotating
+    scale *= ex.zoom ?? 1;
     const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
     const cover = Math.max(W / iw, H / ih) * scale;
     const dw = iw * cover, dh = ih * cover;
+    ctx.save();
+    if (ex.clipW !== undefined) { ctx.beginPath(); ctx.rect(0, 0, ex.clipW, H); ctx.clip(); }
     ctx.globalAlpha = alpha;
-    ctx.drawImage(img, (W - dw) / 2 + dx, (H - dh) / 2, dw, dh);
-    ctx.globalAlpha = 1;
+    ctx.translate(W / 2 + dx + (ex.dx ?? 0), H / 2 + dy);
+    if (rot) ctx.rotate(rot);
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
   };
 
   const rr = (x: number, y: number, w: number, h: number, r: number) => {
@@ -203,16 +247,13 @@ export async function renderReel(
     ctx.closePath();
   };
 
-  const drawCaption = (i: number, t: number) => {
-    const text = scenes[i].text;
+  const drawText = (text: string, from: number, dur: number, t: number) => {
     if (!text) return;
     ctx.font = font;
     const maxW = W * 0.84;
     const lines = wrapCaption(text, maxW, s => ctx.measureText(s).width);
     if (!lines.length) return;
-    const voiceLen = opts.voice?.[i]?.duration;
-    const dur = Math.max(0.5, voiceLen ?? (tl[i].end - tl[i].start - OVERLAP));
-    const prog01 = Math.max(0, Math.min(0.9999, (t - tl[i].start) / dur));
+    const prog01 = Math.max(0, Math.min(0.9999, (t - from) / Math.max(0.5, dur)));
     const totalWords = lines.reduce((n, l) => n + l.split(' ').length, 0);
     const cur = Math.floor(prog01 * totalWords);
     const lh = fontPx * 1.3, padX = fontPx * 0.8, padY = fontPx * 0.55;
@@ -238,6 +279,16 @@ export async function renderReel(
     });
   };
 
+  const drawCaption = (i: number, t: number) => {
+    if (opts.lines) {
+      const ln = opts.lines.find((l) => t >= l.start && t < l.end);
+      if (ln) drawText(ln.text, ln.start, ln.end - ln.start, t);
+      return;
+    }
+    const voiceLen = opts.voice?.[i]?.duration;
+    drawText(scenes[i].text, tl[i].start, voiceLen ?? (tl[i].end - tl[i].start - OVERLAP), t);
+  };
+
   const drawTitle = (t: number) => {
     if (!opts.title || t > 2.6) return;
     const a = t < 0.5 ? t / 0.5 : t > 2 ? Math.max(0, (2.6 - t) / 0.6) : 1;
@@ -253,15 +304,25 @@ export async function renderReel(
     ctx.restore();
   };
 
+  // Soft vignette keeps the eye centred and hides pan edges.
+  const vig = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
+  vig.addColorStop(0, 'rgba(0,0,0,0)'); vig.addColorStop(1, 'rgba(0,0,0,0.38)');
+
   const drawFrame = (t: number) => {
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
     let active = 0;
     for (let i = 0; i < scenes.length; i++) if (t >= tl[i].start) active = i;
-    if (active > 0) drawScene(active - 1, t, 1);
-    const fade = active > 0 ? Math.min(1, (t - tl[active].start) / OVERLAP) : 1;
-    // previous scene only needed while fading
-    if (active > 0 && fade >= 1) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); }
-    drawScene(active, t, fade);
+    const ov = ovOf(active);
+    const raw = active > 0 ? Math.min(1, (t - tl[active].start) / ov) : 1;
+    if (active > 0 && raw < 1) drawScene(active - 1, t, 1);
+    const e = ease(raw);
+    switch (active > 0 ? TRANS[(active - 1) % TRANS.length] : 'fade') {
+      case 'slide': drawScene(active, t, 1, { dx: (1 - e) * W * (active % 2 ? 1 : -1) * 0.5 }); break;
+      case 'zoom': drawScene(active, t, e, { zoom: 1 + (1 - e) * 0.25 }); break;
+      case 'wipe': drawScene(active, t, 1, { clipW: W * e }); break;
+      default: drawScene(active, t, e);
+    }
+    ctx.fillStyle = vig; ctx.fillRect(0, 0, W, H);
     if (opts.captions) drawCaption(active, t);
     drawTitle(t);
   };

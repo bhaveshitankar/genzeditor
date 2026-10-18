@@ -1,11 +1,20 @@
 import './styles/ai.css';
-import { aiEdit, aiGenerate, genCost, GEN_DAILY_UNITS, AiError, type AiEditResult, type AiKind, type ByoKey, type GenInput, type GenResult } from '../api/client';
+import { aiEdit, aiRoute, AiError, GEN_DAILY_UNITS, type AiEditResult, type AiKind, type ByoKey } from '../api/client';
 import { icon } from './icons';
 import { reportFailure } from '../telemetry';
-import type { ReelAspect, ReelScene } from '../ai/reel';
-import { renderSong, audioBufferToWav, planFromText, type SongPlan } from '../ai/songSynth';
+import {
+  applyPrefs, buildPlan, DEFAULT_PREFS, heuristicIntent, LANGS,
+  type AttachmentInfo, type Plan, type PlanStep, type Prefs, type RouteContext, type RoutedIntent, type StepType,
+} from '../ai/agentPlan';
+import { loadAttachment, kindOfFile, MAX_ATTACHMENTS, type LoadedAttachment } from '../ai/attachments';
+import { addPart, contextFor, loadProject, saveProject, type Project } from '../ai/projects';
+import { localVoiceInstalled, localVoiceSupported, loadLocalVoice, localVoiceLoaded } from '../ai/localVoice';
+import type { Artifact, RunResult } from '../ai/agentRun';
+import type { ReelAspect } from '../ai/reel';
 
 const BYOK_STORE = 'anyedits:aiKey';
+const PREFS_STORE = 'anyedits:aiPrefs';
+const AUTO_RUN_UNITS = 12;       // plans costing more than this wait for an explicit "Start"
 
 // What the shell resolves for the currently-open editor. `apply` knows how to
 // apply the model's result to that specific editor and returns a short summary.
@@ -18,63 +27,20 @@ export interface AiTarget {
   onChanged?: () => void;
 }
 
+export interface LibraryItem { id: string; name: string; kind: string; size: number }
+
 export interface AiPanelOptions {
   isAuthed: () => boolean;
   onSignIn: () => void;
   // Returns the AI target for whatever editor is open, or null if unsupported.
   resolve: () => AiTarget | null;
-  // Optional: save a generated asset (image/audio/.floorplan) as a new file in the app.
-  // When absent, the Generate tab offers a plain download instead.
+  // Save a generated asset (audio/video/image/text) as a new file in the app. When absent, a plain download is offered.
   saveGenerated?: (name: string, mime: string, blob: Blob) => Promise<void> | void;
-}
-
-type GenMode = 'image' | 'audio' | 'song' | 'interior' | 'storyboard' | 'reel';
-const MAX_CHARS = 3;
-const MAX_PHOTOS = 4;
-
-async function fileToDataUrl(file: File, max = 768): Promise<string> {
-  const bmp = await createImageBitmap(file);
-  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
-  const c = document.createElement('canvas');
-  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
-  c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height);
-  return c.toDataURL('image/jpeg', 0.8);
-}
-
-// Pull up to `n` evenly spaced frames from a video file.
-async function videoFrames(file: File, n: number): Promise<string[]> {
-  const url = URL.createObjectURL(file);
-  try {
-    const v = document.createElement('video');
-    v.muted = true; v.playsInline = true; v.src = url;
-    // MediaRecorder WebM has no duration header (reads as Infinity, breaks the scrubber):
-    // seeking far past the end makes the browser compute it, then jump back to 0.
-    v.addEventListener('loadedmetadata', () => {
-      if (v.duration !== Infinity) return;
-      v.currentTime = 1e101;
-      v.addEventListener('timeupdate', () => { v.currentTime = 0; }, { once: true });
-    });
-    await new Promise<void>((ok, bad) => { v.onloadedmetadata = () => ok(); v.onerror = () => bad(new Error('video')); });
-    const out: string[] = [];
-    const k = Math.min(1, 768 / Math.max(v.videoWidth, v.videoHeight, 1));
-    const c = document.createElement('canvas');
-    c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
-    for (let i = 0; i < n; i++) {
-      v.currentTime = (v.duration || 1) * ((i + 0.5) / n);
-      await new Promise<void>((ok) => { v.onseeked = () => ok(); });
-      c.getContext('2d')!.drawImage(v, 0, 0, c.width, c.height);
-      out.push(c.toDataURL('image/jpeg', 0.8));
-    }
-    return out;
-  } finally { URL.revokeObjectURL(url); }
-}
-
-function dataUrlToBlob(u: string): Blob {
-  const mime = u.slice(5, u.indexOf(';'));
-  const bin = atob(u.slice(u.indexOf(',') + 1));
-  const a = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
-  return new Blob([a], { type: mime });
+  // Files already in the app, so they can be attached to a request.
+  listLibrary?: () => Promise<LibraryItem[]>;
+  readLibrary?: (id: string) => Promise<Blob>;
+  // The file currently open in the editor (any kind), as an attachment candidate.
+  openFile?: () => Promise<{ name: string; blob: Blob } | null>;
 }
 
 const SUGGESTIONS: Record<AiKind, string[]> = {
@@ -90,18 +56,54 @@ const SUGGESTIONS: Record<AiKind, string[]> = {
   sketch: ['Add a labelled box', 'Draw a simple flowchart', 'Add a title text', 'Add three connected nodes'],
   audio: ['Normalize the volume', 'Fade in and out', 'Boost volume 20%', 'Add a little reverb'],
 };
+const CREATE_IDEAS = [
+  'Write a lofi song about rainy mornings',
+  'Lyrics only: a funny birthday rap for my friend',
+  'Tell a calm bedtime story about a brave little fox',
+  'Make a music video for an upbeat summer road-trip song',
+  'Just a chill melody for studying, no vocals',
+  'A short vertical video about my coffee shop opening',
+];
 
 function loadByok(): ByoKey | null {
-  try {
-    const raw = localStorage.getItem(BYOK_STORE);
-    return raw ? (JSON.parse(raw) as ByoKey) : null;
-  } catch { return null; }
+  try { const raw = localStorage.getItem(BYOK_STORE); return raw ? (JSON.parse(raw) as ByoKey) : null; } catch { return null; }
 }
 function saveByok(v: ByoKey | null): void {
   try { v?.key ? localStorage.setItem(BYOK_STORE, JSON.stringify(v)) : localStorage.removeItem(BYOK_STORE); } catch { /* ignore */ }
 }
+function loadPrefs(): Prefs {
+  try { return { ...DEFAULT_PREFS, ...(JSON.parse(localStorage.getItem(PREFS_STORE) || '{}') as Partial<Prefs>) }; } catch { return { ...DEFAULT_PREFS }; }
+}
+function savePrefs(p: Prefs): void { try { localStorage.setItem(PREFS_STORE, JSON.stringify(p)); } catch { /* ignore */ } }
 
-// A right-docked, toggleable chat assistant. The document stays visible beside it.
+const INTENT_LABEL: Record<string, string> = {
+  edit: 'Edit the open file', song: 'Song', speech: 'Read aloud', story_audio: 'Audio story', image: 'Image', video: 'Video', music_video: 'Music video', text: 'Writing',
+};
+const SONG_LABEL: Record<string, string> = { lyrics: 'Lyrics only', lyrics_melody: 'Lyrics + melody', melody: 'Melody only' };
+
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function button(label: string, cls = 'ai-ghost', onClick?: () => void): HTMLButtonElement {
+  const b = el('button', cls, label); b.type = 'button';
+  if (onClick) b.addEventListener('click', onClick);
+  return b;
+}
+
+interface PlanCard {
+  root: HTMLElement;
+  step(type: StepType, state: 'run' | 'done' | 'error'): void;
+  progress(f: number, label: string): void;
+  setActions(...b: HTMLElement[]): void;
+  note(text: string): void;
+}
+
+// One docked assistant for everything: editing the open file, and creating songs,
+// stories, voice, images and videos. A cheap router call decides what the user
+// wants; the plan it produces is shown, then run step by step.
 export class AiPanel {
   private el: HTMLElement;
   private log!: HTMLElement;
@@ -109,86 +111,69 @@ export class AiPanel {
   private sendBtn!: HTMLButtonElement;
   private hintEl!: HTMLElement;
   private chipsEl!: HTMLElement;
+  private trayEl!: HTMLElement;
+  private projEl!: HTMLElement;
+
   private busy = false;
+  private abort: AbortController | null = null;
+  private prefs: Prefs = loadPrefs();
+  private attachments: LoadedAttachment[] = [];
+  private project: Project | null = loadProject();
+  private continueNext = false;
+  private lastIntent: RoutedIntent | null = null;
+  private lastPrompt = '';
+  private urls: string[] = [];
+  // In-session media of earlier parts, so "Continue" can join them into one file.
+  private session: { audio: AudioBuffer | null; videos: { blob: Blob; aspect?: ReelAspect }[] } = { audio: null, videos: [] };
+  private nextId = 1;
 
   constructor(private opts: AiPanelOptions) {
     this.el = document.createElement('aside');
     this.el.className = 'ai-drawer';
-    this.el.setAttribute('aria-label', 'AI assistant');
+    this.el.setAttribute('aria-label', 'AI studio');
     this.el.innerHTML = `
       <div class="ai-drawer-head">
-        <span class="ai-drawer-title">${icon('sparkles', 18)}<span>AI assistant</span></span>
-        <button type="button" class="ai-drawer-close" data-role="ai-close" aria-label="Close AI assistant" title="Close">${icon('x', 16)}</button>
-      </div>
-      <div class="ai-tabs" role="tablist">
-        <button type="button" class="ai-tab active" role="tab" data-role="tab-edit">Edit</button>
-        <button type="button" class="ai-tab" role="tab" data-role="tab-gen">Generate</button>
-      </div>
-      <div class="ai-gen" data-role="ai-gen" hidden>
-        <select class="ai-gen-mode" data-role="gen-mode" aria-label="What to generate">
-          <option value="image">Image from text</option>
-          <option value="audio">Speech (text to audio)</option>
-          <option value="song">Song (lyrics + music)</option>
-          <option value="interior">Interior design from photos</option>
-          <option value="storyboard">Video (text → storyboard)</option>
-          <option value="reel">Reel — story to full video</option>
-        </select>
-        <textarea class="ai-input" data-role="gen-prompt" rows="3" placeholder="Describe it…"></textarea>
-        <div class="ai-gen-photos" data-role="gen-photos" hidden>
-          <label class="ai-ghost ai-file">Photos / video<input type="file" accept="image/*,video/*" multiple hidden data-role="gen-files" /></label>
-          <label class="ai-ghost ai-file">Take photo<input type="file" accept="image/*" capture="environment" hidden data-role="gen-cam" /></label>
-          <select data-role="gen-style" aria-label="Style">
-            <option>modern minimalist</option><option>scandinavian</option><option>industrial loft</option>
-            <option>bohemian</option><option>mid-century modern</option><option>japandi</option>
-          </select>
-          <div class="ai-thumbs" data-role="gen-thumbs"></div>
-        </div>
-        <div class="ai-gen-song" data-role="gen-song" hidden>
-          <label class="ai-check"><input type="checkbox" data-role="gen-instr" /> Instrumental only — free, no sign-in, works offline</label>
-          <label class="ai-gen-scenes">Length
-            <select data-role="gen-bars"><option value="8">~20 s</option><option value="16" selected>~40 s</option><option value="32">~80 s</option></select>
-          </label>
-        </div>
-        <div class="ai-gen-video" data-role="gen-video" hidden>
-          <input type="text" class="ai-input" data-role="gen-vstyle" placeholder="Style, e.g. cinematic, cozy, retro" maxlength="120" />
-          <textarea class="ai-input" data-role="gen-vscript" rows="3" placeholder="Your own narration or script — free text (optional). Leave empty to let AI write it." maxlength="500"></textarea>
-          <label class="ai-gen-scenes">Scenes
-            <select data-role="gen-vscenes"><option>2</option><option selected>3</option><option>4</option></select>
-          </label>
-        </div>
-        <div class="ai-gen-reel" data-role="gen-reel" hidden>
-          <div class="ai-reel-chars">
-            <div class="ai-reel-label">Characters <span class="ai-quota">(optional, up to 3 photos)</span></div>
-            <div class="ai-gen-photos">
-              <label class="ai-ghost ai-file">Add photo<input type="file" accept="image/*" multiple hidden data-role="reel-files" /></label>
-              <label class="ai-ghost ai-file">Take photo<input type="file" accept="image/*" capture="user" hidden data-role="reel-cam" /></label>
-              <div class="ai-thumbs" data-role="reel-thumbs"></div>
-            </div>
-            <input type="text" class="ai-input" data-role="reel-chartext" placeholder="Names / looks, e.g. Mia, red hoodie, curly hair" maxlength="160" />
-          </div>
-          <input type="text" class="ai-input" data-role="reel-style" placeholder="Style, e.g. cinematic, cozy, anime (optional)" maxlength="80" />
-          <label class="ai-gen-scenes">Scenes
-            <select data-role="reel-scenes"><option>3</option><option selected>4</option><option>5</option><option>6</option></select>
-          </label>
-          <label class="ai-gen-scenes">Format
-            <select data-role="reel-aspect"><option value="9:16">9:16 Reel</option><option value="1:1">1:1 Square</option><option value="16:9">16:9 Wide</option></select>
-          </label>
-          <label class="ai-check"><input type="checkbox" data-role="reel-voice" checked /> Voice-over (AI narrator)</label>
-          <label class="ai-check"><input type="checkbox" data-role="reel-music" checked /> Background music</label>
-          <label class="ai-check"><input type="checkbox" data-role="reel-captions" checked /> Captions overlay</label>
-        </div>
-        <label class="ai-check" data-role="gen-frames-wrap" hidden><input type="checkbox" data-role="gen-frames" /> Render frames (uses more quota)</label>
-        <div class="ai-gen-cost" data-role="gen-cost"></div>
-        <button type="button" class="ai-go" data-role="gen-go">Generate</button>
-        <div class="ai-gen-out" data-role="gen-out"></div>
+        <span class="ai-drawer-title">${icon('sparkles', 18)}<span>AI studio</span></span>
+        <span class="ai-head-actions">
+          <button type="button" class="ai-ghost" data-role="ai-new" title="Start a fresh project (forgets earlier parts)">New</button>
+          <button type="button" class="ai-drawer-close" data-role="ai-close" aria-label="Close AI studio" title="Close">${icon('x', 16)}</button>
+        </span>
       </div>
       <div class="ai-hint" data-role="ai-hint"></div>
+      <div class="ai-project" data-role="ai-project" hidden></div>
       <div class="ai-log" data-role="ai-log"></div>
       <div class="ai-suggestions" data-role="ai-chips"></div>
+      <div class="ai-tray" data-role="ai-tray"></div>
+      <div class="ai-addrow">
+        <label class="ai-ghost ai-file" title="Add photos, audio, video or documents">${icon('plus', 14)} Add files<input type="file" multiple hidden data-role="ai-files" accept="image/*,audio/*,video/*,.txt,.md,.csv,.json,.docx,.xlsx,text/*" /></label>
+        <button type="button" class="ai-ghost" data-role="ai-lib">From library</button>
+        <button type="button" class="ai-ghost" data-role="ai-openfile">Use open file</button>
+      </div>
+      <div class="ai-lib" data-role="ai-liblist" hidden></div>
       <div class="ai-composer">
-        <textarea class="ai-input" data-role="ai-instruction" rows="2" placeholder="Describe the change…"></textarea>
+        <textarea class="ai-input" data-role="ai-instruction" rows="2" placeholder="Ask for anything — edit this file, write a song, tell a story, make a video…"></textarea>
         <button type="button" class="ai-primary" data-role="ai-send" aria-label="Send">${icon('send', 18)}</button>
       </div>
+      <details class="ai-tune">
+        <summary>Tune the result <span class="ai-quota">(optional — Auto decides)</span></summary>
+        <div class="ai-tune-grid">
+          <label>Make<select data-role="p-output">
+            <option value="auto">Auto</option><option value="song">Song (lyrics + singing)</option><option value="lyrics">Lyrics only</option>
+            <option value="melody">Melody only</option><option value="story">Audio story</option><option value="speech">Read text aloud</option>
+            <option value="image">Image</option><option value="video">Video</option><option value="music_video">Music video</option><option value="edit">Edit open file</option>
+          </select></label>
+          <label>Length<select data-role="p-length"><option value="auto">Auto</option><option value="short">Short</option><option value="medium">Medium</option><option value="long">Long (multi-part)</option></select></label>
+          <label>Language<select data-role="p-language"><option value="auto">Auto</option>${Object.entries(LANGS).map(([n, c]) => `<option value="${c}">${n[0]!.toUpperCase()}${n.slice(1)}</option>`).join('')}</select></label>
+          <label>Format<select data-role="p-aspect"><option value="9:16">9:16 Reel</option><option value="1:1">1:1 Square</option><option value="16:9">16:9 Wide</option></select></label>
+          <label>Cut speed<select data-role="p-pace"><option value="auto">Auto (by tempo)</option><option value="fast">Fast</option><option value="medium">Medium</option><option value="slow">Slow</option></select></label>
+          <label>Camera<select data-role="p-motion"><option value="lively">Lively</option><option value="calm">Calm</option></select></label>
+          <label class="ai-wide">Style / mood<input type="text" data-role="p-style" maxlength="120" placeholder="e.g. warm acoustic, cinematic, anime, retro" /></label>
+          <label class="ai-wide">Voice<select data-role="p-voice"><option value="cloud">Cloud voice (uses free units)</option><option value="local">On-device voice (offline, free)</option></select></label>
+          <div class="ai-wide ai-localvoice" data-role="p-localvoice"></div>
+          <label class="ai-check"><input type="checkbox" data-role="p-captions" /> Captions / lyrics on video</label>
+          <label class="ai-check"><input type="checkbox" data-role="p-music" /> Background music</label>
+        </div>
+      </details>
       <details class="ai-byok">
         <summary>Use your own API key (unlimited)</summary>
         <div class="ai-byok-body">
@@ -212,14 +197,152 @@ export class AiPanel {
     this.sendBtn = this.q('[data-role="ai-send"]');
     this.hintEl = this.q('[data-role="ai-hint"]');
     this.chipsEl = this.q('[data-role="ai-chips"]');
+    this.trayEl = this.q('[data-role="ai-tray"]');
+    this.projEl = this.q('[data-role="ai-project"]');
 
     this.q('[data-role="ai-close"]').addEventListener('click', () => this.close());
-    this.wireGenerate();
-    this.sendBtn.addEventListener('click', () => void this.run());
+    this.q('[data-role="ai-new"]').addEventListener('click', () => this.newProject());
+    this.sendBtn.addEventListener('click', () => { if (this.busy) this.abort?.abort(); else void this.submit(); });
     this.input.addEventListener('keydown', (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); void this.run(); }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); void this.submit(); }
     });
+    this.wireAttachments();
+    this.wireTune();
+    this.wireByok();
+    this.renderTray();
+    this.renderProject();
+  }
 
+  // ---- shell hooks ---------------------------------------------------------
+  private q<T extends HTMLElement>(sel: string): T { return this.el.querySelector(sel) as T; }
+  get isOpen(): boolean { return this.el.classList.contains('open'); }
+  toggle(): void { this.isOpen ? this.close() : this.open(); }
+  open(): void { this.el.classList.add('open'); document.body.classList.add('ai-open'); this.refresh(); this.input.focus(); }
+  close(): void { this.el.classList.remove('open'); document.body.classList.remove('ai-open'); }
+  /** Re-read the current editor target and update suggestions/hint. */
+  refresh(): void { this.refreshHint(); }
+
+  private refreshHint(): void {
+    const target = this.opts.resolve();
+    const byok = loadByok();
+    if (!this.opts.isAuthed()) {
+      this.hintEl.innerHTML = 'Melody-only music works free, offline, no sign-in. Everything else needs an account — <button class="ai-link" data-role="ai-signin">sign in</button> for free daily credits.';
+      this.q('[data-role="ai-signin"]')?.addEventListener('click', () => this.opts.onSignIn());
+    } else {
+      this.hintEl.textContent = (target ? `Open: ${target.label ?? target.kind} — I can edit it or create something new. ` : 'Describe what you want; add files if it should use them. ')
+        + (byok?.key ? 'Unlimited (your key).' : `Free: ${GEN_DAILY_UNITS} creation credits + 10 edits per day.`);
+    }
+    this.chipsEl.innerHTML = '';
+    const chips = [...(target ? SUGGESTIONS[target.kind].slice(0, 3) : []), ...CREATE_IDEAS.slice(0, target ? 3 : 5)];
+    for (const s of chips) {
+      const b = button(s, 'ai-chip', () => { this.input.value = s; this.input.focus(); });
+      this.chipsEl.appendChild(b);
+    }
+  }
+
+  // ---- attachments -----------------------------------------------------------
+  private wireAttachments(): void {
+    this.q<HTMLInputElement>('[data-role="ai-files"]').addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      const files = [...(input.files ?? [])]; input.value = '';
+      void this.addFiles(files.map((f) => ({ blob: f as Blob, name: f.name })));
+    });
+    const list = this.q('[data-role="ai-liblist"]');
+    this.q('[data-role="ai-lib"]').addEventListener('click', async () => {
+      if (!list.hidden) { list.hidden = true; return; }
+      list.innerHTML = '<p class="ai-quota">Loading…</p>'; list.hidden = false;
+      const items = ((await this.opts.listLibrary?.()) ?? []).filter((f) => ['image', 'audio', 'video', 'text', 'code', 'json', 'markdown', 'document', 'spreadsheet'].includes(f.kind)).slice(0, 60);
+      list.innerHTML = '';
+      if (!items.length) { list.innerHTML = '<p class="ai-quota">No usable files in your library yet.</p>'; return; }
+      for (const f of items) {
+        list.appendChild(button(`${f.name} · ${f.kind}`, 'ai-libitem', () => {
+          list.hidden = true;
+          void (async () => { try { await this.addFiles([{ blob: await this.opts.readLibrary!(f.id), name: f.name }]); } catch { this.addMsg('error', 'Could not read that file.'); } })();
+        }));
+      }
+    });
+    this.q('[data-role="ai-openfile"]').addEventListener('click', async () => {
+      const f = await this.opts.openFile?.();
+      if (!f) { this.addMsg('system', 'No file is open.'); return; }
+      await this.addFiles([f]);
+    });
+  }
+
+  private async addFiles(files: { blob: Blob; name: string }[]): Promise<void> {
+    for (const f of files) {
+      if (this.attachments.length >= MAX_ATTACHMENTS) { this.addMsg('system', `Up to ${MAX_ATTACHMENTS} files at a time.`); break; }
+      if (f.blob.size > 60_000_000) { this.addMsg('error', `“${f.name}” is too large (60 MB max).`); continue; }
+      if (kindOfFile(f.name, f.blob.type) === 'other') { this.addMsg('system', `“${f.name}” isn’t a type I can use (photos, audio, video, text, docs).`); continue; }
+      const note = this.addMsg('system', `Reading “${f.name}” on your device…`);
+      try { this.attachments.push(await loadAttachment(f.blob, f.name, `a${this.nextId++}`)); note.remove(); }
+      catch (e) { reportFailure('ai-attach', e, kindOfFile(f.name, f.blob.type)); note.textContent = `Couldn’t read “${f.name}”.`; note.className = 'ai-msg ai-msg-error'; }
+      this.renderTray();
+    }
+  }
+
+  private renderTray(): void {
+    this.trayEl.innerHTML = '';
+    this.trayEl.hidden = !this.attachments.length;
+    for (const a of this.attachments) {
+      const chip = el('span', 'ai-att');
+      if (a.dataUrl || a.frames?.[0]) { const im = el('img'); im.src = a.dataUrl ?? a.frames![0]!; im.alt = ''; chip.appendChild(im); }
+      else chip.appendChild(el('span', 'ai-att-kind', a.info.kind));
+      const t = el('span', 'ai-att-name', a.info.name); t.title = a.info.summary ?? a.info.name; chip.appendChild(t);
+      const x = button('×', 'ai-att-x', () => { this.attachments = this.attachments.filter((z) => z !== a); this.renderTray(); });
+      x.setAttribute('aria-label', `Remove ${a.info.name}`); chip.appendChild(x);
+      this.trayEl.appendChild(chip);
+    }
+  }
+
+  // ---- tune ----------------------------------------------------------------
+  private wireTune(): void {
+    const set = (role: string, v: string | boolean) => {
+      const n = this.q<HTMLInputElement | HTMLSelectElement>(`[data-role="${role}"]`);
+      if (typeof v === 'boolean') (n as HTMLInputElement).checked = v; else n.value = v;
+    };
+    const p = this.prefs;
+    set('p-output', p.output); set('p-length', p.length); set('p-language', p.language); set('p-aspect', p.aspect);
+    set('p-pace', p.pace); set('p-motion', p.motion); set('p-style', p.style); set('p-voice', p.voice);
+    set('p-captions', p.captions); set('p-music', p.music);
+    const read = () => {
+      const g = (r: string) => this.q<HTMLInputElement | HTMLSelectElement>(`[data-role="${r}"]`);
+      this.prefs = {
+        output: g('p-output').value as Prefs['output'], length: g('p-length').value as Prefs['length'], language: g('p-language').value,
+        aspect: g('p-aspect').value as Prefs['aspect'], pace: g('p-pace').value as Prefs['pace'], motion: g('p-motion').value as Prefs['motion'],
+        style: g('p-style').value, voice: g('p-voice').value as Prefs['voice'],
+        captions: (g('p-captions') as HTMLInputElement).checked, music: (g('p-music') as HTMLInputElement).checked,
+      };
+      savePrefs(this.prefs);
+    };
+    for (const r of ['p-output', 'p-length', 'p-language', 'p-aspect', 'p-pace', 'p-motion', 'p-style', 'p-voice', 'p-captions', 'p-music']) {
+      this.q(`[data-role="${r}"]`).addEventListener('change', () => { read(); if (r === 'p-voice') void this.onVoiceChoice(); });
+    }
+    this.renderLocalVoice();
+  }
+
+  private renderLocalVoice(busy?: string): void {
+    const box = this.q('[data-role="p-localvoice"]'); box.innerHTML = '';
+    if (!localVoiceSupported()) { box.appendChild(el('p', 'ai-quota', 'On-device voice needs a browser with WebAssembly.')); return; }
+    const status = el('span', 'ai-quota', busy ?? (localVoiceLoaded() || localVoiceInstalled() ? 'On-device voice downloaded — works offline (English).' : 'Optional: download a small speech model (~90 MB, English) once to sing/narrate offline with no credits. Experimental.'));
+    box.appendChild(status);
+    if (!busy && !localVoiceLoaded() && !localVoiceInstalled()) box.appendChild(button('Download voice', 'ai-ghost', () => void this.downloadVoice()));
+  }
+
+  private async downloadVoice(): Promise<void> {
+    try {
+      await loadLocalVoice((f, l) => this.renderLocalVoice(`${l} ${Math.round(f * 100)}%`));
+      this.renderLocalVoice();
+    } catch (e) {
+      reportFailure('ai-local-voice', e, 'audio');
+      this.renderLocalVoice('Couldn’t load the on-device voice here — the cloud voice will be used.');
+    }
+  }
+  private async onVoiceChoice(): Promise<void> {
+    if (this.prefs.voice === 'local' && !localVoiceLoaded() && !localVoiceInstalled()) await this.downloadVoice();
+  }
+
+  // ---- byok ----------------------------------------------------------------
+  private wireByok(): void {
     const byok = loadByok();
     if (byok) {
       this.q<HTMLInputElement>('[data-role="ai-key"]').value = byok.key;
@@ -240,477 +363,277 @@ export class AiPanel {
     });
   }
 
-  // ---- Generate tab ----
-  private photos: string[] = [];
-  private genBusy = false;
-
-  private wireGenerate(): void {
-    const edit = this.q('[data-role="tab-edit"]'), gen = this.q('[data-role="tab-gen"]');
-    const setTab = (g: boolean) => {
-      edit.classList.toggle('active', !g); gen.classList.toggle('active', g);
-      this.q('[data-role="ai-gen"]').toggleAttribute('hidden', !g);
-      for (const r of ['ai-log', 'ai-chips', 'ai-hint']) this.q(`[data-role="${r}"]`).toggleAttribute('hidden', g);
-      this.el.querySelector('.ai-composer')?.toggleAttribute('hidden', g);
-      if (g) this.updateGenUi();
-    };
-    edit.addEventListener('click', () => setTab(false));
-    gen.addEventListener('click', () => setTab(true));
-    this.q('[data-role="gen-mode"]').addEventListener('change', () => this.updateGenUi());
-    this.q('[data-role="gen-frames"]').addEventListener('change', () => this.updateGenUi());
-    this.q('[data-role="gen-instr"]').addEventListener('change', () => this.updateGenUi());
-    const add = async (input: HTMLInputElement) => {
-      const files = [...(input.files ?? [])]; input.value = '';
-      try {
-        for (const f of files) {
-          if (this.photos.length >= MAX_PHOTOS) break;
-          if (f.type.startsWith('video/')) this.photos.push(...(await videoFrames(f, Math.min(3, MAX_PHOTOS - this.photos.length))));
-          else this.photos.push(await fileToDataUrl(f));
-        }
-      } catch (e) { reportFailure('ai-gen-photo', e, 'interior'); this.genMsg('Could not read that file.', true); }
-      this.renderThumbs();
-    };
-    this.q<HTMLInputElement>('[data-role="gen-files"]').addEventListener('change', (e) => void add(e.target as HTMLInputElement));
-    this.q<HTMLInputElement>('[data-role="gen-cam"]').addEventListener('change', (e) => void add(e.target as HTMLInputElement));
-    const addChar = async (input: HTMLInputElement) => {
-      const files = [...(input.files ?? [])]; input.value = '';
-      try {
-        for (const f of files) {
-          if (this.reelPhotos.length >= MAX_CHARS) break;
-          this.reelPhotos.push(await fileToDataUrl(f));
-        }
-      } catch (e) { reportFailure('ai-gen-photo', e, 'reel'); this.genMsg('Could not read that file.', true); }
-      this.renderReelThumbs();
-    };
-    for (const r of ['reel-files', 'reel-cam']) this.q<HTMLInputElement>(`[data-role="${r}"]`).addEventListener('change', (e) => void addChar(e.target as HTMLInputElement));
-    for (const r of ['reel-scenes', 'reel-aspect', 'reel-voice', 'reel-music', 'reel-captions']) this.q(`[data-role="${r}"]`).addEventListener('change', () => this.updateGenUi());
-    this.q('[data-role="gen-prompt"]').addEventListener('input', () => { if (this.genMode() === 'reel') this.updateGenUi(); });
-    this.q('[data-role="gen-go"]').addEventListener('click', () => {
-      if (this.reelAbort) { this.reelAbort.abort(); return; }
-      void this.runGenerate();
-    });
+  // ---- project memory --------------------------------------------------------
+  private renderProject(): void {
+    const p = this.project;
+    this.projEl.hidden = !p?.parts.length;
+    if (!p?.parts.length) return;
+    this.projEl.innerHTML = '';
+    this.projEl.append(el('span', '', `Project “${p.title}” · ${p.parts.length} part${p.parts.length > 1 ? 's' : ''} remembered`));
+    this.projEl.append(button(this.continueNext ? 'Continuing ✓' : 'Continue it', 'ai-link', () => this.startContinue()));
+  }
+  private startContinue(): void {
+    if (!this.project?.parts.length) return;
+    this.continueNext = true;
+    this.input.placeholder = 'What happens next? (leave empty to just continue)';
+    this.renderProject(); this.input.focus();
+  }
+  private newProject(): void {
+    this.project = null; saveProject(null); this.continueNext = false; this.lastIntent = null;
+    this.session = { audio: null, videos: [] };
+    this.urls.forEach((u) => URL.revokeObjectURL(u)); this.urls = []; this.log.innerHTML = '';
+    this.input.placeholder = 'Ask for anything — edit this file, write a song, tell a story, make a video…';
+    this.renderProject();
+    this.addMsg('system', 'Fresh start — earlier parts forgotten.');
   }
 
-  private reelPhotos: string[] = [];
-  private reelAbort: AbortController | null = null;
-  private reelUrls: string[] = [];
-
-  private renderReelThumbs(): void {
-    const box = this.q('[data-role="reel-thumbs"]'); box.innerHTML = '';
-    this.reelPhotos.forEach((src, i) => {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'ai-thumb'; b.title = 'Remove'; b.setAttribute('aria-label', `Remove character photo ${i + 1}`);
-      const im = document.createElement('img'); im.src = src; im.alt = `Character ${i + 1}`; b.appendChild(im);
-      b.addEventListener('click', () => { this.reelPhotos.splice(i, 1); this.renderReelThumbs(); });
-      box.appendChild(b);
-    });
-    this.updateGenUi();
-  }
-
-  private reelCost(): number {
-    const n = Number(this.q<HTMLSelectElement>('[data-role="reel-scenes"]').value) || 4;
-    const voice = this.q<HTMLInputElement>('[data-role="reel-voice"]').checked;
-    return (this.reelPhotos.length ? genCost({ kind: 'describe' }) : 0) + genCost({ kind: 'storyboard', prompt: '', scenes: n, frames: false })
-      + n * genCost({ kind: 'image' }) + (voice ? n * genCost({ kind: 'audio' }) : 0);
-  }
-
-  private genMode(): GenMode { return this.q<HTMLSelectElement>('[data-role="gen-mode"]').value as GenMode; }
-
-  private genInput(): GenInput {
-    const mode = this.genMode();
-    const prompt = this.q<HTMLTextAreaElement>('[data-role="gen-prompt"]').value.trim();
-    switch (mode) {
-      case 'image': return { kind: 'image', prompt };
-      case 'audio': return { kind: 'audio', text: prompt };
-      case 'interior': return { kind: 'interior', images: this.photos, style: this.q<HTMLSelectElement>('[data-role="gen-style"]').value, roomType: prompt || undefined, variants: 2 };
-      case 'song': return { kind: 'song', prompt };
-      case 'reel': return { kind: 'storyboard', prompt, scenes: Number(this.q<HTMLSelectElement>('[data-role="reel-scenes"]').value) || 4 };
-      case 'storyboard': {
-        const style = this.q<HTMLInputElement>('[data-role="gen-vstyle"]').value.trim();
-        const script = this.q<HTMLTextAreaElement>('[data-role="gen-vscript"]').value.trim();
-        const full = [prompt, style && `Style: ${style}.`, script && `Use this narration/script as the basis for the scenes: ${script}`].filter(Boolean).join('\n').slice(0, 1000);
-        return { kind: 'storyboard', prompt: prompt ? full : '', scenes: Number(this.q<HTMLSelectElement>('[data-role="gen-vscenes"]').value) || 3, frames: this.q<HTMLInputElement>('[data-role="gen-frames"]').checked };
-      }
-    }
-  }
-
-  private updateGenUi(): void {
-    const mode = this.genMode();
-    this.q('[data-role="gen-photos"]').toggleAttribute('hidden', mode !== 'interior');
-    this.q('[data-role="gen-frames-wrap"]').toggleAttribute('hidden', mode !== 'storyboard');
-    this.q('[data-role="gen-video"]').toggleAttribute('hidden', mode !== 'storyboard');
-    this.q('[data-role="gen-song"]').toggleAttribute('hidden', mode !== 'song');
-    this.q('[data-role="gen-reel"]').toggleAttribute('hidden', mode !== 'reel');
-    const pr = this.q<HTMLTextAreaElement>('[data-role="gen-prompt"]');
-    if (mode === 'reel') pr.maxLength = 600; else pr.removeAttribute('maxlength');
-    pr.placeholder = mode === 'reel' ? 'Tell your story or idea — e.g. Mia opens a tiny coffee shop at dawn and meets her first customer…' :
-      mode === 'audio' ? 'Text to speak…' : mode === 'song' ? 'What is the song about? e.g. a cozy rainy-day lofi tune about coffee' : mode === 'interior' ? 'Room type, e.g. living room (optional)' : mode === 'storyboard' ? 'What is the video about? e.g. a 15-second teaser for my coffee shop' : 'Describe the image…';
-    const byok = loadByok();
-    const instr = mode === 'song' && this.q<HTMLInputElement>('[data-role="gen-instr"]').checked;
-    if (mode === 'reel') {
-      this.q('[data-role="gen-cost"]').textContent = `Uses ~${this.reelCost()} of ${GEN_DAILY_UNITS} free units.`;
-      if (!this.reelAbort) this.q('[data-role="gen-go"]').textContent = 'Make my reel';
-      return;
-    }
-    if (!this.reelAbort) this.q('[data-role="gen-go"]').textContent = 'Generate';
-    this.q('[data-role="gen-cost"]').textContent = instr ? 'Free — no units used.' : byok?.key && mode === 'image'
-      ? 'Unlimited with your OpenAI key.'
-      : `Uses ~${genCost(this.genInput())} of ${GEN_DAILY_UNITS} free daily units.`;
-  }
-
-  private renderThumbs(): void {
-    const box = this.q('[data-role="gen-thumbs"]'); box.innerHTML = '';
-    this.photos.forEach((src, i) => {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'ai-thumb'; b.title = 'Remove';
-      const im = document.createElement('img'); im.src = src; im.alt = `Photo ${i + 1}`; b.appendChild(im);
-      b.addEventListener('click', () => { this.photos.splice(i, 1); this.renderThumbs(); });
-      box.appendChild(b);
-    });
-    this.updateGenUi();
-  }
-
-  private genMsg(text: string, isErr = false): void {
-    const out = this.q('[data-role="gen-out"]'); out.innerHTML = '';
-    const d = document.createElement('div'); d.className = isErr ? 'ai-msg ai-msg-error' : 'ai-msg ai-msg-assistant'; d.textContent = text; out.appendChild(d);
-  }
-
-  private async saveAsset(name: string, blob: Blob, btn: HTMLButtonElement): Promise<void> {
-    if (this.opts.saveGenerated) { await this.opts.saveGenerated(name, blob.type, blob); btn.textContent = 'Added ✓'; return; }
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  }
-
-  private assetButton(label: string, name: string, blob: () => Blob): HTMLButtonElement {
-    const b = document.createElement('button'); b.type = 'button'; b.className = 'ai-ghost';
-    b.textContent = this.opts.saveGenerated ? label : 'Download';
-    b.addEventListener('click', () => void this.saveAsset(name, blob(), b));
-    return b;
-  }
-
-  private renderGenResult(r: GenResult): void {
-    const out = this.q('[data-role="gen-out"]'); out.innerHTML = '';
-    const imgCard = (src: string, caption: string, name: string) => {
-      const f = document.createElement('figure'); f.className = 'ai-card';
-      const im = document.createElement('img'); im.src = src; im.alt = caption; f.appendChild(im);
-      const c = document.createElement('figcaption'); c.textContent = caption; f.appendChild(c);
-      f.appendChild(this.assetButton('Add as file', name, () => dataUrlToBlob(src)));
-      out.appendChild(f);
-    };
-    if (r.image) imgCard(r.image, 'Generated image', 'generated.png');
-    if (r.audio) {
-      const au = document.createElement('audio'); au.controls = true; au.src = r.audio; out.appendChild(au);
-      out.appendChild(this.assetButton('Add as file', 'speech.mp3', () => dataUrlToBlob(r.audio!)));
-    }
-    if (r.description) { const p = document.createElement('p'); p.className = 'ai-quota'; p.textContent = r.description; out.appendChild(p); }
-    r.variants?.forEach((v, i) => v.image && imgCard(v.image, `${v.style}${v.mode === 'img2img' ? '' : ' (from description)'}`, `interior-${i + 1}.png`));
-    if (r.floorplanText) {
-      out.appendChild(this.assetButton('Add layout as Floor plan', 'ai-room.floorplan', () => new Blob([r.floorplanText!], { type: 'application/json' })));
-    }
-    r.scenes?.forEach((s, i) => {
-      if (s.image) imgCard(s.image, `Scene ${i + 1} · ${s.durationSec}s · ${s.motion}: ${s.narration}`, `scene-${i + 1}.png`);
-      else { const p = document.createElement('p'); p.className = 'ai-quota'; p.textContent = `Scene ${i + 1} (${s.durationSec}s, ${s.motion}): ${s.prompt}`; out.appendChild(p); }
-    });
-    if (r.scenes?.length) {
-      // Editable script the user can tweak and copy (e.g. into a voiceover tool or the video editor's text).
-      const wrap = document.createElement('div'); wrap.className = 'ai-script';
-      const ta = document.createElement('textarea'); ta.className = 'ai-input'; ta.rows = 5;
-      ta.value = (r.title ? `${r.title}\n\n` : '') + r.scenes.map((s, i) => `Scene ${i + 1} (${s.durationSec}s): ${s.narration || s.prompt}`).join('\n');
-      const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'ai-ghost'; copy.textContent = 'Copy script';
-      copy.addEventListener('click', () => { void navigator.clipboard?.writeText(ta.value).then(() => { copy.textContent = 'Copied ✓'; setTimeout(() => { copy.textContent = 'Copy script'; }, 1500); }).catch(() => { ta.select(); }); });
-      wrap.append(ta, copy); out.appendChild(wrap);
-    }
-    if (r.note) { const p = document.createElement('p'); p.className = 'ai-quota'; p.textContent = r.note; out.appendChild(p); }
-  }
-
-  // Songs: the model writes lyrics + a musical plan (3 units), then the browser
-  // performs the backing track with WebAudio (free). "Instrumental only" skips
-  // the model entirely, so it needs no sign-in and uses no quota.
-  private async runSong(plan?: SongPlan, lyrics?: string, title?: string): Promise<void> {
-    if (this.genBusy) return;
-    const prompt = this.q<HTMLTextAreaElement>('[data-role="gen-prompt"]').value.trim();
-    const instr = this.q<HTMLInputElement>('[data-role="gen-instr"]').checked;
-    const bars = Number(this.q<HTMLSelectElement>('[data-role="gen-bars"]').value) || 16;
-    if (!plan && !prompt) { this.genMsg('Describe the song first — mood, topic, style.', true); return; }
-    if (!plan && !instr && !this.opts.isAuthed()) { this.genMsg('Sign in for AI lyrics — or tick “Instrumental only” to compose for free.', true); return; }
-    this.genBusy = true;
-    const go = this.q<HTMLButtonElement>('[data-role="gen-go"]'); go.disabled = true;
-    try {
-      if (!plan) {
-        if (instr) { plan = { ...planFromText(prompt), bars }; title = prompt.slice(0, 40) || 'Instrumental'; }
-        else {
-          this.genMsg('Writing lyrics and a musical plan…');
-          const r = await aiGenerate({ kind: 'song', prompt }, loadByok());
-          plan = { mood: (r.mood as SongPlan['mood']) ?? 'chill', tempo: r.tempo ?? 100, key: r.key ?? 'C', minor: !!r.minor, bars, seed: Date.now() % 100000 };
-          lyrics = r.lyrics; title = r.title;
-        }
-      }
-      this.genMsg('Composing the music…');
-      const { buffer } = await renderSong(plan);
-      const blob = audioBufferToWav(buffer);
-      this.renderSongResult(plan, blob, lyrics, title, bars);
-    } catch (e) {
-      if (e instanceof AiError) this.genMsg(e.code === 'daily_limit' ? 'Daily free units used up — tick “Instrumental only” to keep composing for free.' : `Song failed: ${e.code}`, true);
-      else { reportFailure('ai-song', e, 'audio'); this.genMsg('Could not compose that song in this browser.', true); }
-    } finally { this.genBusy = false; go.disabled = false; }
-  }
-
-  private renderSongResult(plan: SongPlan, wav: Blob, lyrics: string | undefined, title: string | undefined, bars: number): void {
-    const out = this.q('[data-role="gen-out"]'); out.innerHTML = '';
-    const head = document.createElement('p'); head.className = 'ai-quota';
-    head.textContent = `${title || 'Song'} · ${plan.mood}, ${plan.tempo} BPM, ${plan.key} ${plan.minor ? 'minor' : 'major'}`;
-    const audio = document.createElement('audio'); audio.controls = true; audio.src = URL.createObjectURL(wav);
-    out.append(head, audio);
-    if (lyrics) {
-      const ta = document.createElement('textarea'); ta.className = 'ai-input ai-lyrics'; ta.rows = 8; ta.value = lyrics;
-      out.appendChild(ta);
-    }
-    const safe = (title || 'song').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'song';
-    out.appendChild(this.assetButton('Add song as file', `${safe}.wav`, () => wav));
-    if (lyrics) out.appendChild(this.assetButton('Add lyrics as note', `${safe}-lyrics.txt`, () => new Blob([lyrics], { type: 'text/plain' })));
-    const remix = document.createElement('button'); remix.type = 'button'; remix.className = 'ai-ghost'; remix.textContent = 'Remix (new arrangement)';
-    remix.addEventListener('click', () => void this.runSong({ ...plan, seed: (plan.seed ?? 1) + 7919, bars }, lyrics, title));
-    out.appendChild(remix);
-  }
-
-  // Reel: story -> storyboard -> images -> voice -> music -> recorded video.
-  private async runReel(): Promise<void> {
-    const story = this.q<HTMLTextAreaElement>('[data-role="gen-prompt"]').value.trim().slice(0, 600);
-    if (!this.opts.isAuthed()) { this.genMsg('Sign in to generate — free daily units, or add your own key.', true); return; }
-    if (!story) { this.genMsg('Write your story or idea first.', true); return; }
-    const n = Number(this.q<HTMLSelectElement>('[data-role="reel-scenes"]').value) || 4;
-    const aspect = this.q<HTMLSelectElement>('[data-role="reel-aspect"]').value as ReelAspect;
-    const voiceOn = this.q<HTMLInputElement>('[data-role="reel-voice"]').checked;
-    const musicOn = this.q<HTMLInputElement>('[data-role="reel-music"]').checked;
-    const captions = this.q<HTMLInputElement>('[data-role="reel-captions"]').checked;
-    const userStyle = this.q<HTMLInputElement>('[data-role="reel-style"]').value.trim();
-    const charText = this.q<HTMLInputElement>('[data-role="reel-chartext"]').value.trim();
-    const byok = loadByok();
-
-    this.genBusy = true;
-    const ac = new AbortController(); this.reelAbort = ac;
-    const go = this.q<HTMLButtonElement>('[data-role="gen-go"]'); go.textContent = 'Cancel';
-    this.reelUrls.forEach((u) => URL.revokeObjectURL(u)); this.reelUrls = [];
-    const out = this.q('[data-role="gen-out"]'); out.innerHTML = '';
-    const bar = document.createElement('progress'); bar.className = 'ai-progress'; bar.max = 1; bar.value = 0;
-    const label = document.createElement('div'); label.className = 'ai-quota ai-progress-label'; label.setAttribute('aria-live', 'polite');
-    out.append(bar, label);
-    const prog = (f: number, t: string) => { bar.value = Math.max(0, Math.min(1, f)); label.textContent = t; };
-    const check = () => { if (ac.signal.aborted) throw new DOMException('cancelled', 'AbortError'); };
-
-    try {
-      const reel = await import('../ai/reel');
-      // 1) character description
-      let characters = charText;
-      if (this.reelPhotos.length) {
-        prog(0.01, 'Looking at your characters…'); check();
-        const d = await aiGenerate({ kind: 'describe', images: this.reelPhotos, question: 'Describe each person or character visible (age, hair, clothing, distinctive looks) in one short sentence each, for an illustrator to draw them consistently.' }, byok);
-        characters = [d.description, charText && `Names/looks: ${charText}`].filter(Boolean).join(' ').slice(0, 600);
-      }
-      // 2) storyboard
-      prog(0.03, 'Writing your storyboard…'); check();
-      const sb = await aiGenerate({ kind: 'storyboard', prompt: [story, userStyle && `Style: ${userStyle}.`].filter(Boolean).join('\n'), scenes: n, characters: characters || undefined, frames: false }, byok);
-      check();
-      const sc = sb.scenes ?? [];
-      if (!sc.length) throw new Error('empty_storyboard');
-      const style = [sb.style, userStyle].filter(Boolean).join(', ');
-      const suffix = aspect === '9:16' ? ', vertical composition' : aspect === '16:9' ? ', wide cinematic composition' : ', square composition';
-      // 3) images, sequential
-      const images: string[] = [];
-      for (let i = 0; i < sc.length; i++) {
-        prog(0.05 + 0.35 * (i / sc.length), `Drawing scene ${i + 1}/${sc.length}…`); check();
-        const p = [sc[i].prompt, style].filter(Boolean).join(', ') + suffix;
-        let img: string | undefined = sc[i].image || undefined;
-        for (let attempt = 0; !img && attempt < 2; attempt++) {
-          try { img = (await aiGenerate({ kind: 'image', prompt: p }, byok)).image ?? undefined; }
-          catch (e) { if (e instanceof AiError && ['daily_limit', 'unauthorized'].includes(e.code)) throw e; }
-          check();
-        }
-        if (!img) img = images[i - 1];
-        if (!img) throw new Error('image_failed');
-        images.push(img);
-      }
-      // 4) voice-over
-      let voice: (AudioBuffer | null)[] | undefined;
-      if (voiceOn) {
-        voice = [];
-        for (let i = 0; i < sc.length; i++) {
-          prog(0.4 + 0.1 * (i / sc.length), `Recording voice ${i + 1}/${sc.length}…`); check();
-          let buf: AudioBuffer | null = null;
-          if (sc[i].narration) {
-            try { const a = await aiGenerate({ kind: 'audio', text: sc[i].narration }, byok); if (a.audio) buf = await reel.decodeDataUrlAudio(a.audio); }
-            catch (e) { if (e instanceof AiError && ['daily_limit', 'unauthorized'].includes(e.code)) throw e; }
-          }
-          voice.push(buf);
-        }
-      }
-      // 5) music
-      let music: AudioBuffer | null = null;
-      if (musicOn) {
-        prog(0.5, 'Composing the soundtrack…'); check();
-        const total = sc.reduce((a, s) => a + (s.durationSec || 4), 0);
-        const base = planFromText(story);
-        const bars = Math.min(96, Math.ceil((total * base.tempo) / 240) + 1);
-        try { music = (await renderSong({ ...base, bars })).buffer; } catch (e) { reportFailure('ai-reel-music', e, 'audio'); }
-      }
-      check();
-      // 6) record
-      const res = await reel.renderReel(
-        sc.map((s, i) => ({ image: images[i], text: s.narration || '', seconds: s.durationSec || 4, motion: s.motion as ReelScene['motion'] })),
-        { aspect, captions, title: sb.title, voice, music, musicGain: voice ? 0.35 : 0.8, signal: ac.signal, onProgress: (f, l) => prog(0.55 + 0.45 * f, l || 'Recording video…') },
-      );
-      check();
-      this.renderReelResult(res.blob, res.ext, sb.title, sc.map((s, i) => `${i + 1}. ${s.narration || s.prompt}`).join('\n'));
-    } catch (e) {
-      if (ac.signal.aborted || (e as { name?: string })?.name === 'AbortError') this.genMsg('Cancelled.');
-      else if (e instanceof AiError) {
-        const m: Record<string, string> = { daily_limit: 'Daily free units used up. Try again tomorrow, or add your own key.', unauthorized: 'Please sign in again.', rate_limited: 'Slow down a moment and retry.' };
-        this.genMsg(m[e.code] ?? `Reel failed: ${e.code}`, true);
-        if (!m[e.code]) reportFailure('ai-reel', e, 'storyboard');
-      } else if ((e as { code?: string })?.code === 'recording_unsupported' || /recording_unsupported/.test(String((e as Error)?.message))) {
-        this.genMsg("This browser can't record video; try Chrome or Safari 16+.", true);
-      } else { reportFailure('ai-reel', e, 'storyboard'); this.genMsg(`Could not finish the reel (${(e as Error)?.message || 'error'}). Try again.`, true); }
-    } finally {
-      this.reelAbort = null; this.genBusy = false;
-      go.disabled = false; this.updateGenUi();
-    }
-  }
-
-  private renderReelResult(blob: Blob, ext: string, title: string | undefined, script: string): void {
-    const out = this.q('[data-role="gen-out"]'); out.innerHTML = '';
-    const url = URL.createObjectURL(blob); this.reelUrls.push(url);
-    const v = document.createElement('video'); v.className = 'ai-reel-video'; v.controls = true; v.playsInline = true; v.src = url;
-    const safe = (title || 'reel').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'reel';
-    const name = `${safe}.${ext}`;
-    const row = document.createElement('div'); row.className = 'ai-reel-actions';
-    const lib = this.assetButton('Add video to library', name, () => blob);
-    const dl = document.createElement('button'); dl.type = 'button'; dl.className = 'ai-ghost'; dl.textContent = 'Download';
-    dl.addEventListener('click', () => { const a = document.createElement('a'); a.href = url; a.download = name; a.click(); });
-    const again = document.createElement('button'); again.type = 'button'; again.className = 'ai-ghost'; again.textContent = 'Make another';
-    again.addEventListener('click', () => { this.reelUrls.forEach((u) => URL.revokeObjectURL(u)); this.reelUrls = []; out.innerHTML = ''; this.q<HTMLTextAreaElement>('[data-role="gen-prompt"]').focus(); });
-    row.append(...(this.opts.saveGenerated ? [lib, dl] : [lib]), again);
-    const det = document.createElement('details'); det.className = 'ai-reel-script';
-    const sm = document.createElement('summary'); sm.textContent = 'Storyboard text';
-    const pre = document.createElement('p'); pre.className = 'ai-quota'; pre.textContent = (title ? `${title}\n` : '') + script; pre.style.whiteSpace = 'pre-wrap';
-    det.append(sm, pre);
-    out.append(v, row, det);
-  }
-
-  private async runGenerate(): Promise<void> {
-    if (this.genBusy) return;
-    if (this.genMode() === 'song') { await this.runSong(); return; }
-    if (this.genMode() === 'reel') { await this.runReel(); return; }
-    if (!this.opts.isAuthed()) { this.genMsg('Sign in to generate — free daily units, or add your own key.', true); return; }
-    const input = this.genInput();
-    if (input.kind === 'interior' ? !input.images?.length : !(input.prompt || input.text)) {
-      this.genMsg(input.kind === 'interior' ? 'Add 1–4 photos (or a video) of the room.' : 'Enter a description first.', true); return;
-    }
-    this.genBusy = true;
-    const go = this.q<HTMLButtonElement>('[data-role="gen-go"]'); go.disabled = true;
-    this.genMsg('Generating… this can take up to a minute.');
-    try {
-      this.renderGenResult(await aiGenerate(input, loadByok()));
-    } catch (e) {
-      if (e instanceof AiError) {
-        const m: Record<string, string> = {
-          daily_limit: 'Daily free units used up. Try again tomorrow, or add your own key.',
-          unauthorized: 'Please sign in again.', rate_limited: 'Slow down a moment and retry.',
-          too_many_images: `Max ${MAX_PHOTOS} photos.`, image_too_large: 'Photo too large.',
-        };
-        this.genMsg(m[e.code] ?? `Generation failed: ${e.code}`, true);
-        if (!['daily_limit', 'unauthorized', 'rate_limited'].includes(e.code)) reportFailure('ai-generate', e, input.kind);
-      } else { this.genMsg('Request failed. Check your connection and try again.', true); }
-    } finally { this.genBusy = false; go.disabled = false; }
-  }
-
-  private q<T extends HTMLElement>(sel: string): T { return this.el.querySelector(sel) as T; }
-
-  get isOpen(): boolean { return this.el.classList.contains('open'); }
-
-  toggle(): void { this.isOpen ? this.close() : this.open(); }
-
-  open(): void {
-    this.el.classList.add('open');
-    document.body.classList.add('ai-open');
-    this.refresh();
-    this.input.focus();
-  }
-
-  close(): void {
-    this.el.classList.remove('open');
-    document.body.classList.remove('ai-open');
-  }
-
-  /** Re-read the current editor target and update suggestions/hint. */
-  refresh(): void { this.refreshHint(); }
-
-  private refreshHint(): void {
-    const target = this.opts.resolve();
-    if (!this.opts.isAuthed()) {
-      this.hintEl.innerHTML = 'Sign in to use AI — 10 free edits/day or add your own key. <button class="ai-link" data-role="ai-signin">Sign in</button>';
-      this.q('[data-role="ai-signin"]')?.addEventListener('click', () => this.opts.onSignIn());
-      this.chipsEl.innerHTML = '';
-      return;
-    }
-    if (!target) {
-      this.hintEl.textContent = 'Open a text, image, video, audio, document, spreadsheet, PDF, sketch, floor-plan or game file to edit with AI.';
-      this.chipsEl.innerHTML = '';
-      return;
-    }
-    const byok = loadByok();
-    this.hintEl.textContent = `Editing ${target.label ?? target.kind} — ${byok?.key ? 'unlimited (your key).' : '10 free edits/day.'}`;
-    this.chipsEl.innerHTML = '';
-    for (const s of SUGGESTIONS[target.kind]) {
-      const b = document.createElement('button');
-      b.type = 'button'; b.className = 'ai-chip'; b.textContent = s;
-      b.addEventListener('click', () => { this.input.value = s; this.input.focus(); });
-      this.chipsEl.appendChild(b);
-    }
-  }
-
+  // ---- log helpers -------------------------------------------------------------
   private addMsg(role: 'user' | 'assistant' | 'system' | 'error', text: string): HTMLElement {
-    const m = document.createElement('div');
-    m.className = `ai-msg ai-msg-${role}`;
-    m.textContent = text;
+    const m = el('div', `ai-msg ai-msg-${role}`, text);
     this.log.appendChild(m);
     this.log.scrollTop = this.log.scrollHeight;
     return m;
   }
+  private addCard(c: HTMLElement): void { this.log.appendChild(c); this.log.scrollTop = this.log.scrollHeight; }
 
-  private async run(): Promise<void> {
-    if (this.busy) return;
-    const text = this.input.value.trim();
-    if (!text) { this.input.focus(); return; }
-    if (!this.opts.isAuthed()) { this.refreshHint(); return; }
-    const target = this.opts.resolve();
-    if (!target) { this.refreshHint(); return; }
-
-    this.busy = true;
-    this.sendBtn.disabled = true;
-    this.addMsg('user', text);
-    this.input.value = '';
-    const thinking = this.addMsg('assistant', 'Thinking…');
-    try {
-      const result = await aiEdit(
-        { kind: target.kind, instruction: text, content: target.getText?.(), meta: target.meta },
-        loadByok(),
-      );
-      const summary = (await target.apply(result)) || 'Applied.';
-      target.onChanged?.();
-      thinking.textContent = `✓ ${summary} · ${result.provider}`;
-      thinking.className = 'ai-msg ai-msg-assistant ok';
-    } catch (e) {
-      thinking.className = 'ai-msg ai-msg-error';
-      if (!(e instanceof AiError && (e.code === 'daily_limit' || e.code === 'unauthorized'))) reportFailure('ai-edit', e, target.kind);
-      if (e instanceof AiError) {
-        if (e.code === 'daily_limit') thinking.textContent = `Daily free limit reached (${e.limit ?? 10}/day). Add your own API key below for unlimited use.`;
-        else if (e.code === 'unauthorized') thinking.textContent = 'Please sign in again.';
-        else if (e.code === 'ai_bad_json') thinking.textContent = 'The AI returned an unexpected result — try rephrasing.';
-        else thinking.textContent = `AI error: ${e.code}`;
-      } else {
-        thinking.textContent = 'Request failed. Check your connection and try again.';
-      }
-    } finally {
-      this.busy = false;
-      this.sendBtn.disabled = false;
-      this.input.focus();
+  private planCard(plan: Plan): PlanCard {
+    const root = el('div', 'ai-card-plan');
+    const i = plan.intent;
+    const what = i.intent === 'song' ? `${INTENT_LABEL.song} — ${SONG_LABEL[i.songMode]}` : INTENT_LABEL[i.intent] ?? i.intent;
+    root.appendChild(el('div', 'ai-plan-head', `${what}${i.continue ? ' · continuing' : ''}${plan.units ? ` · ~${plan.units} credits` : ' · free'}`));
+    if (i.reason) root.appendChild(el('div', 'ai-quota', i.reason));
+    const ol = el('ol', 'ai-plan-steps');
+    const rows = new Map<StepType, HTMLElement>();
+    for (const s of plan.steps as PlanStep[]) {
+      const li = el('li', 'pending'); li.append(el('span', 'dot'), el('span', '', s.label));
+      if (s.cloud) li.appendChild(el('em', '', s.units ? `${s.units}c` : 'cloud'));
+      ol.appendChild(li); rows.set(s.type, li);
     }
+    root.appendChild(ol);
+    if (plan.sendsOut.length) root.appendChild(el('div', 'ai-quota', `Leaves your device: ${plan.sendsOut.join(', ')}. Audio, video and your files stay here.`));
+    const bar = el('progress', 'ai-progress'); bar.max = 1; bar.value = 0; bar.hidden = true;
+    const label = el('div', 'ai-quota ai-progress-label'); label.setAttribute('aria-live', 'polite');
+    const actions = el('div', 'ai-plan-actions'); const noteEl = el('div', 'ai-quota');
+    root.append(bar, label, noteEl, actions);
+    this.addCard(root);
+    return {
+      root,
+      step: (type, state) => { const r = rows.get(type); if (r) r.className = state === 'run' ? 'running' : state; },
+      progress: (f, l) => { bar.hidden = false; bar.value = Math.max(0, Math.min(1, f)); label.textContent = l; },
+      setActions: (...b) => { actions.replaceChildren(...b); },
+      note: (t) => { noteEl.textContent = t; },
+    };
+  }
+
+  // ---- the main flow --------------------------------------------------------------
+  private routeContext(target: AiTarget | null): RouteContext {
+    return {
+      attachments: this.attachments.map((a) => a.info),
+      editor: target ? { kind: target.kind, label: target.label } : null,
+      previous: contextFor(this.project) || undefined,
+    };
+  }
+
+  private async submit(): Promise<void> {
+    if (this.busy) return;
+    let text = this.input.value.trim();
+    const continuing = this.continueNext && !!this.project?.parts.length;
+    if (!text && continuing) text = 'Continue with the next part.';
+    if (!text) { this.input.focus(); return; }
+    this.lastPrompt = text;
+    this.addMsg('user', text + (this.attachments.length ? `\n📎 ${this.attachments.map((a) => a.info.name).join(', ')}` : ''));
+    this.input.value = '';
+    this.busy = true; this.setSendState(true);
+    try {
+      const target = this.opts.resolve();
+      const ctx = this.routeContext(target);
+      let intent: RoutedIntent;
+      if (continuing && text === 'Continue with the next part.' && this.lastIntent) {
+        intent = { ...this.lastIntent, continue: true, theme: `${this.lastIntent.theme} — next part` };
+      } else {
+        let routed: RoutedIntent | null = null;
+        if (this.opts.isAuthed()) {
+          const thinking = this.addMsg('assistant', 'Understanding your request…');
+          try { routed = (await aiRoute(text, ctx, loadByok())).intent; } catch (e) { if (!(e instanceof AiError && e.code === 'unauthorized')) reportFailure('ai-route', e, 'route'); }
+          thinking.remove();
+        }
+        intent = routed ?? heuristicIntent(text, ctx);
+      }
+      intent = applyPrefs(intent, this.prefs);
+      if (intent.intent === 'edit' && !target) intent = { ...intent, intent: 'text' };
+      if (!intent.useAttachments.length) intent.useAttachments = this.attachments.map((a) => a.info.id);
+      intent.continue = (intent.continue || continuing) && !!this.project?.parts.length;
+      this.lastIntent = intent;
+
+      const byok = loadByok();
+      const plan = buildPlan(intent, this.prefs, {
+        byok: !!byok?.key && !byok.key.startsWith('sk-ant-'),
+        localVoice: localVoiceInstalled() || localVoiceLoaded(),
+        attachments: this.attachments.map((a) => a.info) as AttachmentInfo[],
+      });
+      await this.confirmAndRun(plan, target);
+    } catch (e) {
+      this.addMsg('error', this.describeError(e));
+      reportFailure('ai-studio', e, this.lastIntent?.intent ?? 'unknown');
+    } finally {
+      this.busy = false; this.setSendState(false); this.continueNext = false; this.renderProject();
+      this.input.placeholder = 'Ask for anything — edit this file, write a song, tell a story, make a video…';
+    }
+  }
+
+  private setSendState(running: boolean): void {
+    this.sendBtn.innerHTML = running ? icon('stop', 18) : icon('send', 18);
+    this.sendBtn.setAttribute('aria-label', running ? 'Stop' : 'Send');
+    this.sendBtn.title = running ? 'Stop' : 'Send';
+  }
+
+  private describeError(e: unknown): string {
+    if ((e as { name?: string })?.name === 'AbortError') return 'Stopped.';
+    if (e instanceof AiError) {
+      const m: Record<string, string> = {
+        daily_limit: `Today’s free credits are used up. Melody-only music and on-device voice still work free — or add your own key below for unlimited use.`,
+        unauthorized: 'Please sign in again.', rate_limited: 'Slow down a moment and retry.', ai_bad_json: 'The AI returned an unexpected result — try rephrasing.',
+        too_many_images: 'Too many photos (4 max for analysis).', image_too_large: 'A photo is too large.', llm_failed: 'The writing model didn’t answer — try again.',
+      };
+      return m[e.code] ?? `AI error: ${e.code}`;
+    }
+    const msg = (e as Error)?.message ?? '';
+    if (/recording_unsupported/.test(msg)) return 'This browser can’t record video — try Chrome, Edge or Safari 16+.';
+    if (/song_too_long/.test(msg)) return 'That song came out too long — try “short” or “medium”.';
+    if (/voice_failed|no_lyrics|empty_storyboard|image_failed/.test(msg)) return `Something in the pipeline came back empty (${msg}). Try again or tweak the request.`;
+    return `Couldn’t finish (${msg || 'error'}). Check your connection and try again.`;
+  }
+
+  private async confirmAndRun(plan: Plan, target: AiTarget | null): Promise<void> {
+    const card = this.planCard(plan);
+    const authed = this.opts.isAuthed();
+    if (plan.needsAuth && !authed) {
+      card.note('This needs a free account.');
+      card.setActions(button('Sign in', 'ai-go', () => this.opts.onSignIn()));
+      return;
+    }
+    const auto = plan.units <= AUTO_RUN_UNITS || !!loadByok()?.key;
+    if (!auto) {
+      await new Promise<void>((resolve, reject) => {
+        card.note(`This will use about ${plan.units} of your ${GEN_DAILY_UNITS} daily credits.`);
+        card.setActions(
+          button('Start', 'ai-go', () => { card.setActions(); resolve(); }),
+          button('Cancel', 'ai-ghost', () => { card.setActions(); card.note('Cancelled.'); reject(new DOMException('cancelled', 'AbortError')); }),
+        );
+      });
+    }
+    await this.execute(plan, card, target);
+  }
+
+  private async execute(plan: Plan, card: PlanCard, target: AiTarget | null): Promise<void> {
+    const ac = new AbortController(); this.abort = ac;
+    card.setActions(button('Stop', 'ai-ghost', () => ac.abort()));
+    const i = plan.intent;
+    try {
+      const { runPlan } = await import('../ai/agentRun');
+      const res = await runPlan({
+        plan, prefs: this.prefs, byok: loadByok(), signal: ac.signal, attachments: this.attachments,
+        project: this.project, context: i.continue ? contextFor(this.project) : '',
+        previousAudio: i.continue ? this.session.audio : null,
+        step: (t, s) => card.step(t, s), progress: (f, l) => card.progress(f, l),
+        edit: target ? async (instruction) => {
+          const result = await aiEdit({ kind: target.kind, instruction, content: target.getText?.(), meta: target.meta }, loadByok());
+          const summary = (await target.apply(result)) || 'Applied.';
+          target.onChanged?.();
+          return `${summary} · ${result.provider}`;
+        } : undefined,
+      });
+      card.progress(1, 'Done'); card.setActions();
+      if (res.notes.length) card.note(res.notes.join(' '));
+      this.afterRun(res, plan);
+    } catch (e) {
+      card.setActions();
+      card.note(this.describeError(e));
+      if (!(e instanceof AiError) && (e as { name?: string })?.name !== 'AbortError') reportFailure('ai-run', e, i.intent);
+      else if (e instanceof AiError && !['daily_limit', 'unauthorized', 'rate_limited'].includes(e.code)) reportFailure('ai-run', e, i.intent);
+      card.setActions(button('Try again', 'ai-ghost', () => { this.input.value = this.lastPrompt; void this.submit(); }));
+    } finally { this.abort = null; }
+  }
+
+  // ---- results ---------------------------------------------------------------------
+  private afterRun(res: RunResult, plan: Plan): void {
+    const i = plan.intent;
+    if (res.memory) {
+      this.project = addPart(this.project, res.memory.part, { style: res.memory.style, characters: res.memory.characters });
+      this.renderProject();
+    }
+    const audio = res.artifacts.find((a) => a.buffer && a.label !== 'Full version (all parts)') ?? res.artifacts.find((a) => a.buffer);
+    const full = res.artifacts.find((a) => a.label.startsWith('Full version'));
+    if (audio?.buffer) this.session.audio = full?.buffer ?? audio.buffer;
+    const vid = res.artifacts.find((a) => a.kind === 'video' && a.blob);
+    if (vid?.blob) this.session.videos = i.continue ? [...this.session.videos, { blob: vid.blob, aspect: vid.aspect }] : [{ blob: vid.blob, aspect: vid.aspect }];
+
+    const wrap = el('div', 'ai-card-result');
+    wrap.appendChild(el('div', 'ai-msg ai-msg-assistant ok', `✓ ${res.summary}`));
+    for (const a of res.artifacts) wrap.appendChild(this.artifactView(a));
+
+    const row = el('div', 'ai-reel-actions');
+    if (res.memory) row.appendChild(button('Continue →', 'ai-ghost', () => this.startContinue()));
+    if (audio && (i.intent === 'song' || i.intent === 'story_audio')) {
+      row.appendChild(button('Make a video for this', 'ai-ghost', () => void this.attachArtifactAndPrompt(audio, i.intent === 'song' ? 'Make a music video for this song' : 'Make a video for this story')));
+    }
+    const txt = res.artifacts.find((a) => a.kind === 'text' && a.label === 'Text');
+    if (txt) row.appendChild(button('Read it aloud', 'ai-ghost', () => void this.attachArtifactAndPrompt(txt, 'Read this aloud')));
+    if (i.intent !== 'edit') row.appendChild(button('Redo', 'ai-ghost', () => { this.input.value = this.lastPrompt; void this.submit(); }));
+    if (vid && this.session.videos.length > 1) {
+      const join = button(`Join all ${this.session.videos.length} parts into one video`, 'ai-ghost');
+      join.addEventListener('click', () => void this.joinParts(join, wrap));
+      row.appendChild(join);
+    }
+    if (row.childElementCount) wrap.appendChild(row);
+    this.addCard(wrap);
+  }
+
+  private async joinParts(btn: HTMLButtonElement, wrap: HTMLElement): Promise<void> {
+    btn.disabled = true; btn.textContent = 'Joining… (this runs on your device and can take a minute)';
+    try {
+      const { joinVideos } = await import('../ai/agentRun');
+      const blob = await joinVideos(this.session.videos, (f) => { btn.textContent = `Joining… ${Math.round(f * 100)}%`; });
+      btn.remove();
+      wrap.appendChild(this.artifactView({ kind: 'video', name: 'joined-video.mp4', label: 'Joined video', blob }));
+    } catch (e) {
+      reportFailure('ai-join', e, 'video');
+      btn.disabled = false; btn.textContent = 'Join failed — keep the parts separate (try again)';
+    }
+  }
+
+  private async attachArtifactAndPrompt(a: Artifact, prompt: string): Promise<void> {
+    const blob = a.blob ?? new Blob([a.text ?? ''], { type: 'text/plain' });
+    await this.addFiles([{ blob, name: a.name }]);
+    this.input.value = prompt; this.input.focus();
+  }
+
+  private artifactView(a: Artifact): HTMLElement {
+    const box = el('div', 'ai-artifact');
+    box.appendChild(el('div', 'ai-reel-label', a.label));
+    let url = '';
+    if (a.blob) { url = URL.createObjectURL(a.blob); this.urls.push(url); }
+    if (a.kind === 'audio') { const au = el('audio'); au.controls = true; au.src = url; box.appendChild(au); }
+    else if (a.kind === 'video') { const v = el('video', 'ai-reel-video'); v.controls = true; v.playsInline = true; v.src = url; box.appendChild(v); }
+    else if (a.kind === 'image') { const im = el('img', 'ai-result-img'); im.src = url; im.alt = a.label; box.appendChild(im); }
+    else if (a.kind === 'text') { const ta = el('textarea', 'ai-input ai-lyrics'); ta.rows = Math.min(12, Math.max(4, (a.text ?? '').split('\n').length + 1)); ta.value = a.text ?? ''; ta.readOnly = true; box.appendChild(ta); }
+    const row = el('div', 'ai-reel-actions');
+    const blob = (): Blob => a.blob ?? new Blob([a.text ?? ''], { type: 'text/plain' });
+    if (this.opts.saveGenerated) {
+      const add = button('Add to library', 'ai-ghost');
+      add.addEventListener('click', () => { void (async () => { try { await this.opts.saveGenerated!(a.name, blob().type, blob()); add.textContent = 'Added ✓'; add.disabled = true; } catch { add.textContent = 'Couldn’t add'; } })(); });
+      row.appendChild(add);
+    }
+    row.appendChild(button('Download', 'ai-ghost', () => {
+      const link = document.createElement('a'); const u = URL.createObjectURL(blob()); link.href = u; link.download = a.name; link.click();
+      setTimeout(() => URL.revokeObjectURL(u), 5000);
+    }));
+    if (a.kind === 'text') {
+      const copy = button('Copy', 'ai-ghost');
+      copy.addEventListener('click', () => { void navigator.clipboard?.writeText(a.text ?? '').then(() => { copy.textContent = 'Copied ✓'; setTimeout(() => { copy.textContent = 'Copy'; }, 1500); }); });
+      row.appendChild(copy);
+    }
+    box.appendChild(row);
+    return box;
   }
 }

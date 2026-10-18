@@ -8,9 +8,15 @@ export interface SongPlan {
   tempo: number;          // BPM
   key: string;            // C D E F G A B
   minor: boolean;
-  bars?: number;          // default 16
+  bars?: number;          // default 16, max 80
   seed?: number;
+  lift?: boolean[];       // per bar: fuller "chorus" arrangement (default: every other 4-bar phrase)
+  drums?: boolean;        // override the mood's drum setting
+  leadScale?: number;     // 0..1 — thin out / quieten the lead so a vocal can sit on top (default 1)
 }
+
+/** First bar starts this many seconds into the render. */
+export const SONG_LEAD_IN = 0.2;
 
 const KEY_SEMI: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 const MAJOR = [0, 2, 4, 5, 7, 9, 11];
@@ -36,14 +42,23 @@ const hz = (midi: number): number => 440 * Math.pow(2, (midi - 69) / 12);
 
 export const SONG_RATE = 44100;
 
-export async function renderSong(plan: SongPlan): Promise<{ buffer: AudioBuffer; seconds: number }> {
+// Call/response rhythms: each sums to 8 eighth-notes (one 4/4 bar).
+const RHYTHMS = [[2, 2, 2, 2], [3, 1, 2, 2], [1, 1, 2, 1, 1, 2], [2, 1, 1, 2, 2], [4, 2, 2], [2, 2, 1, 1, 2], [3, 1, 3, 1]];
+
+export interface RenderedSong { buffer: AudioBuffer; seconds: number; bpm: number; beat: number; bar: number; bars: number; leadIn: number }
+
+export async function renderSong(plan: SongPlan): Promise<RenderedSong> {
   const bpm = Math.min(170, Math.max(55, plan.tempo || 100));
-  const bars = Math.min(32, Math.max(4, plan.bars ?? 16));
+  const bars = Math.min(80, Math.max(4, Math.round(plan.bars ?? 16)));
   const beat = 60 / bpm, bar = beat * 4;
   const seconds = bars * bar + 2.5;
-  const ctx = new OfflineAudioContext(2, Math.ceil(seconds * SONG_RATE), SONG_RATE);
+  // Long songs render at a lower rate so the offline buffer stays a sane size on phones.
+  const rate = seconds > 150 ? 32000 : SONG_RATE;
+  const ctx = new OfflineAudioContext(2, Math.ceil(seconds * rate), rate);
   const rand = rng(plan.seed ?? 1337);
   const st = STYLES[plan.mood] ?? STYLES.chill;
+  const drums = plan.drums ?? st.drums;
+  const leadScale = Math.max(0, Math.min(1, plan.leadScale ?? 1));
   const scale = plan.minor ? MINOR : MAJOR;
   const root = 48 + (KEY_SEMI[plan.key] ?? 0); // C3-ish
   const progs = plan.minor ? PROG_MINOR : PROG_MAJOR;
@@ -62,7 +77,7 @@ export async function renderSong(plan: SongPlan): Promise<{ buffer: AudioBuffer;
     g.gain.setValueAtTime(gain, t + Math.max(attack, dur - rel)); g.gain.linearRampToValueAtTime(0, t + dur);
     o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.05);
   };
-  const noiseBuf = ctx.createBuffer(1, SONG_RATE, SONG_RATE);
+  const noiseBuf = ctx.createBuffer(1, rate, rate);
   { const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = rand() * 2 - 1; }
   const noise = (t: number, dur: number, gain: number, hp: number): void => {
     const s = ctx.createBufferSource(); s.buffer = noiseBuf;
@@ -77,13 +92,25 @@ export async function renderSong(plan: SongPlan): Promise<{ buffer: AudioBuffer;
     o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.25);
   };
 
-  // A 4-note motif per section keeps the lead melodic instead of random noodling.
-  const motif = Array.from({ length: 8 }, () => Math.floor(rand() * 5) * 1 + (rand() < 0.5 ? 0 : 2));
+  // Melody: one call/response motif for verses and another for choruses, so the
+  // hook comes back recognisably. Notes follow the chord of each bar, start on a
+  // chord tone, move mostly by step, and each 4-bar phrase resolves to the tonic.
+  const genMotif = (): { rhythm: number[]; steps: number[] } => {
+    const rhythm = RHYTHMS[Math.floor(rand() * RHYTHMS.length)]!;
+    const steps: number[] = []; let d = 0;
+    for (let i = 0; i < rhythm.length; i++) {
+      d = Math.max(-3, Math.min(5, d + [-2, -1, -1, 0, 1, 1, 2][Math.floor(rand() * 7)]!));
+      steps.push(d);
+    }
+    return { rhythm, steps };
+  };
+  const motifs = [[genMotif(), genMotif()], [genMotif(), genMotif()]];
+  const eighth = beat / 2;
   for (let b = 0; b < bars; b++) {
-    const t0 = b * bar + 0.2;
+    const t0 = b * bar + SONG_LEAD_IN;
     const section = Math.floor(b / 4);                 // 4-bar phrases
     const chordDeg = prog[b % 4]!;
-    const lift = st.drums && section % 2 === 1 ? 1 : 0;  // choruses are a bit fuller
+    const lift = plan.lift ? (plan.lift[b] ? 1 : 0) : (drums && section % 2 === 1 ? 1 : 0);
     // Pad: root, third, fifth (stacked scale steps), slightly detuned for width.
     for (const [i, off] of [0, 2, 4].entries()) {
       tone(st.wave, hz(degree(chordDeg + off, 1)), t0, bar * 0.98, st.padGain * (0.8 + 0.1 * lift), 0.08, 0.3, (i - 1) * 6);
@@ -92,7 +119,7 @@ export async function renderSong(plan: SongPlan): Promise<{ buffer: AudioBuffer;
     tone('triangle', hz(degree(chordDeg, 0)), t0, beat * 1.9, 0.34, 0.01, 0.1);
     tone('triangle', hz(degree(chordDeg + (rand() < 0.5 ? 4 : 0), 0)), t0 + beat * 2, beat * 1.9, 0.3, 0.01, 0.1);
     // Drums
-    if (st.drums) {
+    if (drums) {
       for (let q = 0; q < 4; q++) {
         const tq = t0 + q * beat;
         if (q === 0 || q === 2) kick(tq);
@@ -104,19 +131,29 @@ export async function renderSong(plan: SongPlan): Promise<{ buffer: AudioBuffer;
         noise(t0 + (h * beat) / (hats / 4) + swing, 0.04, 0.09, 7000);
       }
     }
-    // Lead: eighth-note grid, motif walks the scale around the current chord.
-    for (let n = 0; n < 8; n++) {
-      if (rand() > st.leadDensity + 0.15 * lift) continue;
-      const step = motif[(n + b * 3) % motif.length]! + chordDeg;
-      tone(st.lead, hz(degree(step, 2)), t0 + n * (beat / 2) + (n % 2 ? st.swing * beat : 0), beat * (rand() < 0.3 ? 0.9 : 0.45), 0.13, 0.015, 0.1);
+    // Lead
+    if (leadScale > 0) {
+      const m = motifs[lift]![b % 2]!;
+      const start = [0, 2, 4, 2][b % 4]!;
+      let pos = 0;
+      m.rhythm.forEach((len, k) => {
+        const last = k === m.rhythm.length - 1;
+        const skip = k > 0 && !last && rand() > st.leadDensity * leadScale + 0.2 * lift;
+        if (!skip) {
+          const step = b % 4 === 3 && last ? prog[0]! : chordDeg + start + m.steps[k]!;
+          const when = t0 + pos * eighth + (pos % 2 ? st.swing * beat : 0);
+          tone(st.lead, hz(degree(step, 2)), when, eighth * len * (last ? 0.95 : 0.8), 0.13 * (0.5 + 0.5 * leadScale), 0.015, 0.1);
+        }
+        pos += len;
+      });
     }
   }
   // Final chord rings out.
-  const endT = bars * bar + 0.2;
+  const endT = bars * bar + SONG_LEAD_IN;
   for (const off of [0, 2, 4]) tone(st.wave, hz(degree(prog[0]! + off, 1)), endT, 2.2, st.padGain, 0.05, 1.6);
   tone('triangle', hz(degree(prog[0]!, 0)), endT, 2.2, 0.32, 0.02, 1.5);
 
-  return { buffer: await ctx.startRendering(), seconds };
+  return { buffer: await ctx.startRendering(), seconds, bpm, beat, bar, bars, leadIn: SONG_LEAD_IN };
 }
 
 /** Encode an AudioBuffer as 16-bit PCM WAV. */

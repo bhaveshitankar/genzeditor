@@ -1,3 +1,5 @@
+import type { RoutedIntent, RouteContext } from '../ai/agentPlan';
+
 // The Worker API host (serves /api/* incl. Better Auth at /api/auth/*). Served
 // from a subdomain of the app so session cookies are same-site.
 export const API_BASE = (import.meta.env?.VITE_API_BASE) ?? 'https://api.genzeditor.com';
@@ -147,7 +149,7 @@ export async function aiEdit(input: AiEditInput, byok?: ByoKey | null): Promise<
 
 // ---- AI generate (image / audio / interior / storyboard) -----------------
 
-export type GenKind = 'image' | 'audio' | 'describe' | 'interior' | 'storyboard' | 'song';
+export type GenKind = 'image' | 'audio' | 'describe' | 'interior' | 'storyboard' | 'song' | 'script' | 'write';
 
 export interface GenInput {
   kind: GenKind;
@@ -155,17 +157,21 @@ export interface GenInput {
   images?: string[]; style?: string; roomType?: string;
   variants?: number; scenes?: number; frames?: boolean; question?: string;
   characters?: string; // storyboard/reel: visual description of recurring characters
+  context?: string; length?: string; language?: string; chapters?: number; words?: number;
 }
 
 export interface InteriorVariant { style: string; image: string | null; prompt: string; mode: 'img2img' | 'text2img' }
 export interface StoryScene { prompt: string; narration: string; durationSec: number; motion: string; image: string | null }
 
+export interface ScriptChapter { title: string; narration: string }
 export interface GenResult {
   provider: 'workers-ai' | 'openai';
   image?: string; audio?: string; mime?: string; description?: string;
   style?: string; palette?: string[]; floorplanText?: string; variants?: InteriorVariant[];
   title?: string; scenes?: StoryScene[]; note?: string;
   lyrics?: string; mood?: string; tempo?: number; key?: string; minor?: boolean;
+  sections?: { label: string; lines: string[]; chorus: boolean; bridge: boolean }[];
+  chapters?: ScriptChapter[]; characters?: string; summary?: string; text?: string;
 }
 
 // Approximate weighted-unit cost (mirrors worker/src/generate.ts COST) for UI hints.
@@ -178,6 +184,8 @@ export function genCost(i: GenInput): number {
     case 'describe': return 3;
     case 'interior': return 3 + 5 * n;
     case 'song': return 3;
+    case 'script': return 3;
+    case 'write': return 3;
     case 'storyboard': return 3 + (i.frames ? 4 * Math.min(6, Math.max(2, i.scenes ?? 4)) : 0);
   }
 }
@@ -191,6 +199,24 @@ export async function aiGenerate(input: GenInput, byok?: ByoKey | null): Promise
   if (!res.ok) {
     const data = (await res.json().catch(() => ({ error: 'generation_failed' }))) as { error: string; limit?: number };
     throw new AiError(data.error, data.limit);
+  }
+  return res.json();
+}
+
+// ---- AI router: what does the user want? ----------------------------------
+
+export async function aiRoute(text: string, context: RouteContext, byok?: ByoKey | null): Promise<{ intent: RoutedIntent; provider: string }> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (byok?.key) {
+    headers['X-AI-Key'] = byok.key;
+    if (byok.provider) headers['X-AI-Provider'] = byok.provider;
+  }
+  const res = await fetch(`${API_BASE}/api/ai/route`, {
+    method: 'POST', credentials: 'include', headers, body: JSON.stringify({ text, context }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({ error: 'route_failed' }))) as { error: string };
+    throw new AiError(data.error);
   }
   return res.json();
 }
