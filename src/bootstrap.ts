@@ -1,6 +1,7 @@
 import { FileStore, OpfsAdapter } from './store/opfs';
 import { AppShell, type ShellApi, type ShellChrome } from './shell/AppShell';
-import { openFromHash, saveBackShared } from './share/openShared';
+import { openFromHash, saveBackShared, type OpenedShare } from './share/openShared';
+import { showViewer, canViewNatively } from './share/Viewer';
 import { deriveBaseName, versionedName } from './store/naming';
 import { getMe } from './api/client';
 import { initTheme } from './theme/themes';
@@ -23,11 +24,32 @@ export async function bootstrap(
   // Open a shared link from the current hash. Runs on initial load and again
   // whenever the hash changes, so pasting a share URL into the same tab opens
   // it immediately without a manual reload. Returns true if a link was opened.
+  let closeViewer: (() => void) | undefined;
   const openShared = async (): Promise<boolean> => {
     if (typeof location === 'undefined' || !location.hash) return false;
     try {
       const shared = await openFromHash(location.hash, { askPassword: (retry) => askSharePassword(root, retry) });
       if (shared) {
+        closeViewer?.(); closeViewer = undefined;
+        // Read-only links get a clean full-screen viewer; nothing is imported
+        // unless the visitor asks for an editable copy.
+        if (shared.access === 'ro' && canViewNatively(shared)) {
+          closeViewer = showViewer(root, shared, { onEdit: () => { void importShared(shared); } });
+          return true;
+        }
+        await importShared(shared);
+        return true;
+      }
+    } catch (err) {
+      console.error('Failed to open shared link:', err);
+      reportFailure('open-shared-link', err);
+    }
+    return false;
+  };
+
+  const importShared = async (shared: OpenedShare): Promise<void> => {
+    {
+      {
         const blob = shared.blob ?? new Blob([shared.text ?? ''], { type: shared.contentType });
         // Dedupe by share token: re-opening the same link must reuse the local
         // file we already imported (refreshing its content so saved-back edits
@@ -90,13 +112,8 @@ export async function bootstrap(
           banner.append(label, saveBtn, status);
           editorArea?.prepend(banner);
         }
-        return true;
       }
-    } catch (err) {
-      console.error('Failed to open shared link:', err);
-      reportFailure('open-shared-link', err);
     }
-    return false;
   };
 
   const opened = await openShared();

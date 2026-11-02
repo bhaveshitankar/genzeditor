@@ -17,6 +17,7 @@ import type { DocxEditor } from '../editors/DocxEditor';
 import type { SketchEditor } from '../editors/SketchEditor';
 import type { GameEditor } from '../editors/GameEditor';
 import type { FloorPlanEditor } from '../editors/FloorPlanEditor';
+import { WEB_TEMPLATES } from '../editors/webTemplates';
 import { CommandPalette } from '../ui/CommandPalette';
 import { lineDiff } from '../diff/lineDiff';
 import { getMe, signOut, type MeState, deleteShare } from '../api/client';
@@ -733,6 +734,7 @@ export class AppShell {
     { id: 'mermaid', label: 'Mermaid diagram', icon: '🕸', kind: 'mermaid', ext: 'mmd',
       content: 'graph TD\n  A[Start] --> B{Decision}\n  B -->|Yes| C[Do this]\n  B -->|No| D[Do that]\n  C --> E[End]\n  D --> E\n' },
     { id: 'json', label: 'JSON', icon: '{ }', kind: 'json', ext: 'json', content: '{\n  \n}\n' },
+    { id: 'webpage', label: 'Web page', icon: '🌐', kind: 'code', ext: 'html', content: WEB_TEMPLATES[0]!.html },
     { id: 'code', label: 'Code', icon: '⌘', kind: 'code', ext: 'txt', content: '' },
   ];
 
@@ -796,7 +798,7 @@ export class AppShell {
     nameInput.addEventListener('input', () => {
       if (!/\.[^.]+$/.test(nameInput.value)) return;
       const k = detectKind(nameInput.value.trim());
-      const match = templates.find((t) => t.kind === k && t.id !== 'scan');
+      const match = templates.find((t) => t.kind === k && t.id !== 'scan' && (k !== 'code' || t.id !== 'webpage'));
       if (!match || match === selected) return;
       selected = match;
       const chips = typesEl.querySelectorAll('.new-file-type');
@@ -2212,6 +2214,33 @@ export class AppShell {
           const src = editor.getValue();
           mermaid.render(src);
         }, { signal });
+        this.addPreviewToggle(toolbar);
+      }
+
+      // Web page builder: live sandboxed preview + starter templates for .html files.
+      if (record.kind === 'code' && /\.html?$/i.test(record.name)) {
+        const previewPane = document.createElement('div');
+        previewPane.setAttribute('data-role', 'preview');
+        previewPane.className = 'preview-pane';
+        const frame = document.createElement('iframe');
+        frame.setAttribute('sandbox', '');
+        frame.title = 'Page preview';
+        frame.style.background = '#fff';
+        previewPane.appendChild(frame);
+        this.editorHost.appendChild(previewPane);
+        let t: number | undefined;
+        const refresh = () => { frame.srcdoc = editor.getValue(); };
+        refresh();
+        this.editorHost.addEventListener('input', () => { clearTimeout(t); t = window.setTimeout(refresh, 250); }, { signal });
+        const tplSel = document.createElement('select');
+        tplSel.setAttribute('aria-label', 'Page template');
+        tplSel.innerHTML = '<option value="">Template…</option>' + WEB_TEMPLATES.map((w) => `<option value="${w.id}">${w.label}</option>`).join('');
+        tplSel.addEventListener('change', () => {
+          const w = WEB_TEMPLATES.find((x) => x.id === tplSel.value);
+          tplSel.value = '';
+          if (w && confirm('Replace the current page with this template?')) { editor.setValue(w.html); refresh(); this.scheduleAutosave(); }
+        });
+        toolbar.appendChild(tplSel);
         this.addPreviewToggle(toolbar);
       }
 
