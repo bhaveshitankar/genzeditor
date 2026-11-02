@@ -1,15 +1,17 @@
 import type { OpenedShare } from './openShared';
 import { renderMarkdown } from '../editors/MarkdownPreview';
+import DOMPurify from 'dompurify';
 import { MermaidPreview } from '../editors/MermaidPreview';
 
 // Kinds the clean viewer renders natively. Anything else (docx/pptx/xlsx/sketch/…)
 // falls back to the full app in the caller.
-const NATIVE = new Set(['text', 'code', 'json', 'markdown', 'mermaid', 'image', 'pdf', 'video', 'audio']);
+const NATIVE = new Set(['text', 'code', 'json', 'markdown', 'mermaid', 'image', 'pdf', 'video', 'audio', 'spreadsheet', 'document', 'presentation']);
 
 export function canViewNatively(s: OpenedShare): boolean {
-  if (NATIVE.has(s.kind)) return true;
-  return s.kind === 'spreadsheet' && /csv|tsv/.test(s.contentType + s.title) && !/spreadsheetml|excel/.test(s.contentType);
+  return NATIVE.has(s.kind);
 }
+
+const isBinarySheet = (s: OpenedShare) => /\.(xlsx|xls)$/i.test(s.title) || /spreadsheetml|ms-excel/.test(s.contentType);
 
 function parseCsv(text: string, delim: string): string[][] {
   const rows: string[][] = [];
@@ -90,6 +92,40 @@ export function showViewer(root: HTMLElement, s: OpenedShare, opts: { onEdit: ()
         const m = document.createElement(s.kind);
         m.className = 'viewer-media'; m.controls = true; m.src = url();
         body.appendChild(m);
+      } else if (s.kind === 'document') {
+        const mammoth = await import('mammoth/mammoth.browser.js');
+        const conv = (mammoth.default ?? mammoth) as { convertToHtml: (i: { arrayBuffer: ArrayBuffer }) => Promise<{ value: string }> };
+        const d = document.createElement('article');
+        d.className = 'viewer-prose viewer-doc';
+        d.innerHTML = DOMPurify.sanitize((await conv.convertToHtml({ arrayBuffer: await blob.arrayBuffer() })).value);
+        body.appendChild(d);
+      } else if (s.kind === 'presentation') {
+        const [{ readPptx }, { renderSlideCanvas }] = await Promise.all([
+          import('../editors/presentation/pptxRead'), import('../editors/presentation/canvas'),
+        ]);
+        const deck = readPptx(new Uint8Array(await blob.arrayBuffer()));
+        const col = document.createElement('div');
+        col.className = 'viewer-slides';
+        body.appendChild(col);
+        const cache = new Map<string, ImageBitmap | null>();
+        for (const slide of deck.slides) {
+          const cv = await renderSlideCanvas(deck, slide, Math.min(2, 1400 / deck.w), cache);
+          cv.className = 'viewer-slide';
+          col.appendChild(cv);
+        }
+      } else if (s.kind === 'spreadsheet' && isBinarySheet(s)) {
+        const XLSX = await import('xlsx');
+        const wb = XLSX.read(await blob.arrayBuffer(), { type: 'array' });
+        const wrapT = document.createElement('div');
+        wrapT.className = 'viewer-table-wrap';
+        for (const name of wb.SheetNames) {
+          const h = document.createElement('h4'); h.textContent = name; h.className = 'viewer-sheet-name';
+          const box = document.createElement('div');
+          box.innerHTML = DOMPurify.sanitize(XLSX.utils.sheet_to_html(wb.Sheets[name]!, { header: '', footer: '' }));
+          box.querySelector('table')?.classList.add('viewer-table');
+          wrapT.append(h, box);
+        }
+        body.appendChild(wrapT);
       } else if (s.kind === 'spreadsheet') {
         const text = await textOf();
         const rows = parseCsv(text, /tsv/i.test(s.title) ? '\t' : ',');

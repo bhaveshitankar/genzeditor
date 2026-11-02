@@ -49,6 +49,11 @@ function systemPrompt(kind: AiKind, meta: Record<string, unknown> = {}): string 
         'Apply the user\'s instruction to the CURRENT DOCUMENT and return ONLY the full',
         'updated document text. No markdown fences, no commentary, no explanation.',
         'Preserve the original formatting/indentation style where not told to change it.',
+        ...(meta.webpage ? [
+          'This is a single-file web page. Always return a COMPLETE <!DOCTYPE html> document with all CSS inline in a <style> tag,',
+          'mobile-responsive and modern-looking. NO <script>, NO external assets/fonts/images (keep any existing data: images).',
+          'If the document is empty or the user asks to build/create a page, design the whole page from their description.',
+        ] : []),
       ].join('\n');
     case 'form':
       return [

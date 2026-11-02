@@ -128,6 +128,7 @@ export class TextEditor {
     }
   }
 
+  insertAtCursor(t: string) { const r = this.view.state.selection.main; this.view.dispatch({ changes: { from: r.from, to: r.to, insert: t }, selection: { anchor: r.from + t.length } }); this.view.focus(); }
   getValue() { return this.view.state.doc.toString(); }
   setValue(v: string) { this.view.dispatch({ changes: { from: 0, to: this.view.state.doc.length, insert: v } }); }
   openSearch() { this.view.focus(); openSearchPanel(this.view); }

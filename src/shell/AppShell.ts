@@ -89,6 +89,7 @@ export class AppShell {
   private currentPreview?: MermaidPreview;
   private currentFileId?: string;
   private currentFileKind?: string;
+  private currentFileName?: string;
   private currentObjectUrl?: string;
   private saveTimer?: number;
   // Closure that performs the currently-scheduled save (text or image), so a
@@ -554,7 +555,7 @@ export class AppShell {
       return {
         kind: kind === 'json' ? 'form' : 'text',
         label: kind === 'json' ? 'JSON' : kind === 'code' ? 'code' : 'text',
-        meta: { language: kind },
+        meta: /\.html?$/i.test(this.currentFileName ?? '') ? { language: 'html', webpage: true } : { language: kind },
         getText: () => ed.getValue(),
         apply: (r: AiEditResult) => { if (r.text != null) ed.setValue(r.text); return 'updated'; },
         onChanged: () => this.scheduleAutosave(),
@@ -1559,6 +1560,18 @@ export class AppShell {
     return null;
   }
 
+  /** Downscale + inline an image file as a data URI (≤1600px; keeps PNG/GIF/SVG types). */
+  static async embedImage(file: File): Promise<string> {
+    const read = () => new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => rej(r.error); r.readAsDataURL(file); });
+    if (/svg|gif/.test(file.type)) return read();
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+    cv.getContext('2d')!.drawImage(bmp, 0, 0, cv.width, cv.height);
+    return cv.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.85);
+  }
+
   private async handleShare(wantRw = false) {
     if (!this.currentFileId) return;
 
@@ -2119,6 +2132,7 @@ export class AppShell {
     this.editorHost.innerHTML = '';
     this.currentFileId = id;
     this.currentFileKind = record.kind;
+    this.currentFileName = record.name;
     this.markActiveFile(id);
     this.chrome?.onFileOpened(record);
     // Remember the open file so a page refresh can reopen it instead of
@@ -2241,6 +2255,27 @@ export class AppShell {
           if (w && confirm('Replace the current page with this template?')) { editor.setValue(w.html); refresh(); this.scheduleAutosave(); }
         });
         toolbar.appendChild(tplSel);
+        // Drop in an image: downscaled and embedded as a data URI so the page stays one portable file.
+        const imgBtn = document.createElement('button');
+        imgBtn.textContent = 'Image';
+        imgBtn.title = 'Insert an image into the page';
+        const picker = document.createElement('input');
+        picker.type = 'file'; picker.accept = 'image/*'; picker.hidden = true;
+        picker.addEventListener('change', async () => {
+          const f = picker.files?.[0]; picker.value = '';
+          if (!f) return;
+          try {
+            const uri = await AppShell.embedImage(f);
+            editor.insertAtCursor(`<img src="${uri}" alt="${f.name.replace(/\.[^.]+$/, '').replace(/[<>"&]/g, '')}" style="max-width:100%">`);
+            refresh(); this.scheduleAutosave();
+          } catch { this.toast('Could not read that image', 'error'); }
+        });
+        imgBtn.addEventListener('click', () => picker.click());
+        const pubBtn = document.createElement('button');
+        pubBtn.textContent = 'Publish';
+        pubBtn.title = 'Get a public link to this page';
+        pubBtn.addEventListener('click', () => void this.handleShare(false));
+        toolbar.append(imgBtn, picker, pubBtn);
         this.addPreviewToggle(toolbar);
       }
 

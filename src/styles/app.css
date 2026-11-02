@@ -3000,3 +3000,7 @@ button, input, select, a { transition-property: background-color, border-color, 
 .viewer-foot a { color: #ec4899; }
 .viewer-cta { padding: 6px 14px; border-radius: 99px; background: #ec4899; color: #fff !important; text-decoration: none; font-weight: 700; }
 @media (max-width: 600px) { .viewer-badge { display: none; } .viewer-foot { font-size: 11px; } }
+.viewer-slides { width: 100%; max-width: 1000px; padding: 16px; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px; }
+.viewer-slide { width: 100%; height: auto; box-shadow: 0 2px 14px rgba(0,0,0,.18); border-radius: 6px; background: #fff; }
+.viewer-doc table { border-collapse: collapse; } .viewer-doc td, .viewer-doc th { border: 1px solid #ccc; padding: 4px 8px; }
+.viewer-sheet-name { margin: 14px 0 6px; }
