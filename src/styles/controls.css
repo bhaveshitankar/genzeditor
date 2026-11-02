@@ -69,7 +69,7 @@
 :where(input[type="checkbox"]:not(.excalidraw *), input[type="radio"]:not(.excalidraw *)) {
   -webkit-appearance: none; appearance: none; flex: 0 0 auto;
   width: 20px; height: 20px; margin: 0; cursor: pointer; display: inline-grid; place-content: center;
-  border: 2px solid var(--ink, #16121f); background: var(--surface, #fff);
+  border: 2px solid var(--text-muted, #5c576b); background: var(--surface-2, #fff);
   transition: background 0.12s, transform 0.12s var(--ease);
 }
 :where(input[type="checkbox"]:not(.excalidraw *)) { border-radius: 6px; }
@@ -77,10 +77,10 @@
 :where(input[type="checkbox"]:not(.excalidraw *), input[type="radio"]:not(.excalidraw *)):checked { background: var(--brand-500); }
 :where(input[type="checkbox"]:not(.excalidraw *))::after {
   content: ''; width: 10px; height: 6px; margin-top: -2px;
-  border-left: 3px solid #fff; border-bottom: 3px solid #fff; transform: rotate(-45deg) scale(0); transition: transform 0.12s var(--ease);
+  border-left: 3px solid var(--on-brand, #fff); border-bottom: 3px solid var(--on-brand, #fff); transform: rotate(-45deg) scale(0); transition: transform 0.12s var(--ease);
 }
 :where(input[type="checkbox"]:not(.excalidraw *)):checked::after { transform: rotate(-45deg) scale(1); }
-:where(input[type="radio"]:not(.excalidraw *))::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #fff; transform: scale(0); transition: transform 0.12s var(--ease); }
+:where(input[type="radio"]:not(.excalidraw *))::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--on-brand, #fff); transform: scale(0); transition: transform 0.12s var(--ease); }
 :where(input[type="radio"]:not(.excalidraw *)):checked::after { transform: scale(1); }
 :where(input[type="checkbox"]:not(.excalidraw *), input[type="radio"]:not(.excalidraw *)):focus-visible { outline: 2px solid var(--brand-500); outline-offset: 2px; }
 :where(input[type="checkbox"]:not(.excalidraw *), input[type="radio"]:not(.excalidraw *)):disabled { opacity: 0.45; cursor: not-allowed; }

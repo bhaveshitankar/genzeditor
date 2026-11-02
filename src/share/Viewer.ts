@@ -37,16 +37,17 @@ export function showViewer(root: HTMLElement, s: OpenedShare, opts: { onEdit: ()
   const wrap = document.createElement('div');
   wrap.className = 'viewer-page';
   wrap.innerHTML = `
-    <header class="viewer-bar">
-      <a class="viewer-brand" href="https://genzeditor.com/" target="_blank" rel="noopener">GenZ Editor</a>
-      <span class="viewer-title"></span>
-      <span class="viewer-badge">View only</span>
-      <button type="button" class="viewer-copy">Make an editable copy</button>
-    </header>
     <main class="viewer-body"></main>
     <footer class="viewer-foot">
-      <span>Created with <a href="https://genzeditor.com/" target="_blank" rel="noopener">genzeditor.com</a> — free editors for docs, sheets, slides, video, web pages &amp; more.</span>
-      <a class="viewer-cta" href="https://genzeditor.com/" target="_blank" rel="noopener">Sign up free to explore more</a>
+      <span class="viewer-credit">
+        <span class="viewer-badge">View only</span>
+        <span class="viewer-title"></span>
+        <span class="viewer-by">· Created with <a href="https://genzeditor.com/" target="_blank" rel="noopener">genzeditor.com</a></span>
+      </span>
+      <span class="viewer-actions">
+        <button type="button" class="viewer-copy">Make an editable copy</button>
+        <a class="viewer-cta" href="https://genzeditor.com/" target="_blank" rel="noopener">Sign up free to explore more</a>
+      </span>
     </footer>`;
   (wrap.querySelector('.viewer-title') as HTMLElement).textContent = s.title;
   wrap.querySelector('.viewer-copy')!.addEventListener('click', () => { cleanup(); opts.onEdit(); });
