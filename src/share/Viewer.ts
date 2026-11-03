@@ -1,5 +1,6 @@
 import type { OpenedShare } from './openShared';
 import { renderMarkdown } from '../editors/MarkdownPreview';
+import { SiteFrame } from '../editors/siteFrame';
 import DOMPurify from 'dompurify';
 import { MermaidPreview } from '../editors/MermaidPreview';
 
@@ -57,18 +58,18 @@ export function showViewer(root: HTMLElement, s: OpenedShare, opts: { onEdit: ()
   const urls: string[] = [];
   const url = () => { const u = URL.createObjectURL(blob); urls.push(u); return u; };
   let mermaid: MermaidPreview | undefined;
+  let site: SiteFrame | undefined;
   const textOf = async () => s.text ?? await blob.text();
   const isHtml = /\.html?$/i.test(s.title) || s.contentType === 'text/html';
 
   void (async () => {
     try {
       if (isHtml) {
-        // Scripts never run: sandbox has no allow-scripts and the page CSP blocks them anyway.
-        const f = document.createElement('iframe');
-        f.className = 'viewer-frame';
-        f.setAttribute('sandbox', '');
-        f.srcdoc = await textOf();
-        body.appendChild(f);
+        // Runs in the isolated site frame (opaque origin; no access to the app).
+        const sf = new SiteFrame(body, s.title);
+        sf.el.className = 'viewer-frame';
+        sf.show(await textOf());
+        site = sf;
       } else if (s.kind === 'markdown') {
         const d = document.createElement('article');
         d.className = 'viewer-prose';
@@ -156,6 +157,7 @@ export function showViewer(root: HTMLElement, s: OpenedShare, opts: { onEdit: ()
 
   function cleanup() {
     mermaid?.destroy();
+    site?.destroy();
     urls.forEach((u) => URL.revokeObjectURL(u));
     wrap.remove();
   }

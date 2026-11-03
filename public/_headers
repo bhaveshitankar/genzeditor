@@ -36,6 +36,12 @@
 /mermaid-frame.html
   Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; script-src 'self' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'
 
+# User-built web pages (website builder + shared pages). Isolated opaque-origin
+# frame: the page's own inline JS/CSS must run, remote images/fonts/embeds are
+# allowed, but it has no cookies/storage/same-origin access to the app.
+/site-frame.html
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'unsafe-inline' https:; style-src 'unsafe-inline' https:; img-src https: data: blob:; media-src https: data: blob:; font-src https: data:; frame-src https:; connect-src https:; base-uri 'none'
+
 # The background-removal model (onnxruntime) requires 'unsafe-eval'. Confine that
 # to this isolated frame's document instead of the whole app. Served same-origin
 # so its bundled script loads under script-src 'self'.

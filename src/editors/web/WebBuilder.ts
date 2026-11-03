@@ -1,0 +1,480 @@
+import './webbuilder.css';
+import { BLOCKS, type Block } from './blocks';
+import { embedImage } from '../../utils/embedImage';
+
+// Visual (Wix-style) designer for a single-file web page. The canvas is a
+// same-origin, script-less iframe: we edit its DOM directly (select, inline text
+// edit, drag/drop, style inspector) and serialise back to HTML on every change.
+// The page's own <style> and <script> are preserved and editable, so HTML, CSS
+// and JS all stay first-class. JS only runs in Preview (isolated site frame).
+
+const EDITOR_CSS = `[data-gz-hover]{outline:1px dashed #ff4d8d!important;outline-offset:-1px}
+[data-gz-sel]{outline:2px solid #ff4d8d!important;outline-offset:-2px}
+[contenteditable="true"]{outline:2px solid #4d6bff!important;cursor:text}
+html,body{height:auto}`;
+const SKIP = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'TITLE', 'BASE']);
+const INLINE = new Set(['SPAN', 'A', 'STRONG', 'EM', 'B', 'I', 'U', 'SMALL', 'LABEL', 'CODE', 'BR', 'SUB', 'SUP']);
+const NO_TEXT = new Set(['IMG', 'IFRAME', 'HR', 'INPUT', 'VIDEO', 'AUDIO', 'TEXTAREA', 'SELECT', 'BODY']);
+const WIDTHS = { desktop: '100%', tablet: '768px', mobile: '390px' } as const;
+
+type Drag = { block?: Block; el?: HTMLElement };
+type Drop = { ref: HTMLElement; where: 'before' | 'after' | 'inside' };
+
+export interface WebBuilderOpts {
+  getHtml(): string;
+  /** Called with the serialised page after each edit (push to code editor + autosave). */
+  setHtml(html: string): void;
+}
+
+function toHex(c: string): string {
+  const m = /rgba?\(([^)]+)\)/.exec(c);
+  if (!m) return '';
+  const p = m[1]!.split(',').map((x) => parseFloat(x));
+  if (p.length === 4 && p[3] === 0) return '';
+  return '#' + p.slice(0, 3).map((n) => Math.round(n).toString(16).padStart(2, '0')).join('');
+}
+
+export class WebBuilder {
+  readonly root: HTMLElement;
+  private frame!: HTMLIFrameElement;
+  private stage!: HTMLElement;
+  private device!: HTMLElement;
+  private float!: HTMLElement;
+  private dropLine!: HTMLElement;
+  private inspector!: HTMLElement;
+  private doc!: Document;
+  private sel: HTMLElement | null = null;
+  private hover: HTMLElement | null = null;
+  private editing: HTMLElement | null = null;
+  private drag: Drag | null = null;
+  private drop: Drop | null = null;
+  private undoStack: string[] = [];
+  private redoStack: string[] = [];
+  private current = '';
+  private ac = new AbortController();
+  private ro?: ResizeObserver;
+
+  constructor(host: HTMLElement, private opts: WebBuilderOpts) {
+    this.root = document.createElement('div');
+    this.root.className = 'wb';
+    this.root.innerHTML = `
+      <div class="wb-top">
+        <span class="wb-seg" role="group" aria-label="Preview width">
+          <button type="button" data-w="desktop" aria-pressed="true" title="Desktop">🖥</button>
+          <button type="button" data-w="tablet" aria-pressed="false" title="Tablet">▭</button>
+          <button type="button" data-w="mobile" aria-pressed="false" title="Mobile">📱</button>
+        </span>
+        <button type="button" data-act="undo" title="Undo (Ctrl+Z)">↶</button>
+        <button type="button" data-act="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
+        <button type="button" data-act="page" title="Page settings, CSS and JS">⚙ Page</button>
+        <span class="wb-hint">Click to select · double-click text to edit · drag blocks in</span>
+      </div>
+      <div class="wb-main">
+        <aside class="wb-palette" aria-label="Blocks"></aside>
+        <div class="wb-stage"><div class="wb-device"><iframe class="wb-canvas" title="Page designer" sandbox="allow-same-origin"></iframe><div class="wb-float" hidden></div><div class="wb-dropline" hidden></div></div></div>
+        <aside class="wb-inspector" aria-label="Properties"></aside>
+      </div>`;
+    host.appendChild(this.root);
+    const q = <T extends HTMLElement>(s: string) => this.root.querySelector(s) as T;
+    this.frame = q('.wb-canvas'); this.stage = q('.wb-stage'); this.device = q('.wb-device');
+    this.float = q('.wb-float'); this.dropLine = q('.wb-dropline'); this.inspector = q('.wb-inspector');
+    this.buildPalette(q('.wb-palette'));
+    const sig = { signal: this.ac.signal };
+
+    this.root.querySelectorAll<HTMLButtonElement>('.wb-seg button').forEach((b) => b.addEventListener('click', () => {
+      this.device.style.width = WIDTHS[b.dataset.w as keyof typeof WIDTHS];
+      this.root.querySelectorAll('.wb-seg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      requestAnimationFrame(() => { this.fit(); this.placeFloat(); });
+    }, sig));
+    q('[data-act="undo"]').addEventListener('click', () => this.undo(), sig);
+    q('[data-act="redo"]').addEventListener('click', () => this.redo(), sig);
+    q('[data-act="page"]').addEventListener('click', () => this.select(this.doc.body), sig);
+    this.root.addEventListener('keydown', (e) => this.onKey(e), sig);
+    this.stage.addEventListener('scroll', () => this.placeFloat(), sig);
+    this.frame.addEventListener('load', () => this.onLoad(), sig);
+    this.ro = new ResizeObserver(() => { this.fit(); this.placeFloat(); });
+    this.ro.observe(this.stage);
+    this.buildFloat();
+  }
+
+  destroy(): void { this.ac.abort(); this.ro?.disconnect(); this.root.remove(); }
+
+  /** (Re)load the designer from the page HTML (called on switch-to-Design and after AI/code edits). */
+  load(html: string = this.opts.getHtml()): void {
+    if (html === this.current && this.doc) return;
+    this.current = html;
+    this.sel = null; this.hover = null; this.editing = null;
+    this.frame.srcdoc = html.trim() ? html : '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body></body></html>';
+  }
+
+  // ---------- document wiring ----------
+  private onLoad(): void {
+    const d = this.frame.contentDocument; if (!d) return;
+    this.doc = d;
+    const st = d.createElement('style'); st.setAttribute('data-gz-editor', ''); st.textContent = EDITOR_CSS;
+    d.head.appendChild(st);
+    const on = <K extends keyof DocumentEventMap>(t: K, f: (e: DocumentEventMap[K]) => void, cap = false) =>
+      d.addEventListener(t, f as EventListener, { capture: cap, signal: this.ac.signal });
+    on('mouseover', (e) => this.setHover(this.pick(e.target)));
+    on('mouseleave', () => this.setHover(null));
+    on('click', (e) => {
+      if (this.editing && this.editing.contains(e.target as Node)) return;
+      e.preventDefault(); this.stopEdit();
+      this.select(this.pick(e.target));
+    }, true);
+    on('dblclick', (e) => { const el = this.pick(e.target); if (el) this.startEdit(el); });
+    on('keydown', (e) => this.onKey(e as KeyboardEvent));
+    on('input', () => { if (this.editing) this.commitSoon(); });
+    on('paste', (e) => {
+      if (!this.editing) return;
+      e.preventDefault();
+      d.execCommand('insertText', false, e.clipboardData?.getData('text/plain') ?? '');
+    });
+    on('dragover', (e) => this.onDragOver(e));
+    on('drop', (e) => this.onDrop(e));
+    d.defaultView?.addEventListener('scroll', () => this.placeFloat(), { signal: this.ac.signal });
+    this.fit();
+    this.renderInspector();
+    if (!this.undoStack.length) this.undoStack.push(this.serialize());
+  }
+
+  private pick(t: EventTarget | null): HTMLElement | null {
+    let el = t as HTMLElement | null;
+    if (!el || el.nodeType !== 1) el = (t as Node | null)?.parentElement ?? null;
+    if (!el || el === this.doc.documentElement || SKIP.has(el.tagName)) return this.doc.body;
+    return el;
+  }
+
+  private serialize(): string {
+    const root = this.doc.documentElement.cloneNode(true) as HTMLElement;
+    root.querySelectorAll('[data-gz-editor]').forEach((n) => n.remove());
+    for (const a of ['data-gz-sel', 'data-gz-hover', 'data-gz-edit']) root.querySelectorAll(`[${a}]`).forEach((n) => n.removeAttribute(a));
+    root.querySelectorAll('[data-gz-ce]').forEach((n) => { n.removeAttribute('contenteditable'); n.removeAttribute('data-gz-ce'); });
+    return '<!DOCTYPE html>\n' + root.outerHTML + '\n';
+  }
+
+  private commitTimer?: number;
+  private commitSoon(): void { clearTimeout(this.commitTimer); this.commitTimer = window.setTimeout(() => this.commit(), 300); }
+  /** Serialise → history → push to the code editor. */
+  private commit(): void {
+    clearTimeout(this.commitTimer);
+    const html = this.serialize();
+    if (html === this.current) return;
+    this.current = html;
+    this.undoStack.push(html); if (this.undoStack.length > 100) this.undoStack.shift();
+    this.redoStack = [];
+    this.opts.setHtml(html);
+    this.fit(); this.placeFloat();
+  }
+  private restore(html: string): void {
+    this.current = ''; this.load(html); this.opts.setHtml(html);
+  }
+  undo(): void { if (this.undoStack.length < 2) return; this.redoStack.push(this.undoStack.pop()!); this.restore(this.undoStack[this.undoStack.length - 1]!); }
+  redo(): void { const h = this.redoStack.pop(); if (!h) return; this.undoStack.push(h); this.restore(h); }
+
+  private onKey(e: KeyboardEvent): void {
+    const mod = e.metaKey || e.ctrlKey;
+    const inField = (e.target as HTMLElement)?.closest?.('input,textarea,select');
+    if (mod && e.key.toLowerCase() === 'z' && !this.editing && !inField) { e.preventDefault(); e.shiftKey ? this.redo() : this.undo(); return; }
+    if (this.editing) { if (e.key === 'Escape') this.stopEdit(); return; }
+    if (inField) return;
+    if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel && this.sel !== this.doc.body) { e.preventDefault(); this.remove(); }
+    else if (e.key === 'Enter' && this.sel) { e.preventDefault(); this.startEdit(this.sel); }
+    else if (e.key === 'Escape') this.select(null);
+  }
+
+  /** Make the iframe as tall as its content so the stage (not the frame) scrolls. */
+  private fit(): void {
+    if (!this.doc) return;
+    this.frame.style.height = this.stage.clientHeight + 'px';
+    this.frame.style.height = Math.max(this.doc.documentElement.scrollHeight, this.stage.clientHeight) + 'px';
+  }
+
+  // ---------- selection / hover / text edit ----------
+  private setHover(el: HTMLElement | null): void {
+    this.hover?.removeAttribute('data-gz-hover');
+    this.hover = el && el !== this.sel ? el : null;
+    this.hover?.setAttribute('data-gz-hover', '');
+  }
+  select(el: HTMLElement | null): void {
+    this.sel?.removeAttribute('data-gz-sel');
+    this.sel = el;
+    this.hover?.removeAttribute('data-gz-hover');
+    if (el && el !== this.doc.body) el.setAttribute('data-gz-sel', '');
+    this.renderInspector(); this.placeFloat();
+  }
+  private startEdit(el: HTMLElement): void {
+    if (NO_TEXT.has(el.tagName)) return;
+    this.stopEdit();
+    this.editing = el; this.select(el);
+    if (el.getAttribute('contenteditable') !== 'true') el.setAttribute('data-gz-ce', '');
+    el.setAttribute('contenteditable', 'true');
+    el.focus();
+    el.addEventListener('blur', () => this.stopEdit(), { once: true });
+  }
+  private stopEdit(): void {
+    const el = this.editing; if (!el) return;
+    this.editing = null;
+    if (el.hasAttribute('data-gz-ce')) { el.removeAttribute('contenteditable'); el.removeAttribute('data-gz-ce'); }
+    this.commit();
+  }
+
+  // ---------- floating toolbar ----------
+  private buildFloat(): void {
+    const mk = (label: string, title: string, fn: () => void) => {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = title;
+      b.addEventListener('click', (e) => { e.stopPropagation(); fn(); }); return b;
+    };
+    const handle = mk('⠿', 'Drag to move', () => {}); handle.draggable = true; handle.classList.add('wb-handle');
+    handle.addEventListener('dragstart', (e) => {
+      if (!this.sel || this.sel === this.doc.body) { e.preventDefault(); return; }
+      this.drag = { el: this.sel }; e.dataTransfer?.setData('text/plain', 'move');
+    });
+    handle.addEventListener('dragend', () => this.endDrag());
+    this.float.append(
+      handle,
+      mk('↑', 'Move up', () => this.nudge(-1)), mk('↓', 'Move down', () => this.nudge(1)),
+      mk('⬆', 'Select parent', () => { const p = this.sel?.parentElement; if (p) this.select(p); }),
+      mk('⧉', 'Duplicate', () => this.duplicate()), mk('🗑', 'Delete', () => this.remove()),
+    );
+  }
+  private placeFloat(): void {
+    const el = this.sel;
+    if (!el || el === this.doc?.body || !el.isConnected) { this.float.hidden = true; return; }
+    const r = el.getBoundingClientRect();
+    const top = r.top - 30 < 0 ? r.top + 4 : r.top - 30;
+    this.float.style.top = `${top}px`;
+    this.float.style.left = `${Math.max(4, Math.min(r.left, this.device.clientWidth - 200))}px`;
+    this.float.hidden = false;
+  }
+  private nudge(dir: -1 | 1): void {
+    const el = this.sel; if (!el || el === this.doc.body) return;
+    const sib = dir < 0 ? el.previousElementSibling : el.nextElementSibling;
+    if (!sib || SKIP.has(sib.tagName) || sib.hasAttribute('data-gz-editor')) return;
+    dir < 0 ? el.parentElement!.insertBefore(el, sib) : el.parentElement!.insertBefore(sib, el);
+    this.commit(); this.placeFloat();
+  }
+  private duplicate(): void {
+    const el = this.sel; if (!el || el === this.doc.body) return;
+    const c = el.cloneNode(true) as HTMLElement; c.removeAttribute('data-gz-sel');
+    el.after(c); this.select(c); this.commit();
+  }
+  private remove(): void {
+    const el = this.sel; if (!el || el === this.doc.body) return;
+    this.select(null); el.remove(); this.commit();
+  }
+
+  // ---------- palette + drag/drop ----------
+  private buildPalette(host: HTMLElement): void {
+    for (const group of [...new Set(BLOCKS.map((b) => b.group))]) {
+      const h = document.createElement('h4'); h.textContent = group; host.appendChild(h);
+      const grid = document.createElement('div'); grid.className = 'wb-blocks'; host.appendChild(grid);
+      for (const b of BLOCKS.filter((x) => x.group === group)) {
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.className = 'wb-block'; btn.draggable = true; btn.title = `Add ${b.label} (click or drag)`;
+        btn.innerHTML = `<span class="wb-block-ico"></span><span class="wb-block-lbl"></span>`;
+        (btn.firstChild as HTMLElement).textContent = b.icon;
+        (btn.lastChild as HTMLElement).textContent = b.label;
+        btn.addEventListener('dragstart', (e) => { this.drag = { block: b }; e.dataTransfer?.setData('text/plain', b.id); });
+        btn.addEventListener('dragend', () => this.endDrag());
+        btn.addEventListener('click', () => this.addBlock(b));
+        grid.appendChild(btn);
+      }
+    }
+  }
+  private create(b: Block): HTMLElement {
+    const t = document.createElement('template'); t.innerHTML = b.html.trim();
+    return this.doc.importNode(t.content.firstElementChild!, true) as HTMLElement;
+  }
+  /** Click-to-add (touch friendly): after the selection, or at the end of the page. */
+  private addBlock(b: Block): void {
+    if (!this.doc) return;
+    const el = this.create(b);
+    let ref = this.sel && this.sel !== this.doc.body ? this.sel : null;
+    if (ref && b.section) while (ref.parentElement && ref.parentElement !== this.doc.body) ref = ref.parentElement;
+    if (ref) ref.after(el); else this.doc.body.appendChild(el);
+    this.select(el); this.commit();
+    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  private endDrag(): void { this.drag = null; this.drop = null; this.dropLine.hidden = true; }
+
+  private bodyKids(): HTMLElement[] {
+    return [...this.doc.body.children].filter((c) => !SKIP.has(c.tagName) && c !== this.drag?.el) as HTMLElement[];
+  }
+  private target(x: number, y: number): Drop | null {
+    const d = this.doc, body = d.body, moving = this.drag?.el;
+    const section = this.drag?.block ? this.drag.block.section : moving?.parentElement === body;
+    let el = d.elementFromPoint(x, y) as HTMLElement | null;
+    if (!el || el === d.documentElement) el = body;
+    if (moving && (moving === el || moving.contains(el))) return null;
+    if (el === body) {
+      const kids = this.bodyKids();
+      if (!kids.length) return { ref: body, where: 'inside' };
+      for (const k of kids) { const r = k.getBoundingClientRect(); if (y < r.top + r.height / 2) return { ref: k, where: 'before' }; }
+      return { ref: kids[kids.length - 1]!, where: 'after' };
+    }
+    if (section) while (el.parentElement && el.parentElement !== body) el = el.parentElement;
+    else while (INLINE.has(el.tagName) && el.parentElement && el.parentElement !== body) el = el.parentElement;
+    if (!el.children.length && !el.textContent?.trim() && !NO_TEXT.has(el.tagName)) return { ref: el, where: 'inside' };
+    const r = el.getBoundingClientRect();
+    const ps = el.parentElement ? this.doc.defaultView!.getComputedStyle(el.parentElement) : null;
+    const row = !!ps && ps.display.includes('flex') && ps.flexDirection.startsWith('row');
+    const before = row ? x < r.left + r.width / 2 : y < r.top + r.height / 2;
+    return { ref: el, where: before ? 'before' : 'after' };
+  }
+  private onDragOver(e: DragEvent): void {
+    if (!this.drag) return;
+    e.preventDefault();
+    const t = this.target(e.clientX, e.clientY);
+    this.drop = t;
+    if (!t) { this.dropLine.hidden = true; return; }
+    const r = t.ref.getBoundingClientRect();
+    const s = this.dropLine.style;
+    this.dropLine.hidden = false;
+    if (t.where === 'inside') { s.left = `${r.left}px`; s.top = `${r.top}px`; s.width = `${r.width}px`; s.height = `${Math.max(r.height, 8)}px`; this.dropLine.dataset.k = 'box'; return; }
+    this.dropLine.dataset.k = 'line';
+    s.left = `${r.left}px`; s.width = `${r.width}px`; s.height = '4px';
+    s.top = `${(t.where === 'before' ? r.top : r.bottom) - 2}px`;
+  }
+  private onDrop(e: DragEvent): void {
+    if (!this.drag) return;
+    e.preventDefault();
+    const t = this.drop ?? this.target(e.clientX, e.clientY), drag = this.drag;
+    this.endDrag();
+    if (!t) return;
+    const el = drag.block ? this.create(drag.block) : drag.el!;
+    if (t.where === 'inside') t.ref.appendChild(el);
+    else if (t.where === 'before') t.ref.parentElement!.insertBefore(el, t.ref);
+    else t.ref.after(el);
+    this.select(el); this.commit();
+  }
+
+  // ---------- inspector ----------
+  private css(el: HTMLElement, prop: string): string { return this.doc.defaultView!.getComputedStyle(el).getPropertyValue(prop); }
+  private setStyle(el: HTMLElement, prop: string, v: string): void {
+    if (v === '') el.style.removeProperty(prop); else el.style.setProperty(prop, v);
+    this.commit(); this.placeFloat();
+  }
+  private row(label: string, input: HTMLElement): HTMLElement {
+    const l = document.createElement('label'); l.className = 'wb-field';
+    const s = document.createElement('span'); s.textContent = label; l.append(s, input); return l;
+  }
+  private inp(value: string, onChange: (v: string) => void, type = 'text', ph = ''): HTMLInputElement {
+    const i = document.createElement('input'); i.type = type; i.value = value; i.placeholder = ph;
+    i.addEventListener('change', () => onChange(i.value)); return i;
+  }
+  private px(el: HTMLElement, prop: string, label: string): HTMLElement {
+    const cur = el.style.getPropertyValue(prop) || '';
+    return this.row(label, this.inp(cur, (v) => this.setStyle(el, prop, /^\d+(\.\d+)?$/.test(v.trim()) ? `${v.trim()}px` : v.trim()), 'text', this.css(el, prop)));
+  }
+  private color(el: HTMLElement, prop: string, label: string): HTMLElement {
+    const wrap = document.createElement('span'); wrap.className = 'wb-color';
+    const c = document.createElement('input'); c.type = 'color'; c.value = toHex(this.css(el, prop)) || '#ffffff';
+    c.addEventListener('input', () => el.style.setProperty(prop, c.value));
+    c.addEventListener('change', () => this.setStyle(el, prop, c.value));
+    const x = document.createElement('button'); x.type = 'button'; x.textContent = '✕'; x.title = 'Clear';
+    x.addEventListener('click', () => { this.setStyle(el, prop, ''); this.renderInspector(); });
+    wrap.append(c, x); return this.row(label, wrap);
+  }
+  private select$(el: HTMLElement, prop: string, label: string, opts: string[]): HTMLElement {
+    const s = document.createElement('select');
+    s.innerHTML = '<option value="">(auto)</option>' + opts.map((o) => `<option>${o}</option>`).join('');
+    s.value = el.style.getPropertyValue(prop);
+    s.addEventListener('change', () => { this.setStyle(el, prop, s.value); this.renderInspector(); });
+    return this.row(label, s);
+  }
+  private group(title: string, ...rows: HTMLElement[]): HTMLElement {
+    const g = document.createElement('details'); g.open = true; g.className = 'wb-group';
+    const s = document.createElement('summary'); s.textContent = title; g.append(s, ...rows); return g;
+  }
+  private area(label: string, value: string, onChange: (v: string) => void, rows = 5): HTMLElement {
+    const t = document.createElement('textarea'); t.rows = rows; t.value = value; t.spellcheck = false; t.className = 'wb-code';
+    t.addEventListener('change', () => onChange(t.value)); return this.row(label, t);
+  }
+
+  private renderInspector(): void {
+    const ins = this.inspector; ins.innerHTML = '';
+    const el = this.sel;
+    if (!this.doc) return;
+    if (!el || el === this.doc.body) { this.renderPage(); return; }
+    const head = document.createElement('div'); head.className = 'wb-ins-head';
+    head.textContent = `<${el.tagName.toLowerCase()}>` + (el.id ? `#${el.id}` : '');
+    ins.appendChild(head);
+
+    if (el.tagName === 'A') {
+      ins.appendChild(this.group('Link',
+        this.row('URL', this.inp(el.getAttribute('href') ?? '', (v) => { el.setAttribute('href', v); this.commit(); }, 'text', 'https://…')),
+        this.row('New tab', (() => { const c = document.createElement('input'); c.type = 'checkbox'; const an = el as HTMLAnchorElement; c.checked = an.target === '_blank'; c.addEventListener('change', () => { c.checked ? (an.target = '_blank', an.rel = 'noopener') : (el.removeAttribute('target'), el.removeAttribute('rel')); this.commit(); }); return c; })())));
+    }
+    if (el.tagName === 'IMG' || el.tagName === 'IFRAME') {
+      const isImg = el.tagName === 'IMG';
+      const file = document.createElement('input'); file.type = 'file'; file.accept = 'image/*'; file.hidden = true;
+      const up = document.createElement('button'); up.type = 'button'; up.textContent = '⬆ Upload image'; up.className = 'wb-btn';
+      up.addEventListener('click', () => file.click());
+      file.addEventListener('change', async () => {
+        const f = file.files?.[0]; if (!f) return;
+        try { el.setAttribute('src', await embedImage(f)); this.commit(); this.renderInspector(); } catch { /* ignore */ }
+      });
+      ins.appendChild(this.group(isImg ? 'Image' : 'Embed',
+        this.row('Source', this.inp(el.getAttribute('src') ?? '', (v) => { el.setAttribute('src', v); this.commit(); }, 'text', 'https://…')),
+        ...(isImg ? [this.row('Alt text', this.inp(el.getAttribute('alt') ?? '', (v) => { el.setAttribute('alt', v); this.commit(); })), up, file] : [])));
+    }
+    ins.appendChild(this.group('Text',
+      this.px(el, 'font-size', 'Size'),
+      this.select$(el, 'font-weight', 'Weight', ['400', '500', '600', '700', '800']),
+      this.select$(el, 'text-align', 'Align', ['left', 'center', 'right', 'justify']),
+      this.color(el, 'color', 'Color')));
+    ins.appendChild(this.group('Box',
+      this.color(el, 'background-color', 'Background'),
+      this.row('Gradient', this.inp(el.style.getPropertyValue('background-image'), (v) => this.setStyle(el, 'background-image', v), 'text', 'linear-gradient(…)')),
+      this.px(el, 'padding', 'Padding'), this.px(el, 'margin', 'Margin'),
+      this.px(el, 'border-radius', 'Radius'), this.px(el, 'width', 'Width'), this.px(el, 'max-width', 'Max width'),
+      this.row('Shadow', this.inp(el.style.getPropertyValue('box-shadow'), (v) => this.setStyle(el, 'box-shadow', v), 'text', '0 4px 20px rgba(0,0,0,.15)'))));
+    ins.appendChild(this.group('Layout',
+      this.select$(el, 'display', 'Display', ['block', 'flex', 'grid', 'inline-block', 'none']),
+      this.select$(el, 'flex-direction', 'Direction', ['row', 'column']),
+      this.select$(el, 'justify-content', 'Justify', ['flex-start', 'center', 'flex-end', 'space-between', 'space-around']),
+      this.select$(el, 'align-items', 'Align items', ['flex-start', 'center', 'flex-end', 'stretch']),
+      this.px(el, 'gap', 'Gap')));
+    ins.appendChild(this.group('Advanced',
+      this.row('ID', this.inp(el.id, (v) => { v ? el.id = v : el.removeAttribute('id'); this.commit(); })),
+      this.row('Class', this.inp(el.getAttribute('class') ?? '', (v) => { v ? el.setAttribute('class', v) : el.removeAttribute('class'); this.commit(); })),
+      this.area('Style (CSS)', el.getAttribute('style') ?? '', (v) => { v.trim() ? el.setAttribute('style', v) : el.removeAttribute('style'); this.commit(); this.renderInspector(); }, 4),
+      this.area('HTML', el.outerHTML.replace(/ data-gz-sel=""/, ''), (v) => this.replaceHtml(el, v), 6)));
+  }
+
+  private replaceHtml(el: HTMLElement, html: string): void {
+    const t = document.createElement('template'); t.innerHTML = html.trim();
+    const n = t.content.firstElementChild; if (!n) return;
+    const imp = this.doc.importNode(n, true) as HTMLElement;
+    el.replaceWith(imp); this.select(imp); this.commit();
+  }
+
+  private renderPage(): void {
+    const d = this.doc, ins = this.inspector;
+    const head = document.createElement('div'); head.className = 'wb-ins-head'; head.textContent = 'Page'; ins.appendChild(head);
+    const style = () => [...d.querySelectorAll('style')].find((s) => !s.hasAttribute('data-gz-editor'));
+    const script = () => [...d.querySelectorAll('script:not([src])')].pop();
+    ins.appendChild(this.group('Page',
+      this.row('Title', this.inp(d.title, (v) => { d.title = v; if (!d.querySelector('title')) { const t = d.createElement('title'); t.textContent = v; d.head.appendChild(t); } this.commit(); })),
+      this.color(d.body, 'background-color', 'Background'),
+      this.color(d.body, 'color', 'Text color'),
+      this.select$(d.body, 'font-family', 'Font', ['system-ui, sans-serif', 'Georgia, serif', '"Courier New", monospace', '"Trebuchet MS", sans-serif', 'Impact, sans-serif', 'Palatino, serif'])));
+    ins.appendChild(this.group('Page CSS',
+      this.area('Stylesheet', style()?.textContent ?? '', (v) => {
+        let s = style();
+        if (!s) { s = d.createElement('style'); d.head.appendChild(s); }
+        s.textContent = v; this.commit();
+      }, 9)));
+    ins.appendChild(this.group('Page JavaScript',
+      this.area('Runs in Preview', script()?.textContent ?? '', (v) => {
+        let s = script();
+        if (!v.trim()) { s?.remove(); this.commit(); return; }
+        if (!s) { s = d.createElement('script'); d.body.appendChild(s); }
+        s.textContent = v; this.commit();
+      }, 9)));
+    const tip = document.createElement('p'); tip.className = 'wb-tip';
+    tip.textContent = 'Click anything on the page to style it. Use the Code tab for full HTML, CSS and JS.';
+    ins.appendChild(tip);
+  }
+}

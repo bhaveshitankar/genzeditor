@@ -18,6 +18,9 @@ import type { SketchEditor } from '../editors/SketchEditor';
 import type { GameEditor } from '../editors/GameEditor';
 import type { FloorPlanEditor } from '../editors/FloorPlanEditor';
 import { WEB_TEMPLATES } from '../editors/webTemplates';
+import { SiteFrame } from '../editors/siteFrame';
+import { WebBuilder } from '../editors/web/WebBuilder';
+import { embedImage } from '../utils/embedImage';
 import { CommandPalette } from '../ui/CommandPalette';
 import { lineDiff } from '../diff/lineDiff';
 import { getMe, signOut, type MeState, deleteShare } from '../api/client';
@@ -90,6 +93,7 @@ export class AppShell {
   private currentFileId?: string;
   private currentFileKind?: string;
   private currentFileName?: string;
+  private webBuilder?: WebBuilder;
   private currentObjectUrl?: string;
   private saveTimer?: number;
   // Closure that performs the currently-scheduled save (text or image), so a
@@ -558,7 +562,7 @@ export class AppShell {
         meta: /\.html?$/i.test(this.currentFileName ?? '') ? { language: 'html', webpage: true } : { language: kind },
         getText: () => ed.getValue(),
         apply: (r: AiEditResult) => { if (r.text != null) ed.setValue(r.text); return 'updated'; },
-        onChanged: () => this.scheduleAutosave(),
+        onChanged: () => { this.scheduleAutosave(); this.webBuilder?.load(ed.getValue()); },
       };
     }
     if (this.currentDocKind === 'ImageEditor') {
@@ -1560,18 +1564,6 @@ export class AppShell {
     return null;
   }
 
-  /** Downscale + inline an image file as a data URI (≤1600px; keeps PNG/GIF/SVG types). */
-  static async embedImage(file: File): Promise<string> {
-    const read = () => new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => rej(r.error); r.readAsDataURL(file); });
-    if (/svg|gif/.test(file.type)) return read();
-    const bmp = await createImageBitmap(file);
-    const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
-    const cv = document.createElement('canvas');
-    cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
-    cv.getContext('2d')!.drawImage(bmp, 0, 0, cv.width, cv.height);
-    return cv.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.85);
-  }
-
   private async handleShare(wantRw = false) {
     if (!this.currentFileId) return;
 
@@ -2231,52 +2223,69 @@ export class AppShell {
         this.addPreviewToggle(toolbar);
       }
 
-      // Web page builder: live sandboxed preview + starter templates for .html files.
+      // Web page builder: visual Design canvas + Code + live Preview (runs the page's JS in an isolated frame).
       if (record.kind === 'code' && /\.html?$/i.test(record.name)) {
         const previewPane = document.createElement('div');
         previewPane.setAttribute('data-role', 'preview');
         previewPane.className = 'preview-pane';
-        const frame = document.createElement('iframe');
-        frame.setAttribute('sandbox', '');
-        frame.title = 'Page preview';
-        frame.style.background = '#fff';
-        previewPane.appendChild(frame);
         this.editorHost.appendChild(previewPane);
+        const site = new SiteFrame(previewPane);
+        previewPane.style.position = 'relative';
+        site.el.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;min-height:0;border:0;background:#fff';
         let t: number | undefined;
-        const refresh = () => { frame.srcdoc = editor.getValue(); };
-        refresh();
-        this.editorHost.addEventListener('input', () => { clearTimeout(t); t = window.setTimeout(refresh, 250); }, { signal });
+        const refreshPreview = () => { if (this.editorHost.dataset.view !== 'edit' && this.editorHost.dataset.view !== 'design') site.show(editor.getValue()); };
+        this.editorHost.addEventListener('input', () => { clearTimeout(t); t = window.setTimeout(refreshPreview, 300); }, { signal });
+        const builder = new WebBuilder(this.editorHost, {
+          getHtml: () => editor.getValue(),
+          setHtml: (h) => { editor.setValue(h); this.scheduleAutosave(); },
+        });
+        this.webBuilder = builder;
+        this.currentPreview = { render: () => refreshPreview(), destroy: () => { site.destroy(); builder.destroy(); } } as unknown as MermaidPreview;
+
         const tplSel = document.createElement('select');
         tplSel.setAttribute('aria-label', 'Page template');
         tplSel.innerHTML = '<option value="">Template…</option>' + WEB_TEMPLATES.map((w) => `<option value="${w.id}">${w.label}</option>`).join('');
         tplSel.addEventListener('change', () => {
           const w = WEB_TEMPLATES.find((x) => x.id === tplSel.value);
           tplSel.value = '';
-          if (w && confirm('Replace the current page with this template?')) { editor.setValue(w.html); refresh(); this.scheduleAutosave(); }
+          if (w && confirm('Replace the current page with this template?')) { editor.setValue(w.html); this.scheduleAutosave(); builder.load(w.html); refreshPreview(); }
         });
-        toolbar.appendChild(tplSel);
-        // Drop in an image: downscaled and embedded as a data URI so the page stays one portable file.
         const imgBtn = document.createElement('button');
         imgBtn.textContent = 'Image';
-        imgBtn.title = 'Insert an image into the page';
+        imgBtn.title = 'Insert an image at the cursor (Code view)';
         const picker = document.createElement('input');
         picker.type = 'file'; picker.accept = 'image/*'; picker.hidden = true;
         picker.addEventListener('change', async () => {
           const f = picker.files?.[0]; picker.value = '';
           if (!f) return;
           try {
-            const uri = await AppShell.embedImage(f);
+            const uri = await embedImage(f);
             editor.insertAtCursor(`<img src="${uri}" alt="${f.name.replace(/\.[^.]+$/, '').replace(/[<>"&]/g, '')}" style="max-width:100%">`);
-            refresh(); this.scheduleAutosave();
+            this.scheduleAutosave();
           } catch { this.toast('Could not read that image', 'error'); }
         });
-        imgBtn.addEventListener('click', () => picker.click());
+        imgBtn.addEventListener('click', () => { this.editorHost.dataset.view = this.editorHost.dataset.view === 'design' ? 'edit' : this.editorHost.dataset.view!; syncView(); picker.click(); });
         const pubBtn = document.createElement('button');
         pubBtn.textContent = 'Publish';
         pubBtn.title = 'Get a public link to this page';
         pubBtn.addEventListener('click', () => void this.handleShare(false));
-        toolbar.append(imgBtn, picker, pubBtn);
+        toolbar.append(tplSel, imgBtn, picker, pubBtn);
+
         this.addPreviewToggle(toolbar);
+        const seg = toolbar.querySelector('.view-toggle') as HTMLElement;
+        const designBtn = document.createElement('button');
+        designBtn.type = 'button'; designBtn.textContent = 'Design'; designBtn.dataset.view = 'design';
+        designBtn.addEventListener('click', () => { this.editorHost.dataset.view = 'design'; });
+        seg.insertBefore(designBtn, seg.firstChild);
+        const syncView = () => {
+          const v = this.editorHost.dataset.view;
+          seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String((b as HTMLElement).dataset.view === v)));
+          if (v === 'design') builder.load(editor.getValue());
+          else if (v !== 'edit') refreshPreview();
+        };
+        seg.addEventListener('click', () => syncView());
+        this.editorHost.dataset.view = 'design';
+        syncView();
       }
 
     } else if (editorType === 'image') {
@@ -2574,6 +2583,7 @@ export class AppShell {
       this.currentDoc = undefined;
       this.currentDocKind = undefined;
     }
+    this.webBuilder = undefined;
     if (this.currentPreview) {
       this.currentPreview.destroy();
       this.currentPreview = undefined;

@@ -1,0 +1,50 @@
+.wb { display: none; flex: 1; min-height: 0; width: 100%; flex-direction: column; background: var(--surface-2); color: var(--text); }
+[data-role="editor-host"][data-view="design"] .wb { display: flex; }
+[data-role="editor-host"][data-view="design"] .cm-editor { display: none !important; }
+[data-role="editor-host"][data-view="design"] .preview-pane,
+[data-role="editor-host"][data-view="design"] .pane-resizer { display: none !important; }
+.wb-top { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--surface); flex-wrap: wrap; }
+.wb-top button { padding: 4px 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px; cursor: pointer; font: inherit; }
+.wb-seg { display: inline-flex; gap: 2px; margin-right: 6px; }
+.wb-seg button[aria-pressed="true"] { background: var(--brand-500); color: var(--on-brand, #fff); border-color: var(--brand-500); }
+.wb-hint { margin-left: auto; font-size: 12px; color: var(--text-muted); }
+.wb-main { flex: 1; min-height: 0; display: grid; grid-template-columns: 168px minmax(0, 1fr) 248px; }
+.wb-palette, .wb-inspector { overflow: auto; background: var(--surface); padding: 8px; box-sizing: border-box; }
+.wb-palette { border-right: 1px solid var(--border); }
+.wb-inspector { border-left: 1px solid var(--border); font-size: 12px; }
+.wb-palette h4 { margin: 10px 4px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); }
+.wb-blocks { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.wb-block { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text); cursor: grab; font: inherit; font-size: 11px; }
+.wb-block:hover { border-color: var(--brand-500); }
+.wb-block-ico { font-size: 18px; line-height: 1.2; }
+.wb-stage { overflow: auto; position: relative; padding: 14px; box-sizing: border-box; }
+.wb-device { position: relative; margin: 0 auto; width: 100%; background: #fff; box-shadow: 0 2px 18px rgba(0,0,0,.18); transition: width .2s; }
+.wb-canvas { display: block; width: 100%; border: 0; background: #fff; }
+.wb-float { position: absolute; z-index: 5; display: flex; gap: 2px; padding: 2px; background: var(--brand-500); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+.wb-float[hidden], .wb-dropline[hidden] { display: none; }
+.wb-float button { width: 26px; height: 24px; border: 0; background: transparent; color: var(--on-brand, #fff); cursor: pointer; border-radius: 6px; font-size: 13px; padding: 0; }
+.wb-float button:hover { background: rgba(255,255,255,.25); }
+.wb-handle { cursor: grab !important; }
+.wb-dropline { position: absolute; z-index: 6; pointer-events: none; background: var(--brand-500); border-radius: 2px; }
+.wb-dropline[data-k="box"] { background: rgba(255, 77, 141, .18); outline: 2px dashed var(--brand-500); }
+.wb-ins-head { font-weight: 700; margin: 2px 2px 8px; font-family: ui-monospace, monospace; }
+.wb-group { border-top: 1px solid var(--border); padding: 6px 0; }
+.wb-group summary { cursor: pointer; font-weight: 700; padding: 2px; }
+.wb-field { display: grid; grid-template-columns: 78px 1fr; align-items: center; gap: 6px; margin: 5px 0; }
+.wb-field span { color: var(--text-muted); }
+.wb-field input[type="text"], .wb-field input:not([type]), .wb-field select, .wb-field textarea { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: var(--text); font: inherit; min-width: 0; }
+.wb-code { font-family: ui-monospace, monospace !important; font-size: 11px !important; resize: vertical; }
+.wb-field:has(textarea) { grid-template-columns: 1fr; }
+.wb-color { display: flex; gap: 4px; align-items: center; }
+.wb-color button { border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: 6px; cursor: pointer; }
+.wb-btn { width: 100%; padding: 6px; border: 1px dashed var(--brand-500); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; margin: 4px 0; }
+.wb-tip { color: var(--text-muted); font-size: 12px; }
+@media (max-width: 719px) {
+  .wb-main { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) minmax(0, 38%); }
+  .wb-palette { border-right: 0; border-bottom: 1px solid var(--border); display: flex; gap: 6px; overflow-x: auto; padding: 6px; }
+  .wb-palette h4 { display: none; }
+  .wb-blocks { display: flex; gap: 6px; }
+  .wb-block { min-width: 64px; }
+  .wb-inspector { border-left: 0; border-top: 1px solid var(--border); }
+  .wb-hint { display: none; }
+}
