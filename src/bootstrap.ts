@@ -15,6 +15,17 @@ export async function bootstrap(
   opts: { mobile?: boolean; chrome?: (api: ShellApi) => ShellChrome } = {},
 ): Promise<AppShell> {
   initTheme();
+  // A share link resolves + downloads over the network; until then the empty app
+  // (landing/empty state) would flash. Cover it with a loader right away.
+  const hasShare = typeof location !== 'undefined' && /(^#|&)(t|s)=/.test(location.hash);
+  let loader: HTMLElement | undefined;
+  if (hasShare) {
+    loader = document.createElement('div');
+    loader.className = 'share-loading';
+    loader.innerHTML = '<div class="share-loading-box"><div class="share-spinner"></div><p>Opening shared file…</p></div>';
+    document.body.appendChild(loader);
+  }
+  const hideLoader = () => { loader?.remove(); loader = undefined; };
   const adapter = new OpfsAdapter();
   const store = new FileStore(adapter);
   // Reclaim space from interrupted saves in the background (never blocks load).
@@ -28,7 +39,7 @@ export async function bootstrap(
   const openShared = async (): Promise<boolean> => {
     if (typeof location === 'undefined' || !location.hash) return false;
     try {
-      const shared = await openFromHash(location.hash, { askPassword: (retry) => askSharePassword(root, retry) });
+      const shared = await openFromHash(location.hash, { askPassword: (retry) => { hideLoader(); return askSharePassword(root, retry); } });
       if (shared) {
         closeViewer?.(); closeViewer = undefined;
         // Read-only links get a clean full-screen viewer; nothing is imported
@@ -116,7 +127,7 @@ export async function bootstrap(
     }
   };
 
-  const opened = await openShared();
+  const opened = await openShared().finally(hideLoader);
   if (!opened) {
     await shell.refreshLibrary();
     // No share link: reopen the file that was open before the refresh so work

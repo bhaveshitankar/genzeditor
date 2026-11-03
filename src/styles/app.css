@@ -3005,3 +3005,7 @@ button, input, select, a { transition-property: background-color, border-color, 
 .viewer-slide { width: 100%; height: auto; box-shadow: 0 2px 14px rgba(0,0,0,.18); border-radius: 6px; background: #fff; }
 .viewer-doc table { border-collapse: collapse; } .viewer-doc td, .viewer-doc th { border: 1px solid #ccc; padding: 4px 8px; }
 .viewer-sheet-name { margin: 14px 0 6px; }
+.share-loading { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; background: var(--bg, #fff); color: var(--text-muted, #666); }
+.share-loading-box { text-align: center; }
+.share-spinner { width: 34px; height: 34px; margin: 0 auto 12px; border-radius: 50%; border: 3px solid var(--border, #ddd); border-top-color: var(--brand-500, #ff4d8d); animation: share-spin .8s linear infinite; }
+@keyframes share-spin { to { transform: rotate(360deg); } }
