@@ -1,5 +1,7 @@
 import './webbuilder.css';
 import { BLOCKS, type Block } from './blocks';
+import { SNIPPETS } from './snippets';
+import { SiteFrame } from '../siteFrame';
 import { embedImage, embedMedia, MAX_EMBED_MEDIA } from '../../utils/embedImage';
 
 // Visual (Wix-style) designer for a single-file web page. The canvas is a
@@ -55,6 +57,9 @@ export class WebBuilder {
   private current = '';
   private ac = new AbortController();
   private ro?: ResizeObserver;
+  private live = false;
+  private liveFrame?: SiteFrame;
+  private codeList!: HTMLElement;
 
   constructor(host: HTMLElement, private opts: WebBuilderOpts) {
     this.root = document.createElement('div');
@@ -68,7 +73,8 @@ export class WebBuilder {
         </span>
         <button type="button" data-act="undo" title="Undo (Ctrl+Z)">↶</button>
         <button type="button" data-act="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
-        <button type="button" data-act="page" title="Page settings, CSS and JS">⚙ Page</button>
+        <button type="button" data-act="page" title="Page settings">⚙ Page</button>
+        <button type="button" data-act="live" aria-pressed="false" title="Run the page with its JavaScript (view only)">▶ Live</button>
         <span class="wb-hint">Click to select · double-click text to edit · drag blocks in</span>
       </div>
       <div class="wb-main">
@@ -81,6 +87,7 @@ export class WebBuilder {
     this.frame = q('.wb-canvas'); this.stage = q('.wb-stage'); this.device = q('.wb-device');
     this.float = q('.wb-float'); this.dropLine = q('.wb-dropline'); this.inspector = q('.wb-inspector');
     this.buildPalette(q('.wb-palette'));
+    this.buildCodePanel(q('.wb-palette'));
     const sig = { signal: this.ac.signal };
 
     this.root.querySelectorAll<HTMLButtonElement>('.wb-seg button').forEach((b) => b.addEventListener('click', () => {
@@ -90,7 +97,8 @@ export class WebBuilder {
     }, sig));
     q('[data-act="undo"]').addEventListener('click', () => this.undo(), sig);
     q('[data-act="redo"]').addEventListener('click', () => this.redo(), sig);
-    q('[data-act="page"]').addEventListener('click', () => this.select(this.doc.body), sig);
+    q('[data-act="page"]').addEventListener('click', () => { this.setLive(false); this.select(this.doc.body); }, sig);
+    q('[data-act="live"]').addEventListener('click', () => this.setLive(!this.live), sig);
     this.root.addEventListener('keydown', (e) => this.onKey(e), sig);
     this.stage.addEventListener('scroll', () => this.placeFloat(), sig);
     this.frame.addEventListener('load', () => this.onLoad(), sig);
@@ -99,7 +107,7 @@ export class WebBuilder {
     this.buildFloat();
   }
 
-  destroy(): void { this.ac.abort(); this.ro?.disconnect(); this.root.remove(); }
+  destroy(): void { this.ac.abort(); this.ro?.disconnect(); this.liveFrame?.destroy(); this.root.remove(); }
 
   /** (Re)load the designer from the page HTML (called on switch-to-Design and after AI/code edits). */
   load(html: string = this.opts.getHtml()): void {
@@ -144,7 +152,9 @@ export class WebBuilder {
     on('drop', (e) => this.onDrop(e));
     d.defaultView?.addEventListener('scroll', () => this.placeFloat(), { signal: this.ac.signal });
     this.fit();
+    this.renderCodeList();
     this.renderInspector();
+    if (this.live) this.liveFrame?.show(this.serialize());
     if (!this.undoStack.length) this.undoStack.push(this.serialize());
   }
 
@@ -174,7 +184,8 @@ export class WebBuilder {
     this.undoStack.push(html); if (this.undoStack.length > 100) this.undoStack.shift();
     this.redoStack = [];
     this.opts.setHtml(html);
-    this.fit(); this.placeFloat();
+    this.fit(); this.placeFloat(); this.renderCodeList();
+    if (this.live) this.liveFrame?.show(html);
   }
   private restore(html: string): void {
     this.current = ''; this.load(html); this.opts.setHtml(html);
@@ -250,7 +261,7 @@ export class WebBuilder {
   }
   private placeFloat(): void {
     const el = this.sel;
-    if (!el || el === this.doc?.body || !el.isConnected) { this.float.hidden = true; return; }
+    if (!el || el === this.doc?.body || !el.isConnected || SKIP.has(el.tagName)) { this.float.hidden = true; return; }
     const r = el.getBoundingClientRect();
     const top = r.top - 30 < 0 ? r.top + 4 : r.top - 30;
     this.float.style.top = `${top}px`;
@@ -299,6 +310,7 @@ export class WebBuilder {
   /** Click-to-add (touch friendly): after the selection, or at the end of the page. */
   private addBlock(b: Block): void {
     if (!this.doc) return;
+    this.setLive(false);
     const el = this.create(b);
     let ref = this.sel && this.sel !== this.doc.body ? this.sel : null;
     if (ref && b.section) while (ref.parentElement && ref.parentElement !== this.doc.body) ref = ref.parentElement;
@@ -407,6 +419,7 @@ export class WebBuilder {
     const el = this.sel;
     if (!this.doc) return;
     if (!el || el === this.doc.body) { this.renderPage(); return; }
+    if (el.tagName === 'STYLE' || el.tagName === 'SCRIPT') { this.renderCodeInspector(el); return; }
     const head = document.createElement('div'); head.className = 'wb-ins-head';
     head.textContent = `<${el.tagName.toLowerCase()}>` + (el.id ? `#${el.id}` : '');
     ins.appendChild(head);
@@ -480,6 +493,93 @@ export class WebBuilder {
       this.row('Class', this.inp(el.getAttribute('class') ?? '', (v) => { v ? el.setAttribute('class', v) : el.removeAttribute('class'); this.commit(); })),
       this.area('Style (CSS)', el.getAttribute('style') ?? '', (v) => { v.trim() ? el.setAttribute('style', v) : el.removeAttribute('style'); this.commit(); this.renderInspector(); }, 4),
       this.area('HTML', el.outerHTML.replace(/ data-gz-sel=""/, ''), (v) => this.replaceHtml(el, v), 6)));
+  }
+
+  // ---------- CSS / JS blocks ----------
+  private codeEls(): HTMLElement[] {
+    return [...this.doc.querySelectorAll<HTMLElement>('style,script')].filter((e) => !e.hasAttribute('data-gz-editor') && !(e as HTMLScriptElement).src);
+  }
+  private buildCodePanel(host: HTMLElement): void {
+    const h = document.createElement('h4'); h.textContent = 'Code & behaviors'; host.appendChild(h);
+    this.codeList = document.createElement('div'); this.codeList.className = 'wb-codelist'; host.appendChild(this.codeList);
+    const add = document.createElement('div'); add.className = 'wb-blocks';
+    const mk = (label: string, fn: () => void) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'wb-block'; b.textContent = label; b.addEventListener('click', fn); return b; };
+    add.append(mk('+ CSS', () => this.addCode('style')), mk('+ JS', () => this.addCode('script')));
+    host.appendChild(add);
+    const sel = document.createElement('select'); sel.className = 'wb-snippets'; sel.setAttribute('aria-label', 'Add a behavior');
+    sel.innerHTML = '<option value="">Add behavior…</option>' + SNIPPETS.map((x) => `<option value="${x.id}">${x.label}</option>`).join('');
+    sel.addEventListener('change', () => { const sn = SNIPPETS.find((x) => x.id === sel.value); sel.value = ''; if (sn) this.addSnippet(sn.id); });
+    host.appendChild(sel);
+  }
+  private addCode(kind: 'style' | 'script', text = ''): HTMLElement {
+    const el = this.doc.createElement(kind);
+    el.textContent = text || (kind === 'style' ? '/* your CSS */\n' : '// your JavaScript (runs in Live / Preview)\n');
+    (kind === 'style' ? this.doc.head : this.doc.body).appendChild(el);
+    this.select(el); this.commit();
+    return el;
+  }
+  private addSnippet(id: string): void {
+    if (!this.doc) return;
+    const sn = SNIPPETS.find((x) => x.id === id)!;
+    if (sn.html) { const t = document.createElement('template'); t.innerHTML = sn.html; this.doc.body.appendChild(this.doc.importNode(t.content.firstElementChild!, true)); }
+    if (sn.css) { const st = this.doc.createElement('style'); st.textContent = sn.css; this.doc.head.appendChild(st); }
+    let last: HTMLElement | null = null;
+    if (sn.js) { const sc = this.doc.createElement('script'); sc.textContent = sn.js; this.doc.body.appendChild(sc); last = sc; }
+    this.commit(); if (last) this.select(last);
+    this.codeTip = sn.tip; this.renderInspector();
+  }
+  private codeTip = '';
+  private renderCodeList(): void {
+    if (!this.codeList || !this.doc) return;
+    this.codeList.innerHTML = '';
+    let c = 0, j = 0;
+    for (const el of this.codeEls()) {
+      const isCss = el.tagName === 'STYLE';
+      const n = isCss ? ++c : ++j;
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'wb-codechip';
+      const off = el.hasAttribute('data-gz-off');
+      b.textContent = `${isCss ? '🎨 CSS' : '⚡ JS'} ${n} · ${(el.textContent ?? '').split('\n').length} lines${off ? ' · off' : ''}`;
+      b.setAttribute('aria-pressed', String(el === this.sel));
+      b.addEventListener('click', () => { this.setLive(false); this.select(el); });
+      this.codeList.appendChild(b);
+    }
+    if (!this.codeList.children.length) { const p = document.createElement('p'); p.className = 'wb-tip'; p.textContent = 'No custom CSS or JS yet.'; this.codeList.appendChild(p); }
+  }
+  private renderCodeInspector(el: HTMLElement): void {
+    const ins = this.inspector, isCss = el.tagName === 'STYLE';
+    const head = document.createElement('div'); head.className = 'wb-ins-head'; head.textContent = isCss ? 'CSS block' : 'JavaScript block'; ins.appendChild(head);
+    const on = document.createElement('input'); on.type = 'checkbox'; on.checked = !el.hasAttribute('data-gz-off');
+    on.addEventListener('change', () => {
+      if (on.checked) { el.removeAttribute('data-gz-off'); isCss ? el.removeAttribute('media') : el.setAttribute('type', el.getAttribute('data-gz-type') || ''); if (!isCss && !el.getAttribute('type')) el.removeAttribute('type'); el.removeAttribute('data-gz-type'); }
+      else { el.setAttribute('data-gz-off', ''); if (isCss) el.setAttribute('media', 'not all'); else { el.setAttribute('data-gz-type', el.getAttribute('type') ?? ''); el.setAttribute('type', 'text/plain'); } }
+      this.commit(); this.renderCodeList();
+    });
+    const ta = document.createElement('textarea'); ta.className = 'wb-code'; ta.spellcheck = false; ta.rows = 18; ta.value = el.textContent ?? '';
+    ta.addEventListener('change', () => { el.textContent = ta.value; this.commit(); this.renderCodeList(); });
+    const mv = (dir: -1 | 1) => { const sib = dir < 0 ? el.previousElementSibling : el.nextElementSibling; if (!sib) return; dir < 0 ? el.parentElement!.insertBefore(el, sib) : el.parentElement!.insertBefore(sib, el); this.commit(); this.renderCodeList(); };
+    const bar = document.createElement('div'); bar.className = 'wb-codebar';
+    for (const [l, f] of [['↑ Earlier', () => mv(-1)], ['↓ Later', () => mv(1)], ['🗑 Delete', () => { el.remove(); this.select(null); this.commit(); this.renderCodeList(); }]] as Array<[string, () => void]>) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'wb-btn'; b.textContent = l; b.addEventListener('click', f); bar.appendChild(b);
+    }
+    ins.append(this.group('Settings', this.row('Enabled', on)), this.group('Code', ta), bar);
+    const tip = document.createElement('p'); tip.className = 'wb-tip';
+    tip.textContent = (this.codeTip ? this.codeTip + ' ' : '') + (isCss ? 'CSS applies right here in Design.' : 'JavaScript runs in ▶ Live and Preview, not in the editing canvas.');
+    this.codeTip = ''; ins.appendChild(tip);
+    this.renderCodeList();
+  }
+
+  /** ▶ Live: run the page with its JS in the isolated frame (view only). */
+  private setLive(on: boolean): void {
+    if (on === this.live || !this.doc) return;
+    this.live = on;
+    this.root.querySelector('[data-act="live"]')?.setAttribute('aria-pressed', String(on));
+    this.root.classList.toggle('wb-live', on);
+    if (on) {
+      this.stopEdit(); this.select(null);
+      this.liveFrame = new SiteFrame(this.device, 'Live page');
+      this.liveFrame.el.className = 'wb-livepage';
+      this.liveFrame.show(this.serialize());
+    } else { this.liveFrame?.destroy(); this.liveFrame = undefined; }
   }
 
   private replaceHtml(el: HTMLElement, html: string): void {

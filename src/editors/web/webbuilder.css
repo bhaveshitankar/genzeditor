@@ -48,3 +48,14 @@
   .wb-inspector { border-left: 0; border-top: 1px solid var(--border); }
   .wb-hint { display: none; }
 }
+.wb-codelist { display: grid; gap: 4px; margin-bottom: 6px; }
+.wb-codechip { text-align: left; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text); cursor: pointer; font: inherit; font-size: 11px; }
+.wb-codechip[aria-pressed="true"] { border-color: var(--brand-500); background: color-mix(in srgb, var(--brand-500) 14%, var(--surface-2)); }
+.wb-snippets { width: 100%; margin-top: 6px; font-size: 11px; }
+.wb-codebar { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+.wb-codebar .wb-btn { margin: 4px 0; font-size: 11px; padding: 6px 2px; }
+.wb-top button[data-act="live"][aria-pressed="true"] { background: var(--brand-500); color: var(--on-brand, #fff); border-color: var(--brand-500); }
+.wb-livepage { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; z-index: 7; }
+.wb-live .wb-canvas { visibility: hidden; }
+.wb-live .wb-float, .wb-live .wb-dropline { display: none; }
+.wb-live .wb-device { min-height: calc(100vh - 220px); }
