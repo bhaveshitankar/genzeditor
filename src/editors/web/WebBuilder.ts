@@ -60,6 +60,8 @@ export class WebBuilder {
   private ac = new AbortController();
   private ro?: ResizeObserver;
   private live = false;
+  private setSheet: (n: string | null) => void = () => {};
+  private narrow = () => typeof matchMedia !== 'undefined' && matchMedia('(max-width: 719px)').matches;
   private liveFrame?: SiteFrame;
   private codeList!: HTMLElement;
 
@@ -68,6 +70,8 @@ export class WebBuilder {
     this.root.className = 'wb';
     this.root.innerHTML = `
       <div class="wb-top">
+        <button type="button" class="wb-narrow wb-sheetbtn" data-sheet="palette" aria-pressed="false">＋ Add</button>
+        <button type="button" class="wb-narrow wb-sheetbtn" data-sheet="inspector" aria-pressed="false">🎛 Style</button>
         <span class="wb-seg" role="group" aria-label="Preview width">
           <button type="button" data-w="desktop" aria-pressed="true" title="Desktop">🖥</button>
           <button type="button" data-w="tablet" aria-pressed="false" title="Tablet">▭</button>
@@ -80,14 +84,14 @@ export class WebBuilder {
         <span class="wb-hint">Click to select · double-click text to edit · drag blocks in</span>
       </div>
       <div class="wb-main">
-        <aside class="wb-palette" aria-label="Blocks"></aside>
+        <aside class="wb-palette" aria-label="Blocks"><div class="wb-sheet-head"><b>Add to page</b><button type="button" data-close>✕</button></div></aside>
         <div class="wb-stage"><div class="wb-device"><iframe class="wb-canvas" title="Page designer" sandbox="allow-same-origin"></iframe><div class="wb-selbox" hidden><span class="wb-dims"></span>${['nw','n','ne','e','se','s','sw','w'].map((h) => `<i data-h="${h}"></i>`).join('')}</div><div class="wb-float" hidden></div><div class="wb-dropline" hidden></div></div></div>
-        <aside class="wb-inspector" aria-label="Properties"></aside>
+        <aside class="wb-inspector" aria-label="Properties"><div class="wb-sheet-head"><b>Style</b><button type="button" data-close>✕</button></div><div class="wb-ins-body"></div></aside>
       </div>`;
     host.appendChild(this.root);
     const q = <T extends HTMLElement>(s: string) => this.root.querySelector(s) as T;
     this.frame = q('.wb-canvas'); this.stage = q('.wb-stage'); this.device = q('.wb-device');
-    this.float = q('.wb-float'); this.selBox = q('.wb-selbox'); this.dropLine = q('.wb-dropline'); this.inspector = q('.wb-inspector');
+    this.float = q('.wb-float'); this.selBox = q('.wb-selbox'); this.dropLine = q('.wb-dropline'); this.inspector = q('.wb-ins-body');
     this.buildPalette(q('.wb-palette'));
     this.buildCodePanel(q('.wb-palette'));
     const sig = { signal: this.ac.signal };
@@ -97,6 +101,13 @@ export class WebBuilder {
       this.root.querySelectorAll('.wb-seg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
       requestAnimationFrame(() => { this.fit(); this.placeFloat(); });
     }, sig));
+    const setSheet = (name: string | null) => {
+      this.root.dataset.sheet = name ?? '';
+      this.root.querySelectorAll('.wb-sheetbtn').forEach((b) => b.setAttribute('aria-pressed', String((b as HTMLElement).dataset.sheet === name)));
+    };
+    this.setSheet = setSheet;
+    this.root.querySelectorAll<HTMLElement>('.wb-sheetbtn').forEach((b) => b.addEventListener('click', () => setSheet(this.root.dataset.sheet === b.dataset.sheet ? null : b.dataset.sheet!), sig));
+    this.root.querySelectorAll<HTMLElement>('[data-close]').forEach((b) => b.addEventListener('click', () => setSheet(null), sig));
     q('[data-act="undo"]').addEventListener('click', () => this.undo(), sig);
     q('[data-act="redo"]').addEventListener('click', () => this.redo(), sig);
     q('[data-act="page"]').addEventListener('click', () => { this.setLive(false); this.select(this.doc.body); }, sig);
@@ -220,7 +231,8 @@ export class WebBuilder {
   /** The canvas is a real viewport (fixed height, scrolls inside) so vh units and
    *  100vh sections lay out exactly like they do in Live / the published page. */
   private fit(): void {
-    this.device.style.height = Math.max(320, this.stage.clientHeight - 28) + 'px';
+    const cs = getComputedStyle(this.stage);
+    this.device.style.height = Math.max(240, this.stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) + 'px';
   }
 
   // ---------- selection / hover / text edit ----------
@@ -398,7 +410,10 @@ export class WebBuilder {
     if (ref && b.section) while (ref.parentElement && ref.parentElement !== this.doc.body) ref = ref.parentElement;
     if (ref) ref.after(el); else this.doc.body.appendChild(el);
     this.select(el); this.commit();
-    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    if (this.narrow()) this.setSheet(null);
+    // Scroll only the canvas (scrollIntoView would also scroll the app around it).
+    const r = el.getBoundingClientRect(), win = this.doc.defaultView!;
+    if (r.top < 0 || r.bottom > win.innerHeight) win.scrollTo({ top: win.scrollY + r.top - 60, behavior: 'smooth' });
   }
   private endDrag(): void { this.drag = null; this.drop = null; this.dropLine.hidden = true; }
 
@@ -643,7 +658,7 @@ export class WebBuilder {
       const off = el.hasAttribute('data-gz-off');
       b.textContent = `${isCss ? '🎨 CSS' : '⚡ JS'} ${n} · ${(el.textContent ?? '').split('\n').length} lines${off ? ' · off' : ''}`;
       b.setAttribute('aria-pressed', String(el === this.sel));
-      b.addEventListener('click', () => { this.setLive(false); this.select(el); });
+      b.addEventListener('click', () => { this.setLive(false); this.select(el); if (this.narrow()) this.setSheet('inspector'); });
       this.codeList.appendChild(b);
     }
     if (!this.codeList.children.length) { const p = document.createElement('p'); p.className = 'wb-tip'; p.textContent = 'No custom CSS or JS yet.'; this.codeList.appendChild(p); }

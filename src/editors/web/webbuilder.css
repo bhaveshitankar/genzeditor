@@ -1,4 +1,4 @@
-.wb { display: none; flex: 1; min-height: 0; width: 100%; flex-direction: column; background: var(--surface-2); color: var(--text); }
+.wb { overflow: hidden; display: none; flex: 1; min-height: 0; width: 100%; flex-direction: column; background: var(--surface-2); color: var(--text); }
 [data-role="editor-host"][data-view="design"] .wb { display: flex; }
 [data-role="editor-host"][data-view="design"] .cm-editor { display: none !important; }
 [data-role="editor-host"][data-view="design"] .preview-pane,
@@ -8,7 +8,7 @@
 .wb-seg { display: inline-flex; gap: 2px; margin-right: 6px; }
 .wb-seg button[aria-pressed="true"] { background: var(--brand-500); color: var(--on-brand, #fff); border-color: var(--brand-500); }
 .wb-hint { margin-left: auto; font-size: 12px; color: var(--text-muted); }
-.wb-main { flex: 1; min-height: 0; display: grid; grid-template-columns: 168px minmax(0, 1fr) 248px; }
+.wb-main { overflow: hidden; flex: 1; min-height: 0; display: grid; grid-template-columns: 168px minmax(0, 1fr) 248px; }
 .wb-palette, .wb-inspector { overflow: auto; background: var(--surface); padding: 8px; box-sizing: border-box; }
 .wb-palette { border-right: 1px solid var(--border); }
 .wb-inspector { border-left: 1px solid var(--border); font-size: 12px; }
@@ -39,14 +39,6 @@
 .wb-color button { border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: 6px; cursor: pointer; }
 .wb-btn { width: 100%; padding: 6px; border: 1px dashed var(--brand-500); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; margin: 4px 0; }
 .wb-tip { color: var(--text-muted); font-size: 12px; }
-@media (max-width: 719px) {
-  .wb-main { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) minmax(0, 38%); }
-  .wb-palette { border-right: 0; border-bottom: 1px solid var(--border); display: flex; gap: 6px; overflow-x: auto; padding: 6px; }
-  .wb-palette h4 { display: none; }
-  .wb-blocks { display: flex; gap: 6px; }
-  .wb-block { min-width: 64px; }
-  .wb-inspector { border-left: 0; border-top: 1px solid var(--border); }
-  .wb-hint { display: none; }
 }
 .wb-codelist { display: grid; gap: 4px; margin-bottom: 6px; }
 .wb-codechip { text-align: left; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text); cursor: pointer; font: inherit; font-size: 11px; }
@@ -70,3 +62,34 @@
 .wb-float button { touch-action: none; }
 .wb-arrange { grid-template-columns: 1fr 1fr !important; }
 .wb-live .wb-selbox { display: none; }
+
+.wb-narrow, .wb-sheet-head { display: none; }
+.wb-sheet-head { align-items: center; justify-content: space-between; position: sticky; top: -8px; margin: -8px -8px 6px; padding: 8px 10px; background: var(--surface); border-bottom: 1px solid var(--border); z-index: 2; }
+.wb-sheet-head button { border: 0; background: transparent; color: var(--text); font-size: 18px; cursor: pointer; padding: 4px 8px; }
+@media (pointer: coarse) {
+  .wb-selbox i { width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 6px; }
+  .wb-float button { width: 34px; height: 32px; font-size: 16px; }
+}
+@media (max-width: 719px) {
+  /* Canvas gets the whole screen; Add / Style are bottom sheets, controls live in one bottom bar. */
+  .wb-top { order: 3; border-bottom: 0; border-top: 1px solid var(--border); flex-wrap: nowrap; overflow-x: auto; padding: 6px 8px; gap: 6px; scrollbar-width: none; }
+  .wb-top button { white-space: nowrap; padding: 8px 12px; flex: 0 0 auto; }
+  .wb-top .wb-seg, .wb-hint { display: none; }
+  .wb-narrow { display: inline-block; }
+  .wb-sheetbtn { font-weight: 700; }
+  .wb-sheetbtn[aria-pressed="true"] { background: var(--brand-500); color: var(--on-brand, #fff); border-color: var(--brand-500); }
+  .wb-main { display: block; position: relative; overflow: hidden; }
+  .wb-stage { position: absolute; inset: 0; padding: 0; }
+  .wb-device { box-shadow: none; }
+  .wb-palette, .wb-inspector { position: absolute; left: 0; right: 0; bottom: 0; z-index: 20; max-height: 48%; border: 0; border-top: 2px solid var(--brand-500); border-radius: 16px 16px 0 0; box-shadow: 0 -8px 30px rgba(0,0,0,.35); transform: translateY(110%); transition: transform .2s; display: block; padding: 8px; overflow: auto; }
+  .wb-root-open, .wb[data-sheet="palette"] .wb-palette, .wb[data-sheet="inspector"] .wb-inspector { transform: none; }
+  .wb-sheet-head { display: flex; }
+  .wb-blocks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .wb-block { min-width: 0; padding: 10px 2px; }
+  .wb-palette h4 { display: block; }
+  .wb-field { grid-template-columns: 88px 1fr; }
+  .wb-field input, .wb-field select, .wb-field textarea { font-size: 16px !important; padding: 8px !important; }
+}
+@media (max-width: 719px) {
+  .wb-design > :not(.view-toggle):not(.wb-keep) { display: none !important; }
+}

@@ -1,0 +1,26 @@
+import { test, expect } from '@playwright/test';
+test.use({ viewport: { width: 390, height: 780 }, hasTouch: true, isMobile: true });
+test('mobile builder: big canvas, sheets', async ({ page }) => {
+  await page.goto('/mobile.html'); await page.waitForTimeout(2000);
+  await page.evaluate(() => localStorage.setItem('gz-mobile-banner-dismissed', '1'));
+  await page.getByRole('button', { name: 'Open menu' }).click();
+  await page.getByRole('button', { name: 'New', exact: true }).first().click();
+  await page.locator('.new-file-type', { hasText: 'Web page' }).click();
+  await page.locator('.btn-confirm').click();
+  await page.waitForSelector('.wb-canvas');
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: '/tmp/wbtest/m1.png' });
+  const dump = async (t: string) => console.log(t, JSON.stringify(await page.evaluate(() => Object.fromEntries(['.wb','.wb-main','.wb-top','.wb-inspector','.wb-palette','.wb-stage','[data-role="editor-host"]'].map(q => { const e = document.querySelector(q) as HTMLElement | null; const r = e?.getBoundingClientRect(); return [q, r ? [Math.round(r.top), Math.round(r.bottom), Math.round(r.height)] : null]; })))));
+  await dump('closed');
+  await page.getByRole('button', { name: /Add/ }).click();
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: '/tmp/wbtest/m2.png' });
+  await page.locator('.wb-block', { hasText: 'Footer' }).tap();
+  await page.getByRole('button', { name: /Style/ }).tap();
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: '/tmp/wbtest/m3.png' });
+  await dump('inspector');
+  const h = (await page.locator('.wb-canvas').boundingBox())!.height;
+  console.log('canvas height', h);
+  expect(h).toBeGreaterThan(450);
+});

@@ -2269,6 +2269,7 @@ export class AppShell {
         pubBtn.textContent = 'Publish';
         pubBtn.title = 'Get a public link to this page';
         pubBtn.addEventListener('click', () => void this.handleShare(false));
+        pubBtn.classList.add('wb-keep');
         toolbar.append(tplSel, imgBtn, picker, pubBtn);
 
         this.addPreviewToggle(toolbar);
@@ -2280,6 +2281,7 @@ export class AppShell {
         const syncView = () => {
           const v = this.editorHost.dataset.view;
           seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String((b as HTMLElement).dataset.view === v)));
+          toolbar.classList.toggle('wb-design', v === 'design');
           if (v === 'design') builder.load(editor.getValue());
           else if (v !== 'edit') refreshPreview();
         };
