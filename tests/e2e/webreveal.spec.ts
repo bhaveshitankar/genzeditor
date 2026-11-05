@@ -1,0 +1,23 @@
+import { test, expect } from '@playwright/test';
+test('design canvas reveals JS-hidden sections and keeps them on save', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/?desktop=1'); await page.waitForTimeout(1500);
+  await page.getByRole('button', { name: /new/i }).first().click().catch(() => {});
+  await page.getByRole('option', { name: /web page/i }).click();
+  await page.locator('.btn-confirm').click();
+  await page.waitForSelector('.wb-canvas');
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Meta+a'); await page.keyboard.press('Control+a');
+  await page.keyboard.insertText('<!DOCTYPE html><html><head><style>.r{opacity:0;transform:translateY(40px);transition:all 1s}</style></head><body><h1 class="r" id="x">Hidden hero</h1></body></html>');
+  await page.getByRole('button', { name: 'Design', exact: true }).click();
+  const f = page.frameLocator('.wb-canvas');
+  await expect(f.locator('#x')).toHaveCSS('opacity', '1');
+  await f.locator('#x').click();
+  await page.locator('.wb-field:has-text("Size") input').first().fill('40');
+  await page.locator('.wb-field:has-text("Size") input').first().dispatchEvent('change');
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const code = await page.locator('.cm-content').innerText();
+  expect(code).toContain('font-size: 40px');
+  expect(code).not.toContain('data-gz');
+});

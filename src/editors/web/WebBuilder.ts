@@ -11,7 +11,9 @@ import { embedImage, embedMedia, MAX_EMBED_MEDIA } from '../../utils/embedImage'
 const EDITOR_CSS = `[data-gz-hover]{outline:1px dashed #ff4d8d!important;outline-offset:-1px}
 [data-gz-sel]{outline:2px solid #ff4d8d!important;outline-offset:-2px}
 [contenteditable="true"]{outline:2px solid #4d6bff!important;cursor:text}
-html,body{height:auto}`;
+html,body{height:auto}
+*,*::before,*::after{animation:none!important;transition:none!important}
+[data-gz-reveal]{opacity:1!important;transform:none!important;filter:none!important;visibility:visible!important}`;
 const SKIP = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'TITLE', 'BASE']);
 const INLINE = new Set(['SPAN', 'A', 'STRONG', 'EM', 'B', 'I', 'U', 'SMALL', 'LABEL', 'CODE', 'BR', 'SUB', 'SUP']);
 const NO_TEXT = new Set(['IMG', 'IFRAME', 'HR', 'INPUT', 'VIDEO', 'AUDIO', 'TEXTAREA', 'SELECT', 'BODY']);
@@ -113,6 +115,14 @@ export class WebBuilder {
     this.doc = d;
     const st = d.createElement('style'); st.setAttribute('data-gz-editor', ''); st.textContent = EDITOR_CSS;
     d.head.appendChild(st);
+    // Pages often start sections hidden (opacity:0) and reveal them with JS/scroll
+    // animations. Scripts don't run in the designer, so reveal them for editing.
+    const win = d.defaultView!;
+    d.body.querySelectorAll<HTMLElement>('*').forEach((el) => {
+      if (SKIP.has(el.tagName)) return;
+      const cs = win.getComputedStyle(el);
+      if (cs.display !== 'none' && (cs.opacity === '0' || cs.visibility === 'hidden')) el.setAttribute('data-gz-reveal', '');
+    });
     const on = <K extends keyof DocumentEventMap>(t: K, f: (e: DocumentEventMap[K]) => void, cap = false) =>
       d.addEventListener(t, f as EventListener, { capture: cap, signal: this.ac.signal });
     on('mouseover', (e) => this.setHover(this.pick(e.target)));
@@ -148,7 +158,7 @@ export class WebBuilder {
   private serialize(): string {
     const root = this.doc.documentElement.cloneNode(true) as HTMLElement;
     root.querySelectorAll('[data-gz-editor]').forEach((n) => n.remove());
-    for (const a of ['data-gz-sel', 'data-gz-hover', 'data-gz-edit']) root.querySelectorAll(`[${a}]`).forEach((n) => n.removeAttribute(a));
+    for (const a of ['data-gz-sel', 'data-gz-hover', 'data-gz-edit', 'data-gz-reveal']) root.querySelectorAll(`[${a}]`).forEach((n) => n.removeAttribute(a));
     root.querySelectorAll('[data-gz-ce]').forEach((n) => { n.removeAttribute('contenteditable'); n.removeAttribute('data-gz-ce'); });
     return '<!DOCTYPE html>\n' + root.outerHTML + '\n';
   }

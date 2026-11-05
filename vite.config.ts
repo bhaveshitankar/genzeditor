@@ -17,7 +17,7 @@ const CACHE_VERSION = `gz-static-${Date.now()}`;
 // suite) exercises the same policy the sandboxed mermaid frame runs under.
 const DEPLOYED_CSP =
   "default-src 'self'; img-src 'self' data: blob: https:; script-src 'self' blob: 'wasm-unsafe-eval' 'unsafe-eval' https://cdn.jsdelivr.net https://esm.sh https://challenges.cloudflare.com https://static.cloudflareinsights.com; " +
-  "style-src 'self' 'unsafe-inline'; media-src 'self' blob: data: https:; font-src 'self' data:; frame-src 'self' blob: https://challenges.cloudflare.com; worker-src 'self' blob:; " +
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; media-src 'self' blob: data: https:; font-src 'self' data: https://fonts.gstatic.com; frame-src 'self' blob: https://challenges.cloudflare.com; worker-src 'self' blob:; " +
   "connect-src 'self' blob: https://api.genzeditor.com wss://api.genzeditor.com https://anyedits-api.skillmesh.workers.dev wss://anyedits-api.skillmesh.workers.dev https://s3.filebase.io https://cdn.jsdelivr.net https://esm.sh https://staticimgly.com https://huggingface.co https://*.huggingface.co https://*.hf.co https://challenges.cloudflare.com https://static.cloudflareinsights.com; " +
   "object-src 'none'; base-uri 'none'";
 
