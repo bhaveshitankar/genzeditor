@@ -1,0 +1,20 @@
+import { test, expect } from '@playwright/test';
+test('design canvas is a real viewport: 100vh sections match canvas height', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/?desktop=1'); await page.waitForTimeout(1500);
+  await page.getByRole('button', { name: /new/i }).first().click().catch(() => {});
+  await page.getByRole('option', { name: /web page/i }).click();
+  await page.locator('.btn-confirm').click();
+  await page.waitForSelector('.wb-canvas');
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Meta+a'); await page.keyboard.press('Control+a');
+  await page.keyboard.insertText('<!DOCTYPE html><html><body style="margin:0"><section id="a" style="min-height:100vh;background:#fcc">A</section><section id="b" style="min-height:100vh;background:#cfc">B</section></body></html>');
+  await page.getByRole('button', { name: 'Design', exact: true }).click();
+  const f = page.frameLocator('.wb-canvas');
+  await expect(f.locator('#a')).toBeVisible();
+  const canvasH = (await page.locator('.wb-canvas').boundingBox())!.height;
+  const aH = (await f.locator('#a').boundingBox())!.height;
+  console.log({ canvasH, aH });
+  expect(Math.abs(canvasH - aH)).toBeLessThan(2);
+});

@@ -17,9 +17,9 @@
 .wb-block { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text); cursor: grab; font: inherit; font-size: 11px; }
 .wb-block:hover { border-color: var(--brand-500); }
 .wb-block-ico { font-size: 18px; line-height: 1.2; }
-.wb-stage { overflow: auto; position: relative; padding: 14px; box-sizing: border-box; }
+.wb-stage { overflow: hidden; position: relative; padding: 14px; box-sizing: border-box; }
 .wb-device { position: relative; margin: 0 auto; width: 100%; background: #fff; box-shadow: 0 2px 18px rgba(0,0,0,.18); transition: width .2s; }
-.wb-canvas { display: block; width: 100%; border: 0; background: #fff; }
+.wb-canvas { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
 .wb-float { position: absolute; z-index: 5; display: flex; gap: 2px; padding: 2px; background: var(--brand-500); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
 .wb-float[hidden], .wb-dropline[hidden] { display: none; }
 .wb-float button { width: 26px; height: 24px; border: 0; background: transparent; color: var(--on-brand, #fff); cursor: pointer; border-radius: 6px; font-size: 13px; padding: 0; }
@@ -58,4 +58,3 @@
 .wb-livepage { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; z-index: 7; }
 .wb-live .wb-canvas { visibility: hidden; }
 .wb-live .wb-float, .wb-live .wb-dropline { display: none; }
-.wb-live .wb-device { min-height: calc(100vh - 220px); }

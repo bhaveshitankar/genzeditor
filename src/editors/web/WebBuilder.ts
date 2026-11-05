@@ -204,11 +204,10 @@ export class WebBuilder {
     else if (e.key === 'Escape') this.select(null);
   }
 
-  /** Make the iframe as tall as its content so the stage (not the frame) scrolls. */
+  /** The canvas is a real viewport (fixed height, scrolls inside) so vh units and
+   *  100vh sections lay out exactly like they do in Live / the published page. */
   private fit(): void {
-    if (!this.doc) return;
-    this.frame.style.height = this.stage.clientHeight + 'px';
-    this.frame.style.height = Math.max(this.doc.documentElement.scrollHeight, this.stage.clientHeight) + 'px';
+    this.device.style.height = Math.max(320, this.stage.clientHeight - 28) + 'px';
   }
 
   // ---------- selection / hover / text edit ----------
