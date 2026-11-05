@@ -1,6 +1,6 @@
 import './webbuilder.css';
 import { BLOCKS, type Block } from './blocks';
-import { embedImage } from '../../utils/embedImage';
+import { embedImage, embedMedia, MAX_EMBED_MEDIA } from '../../utils/embedImage';
 
 // Visual (Wix-style) designer for a single-file web page. The canvas is a
 // same-origin, script-less iframe: we edit its DOM directly (select, inline text
@@ -418,6 +418,35 @@ export class WebBuilder {
       ins.appendChild(this.group(isImg ? 'Image' : 'Embed',
         this.row('Source', this.inp(el.getAttribute('src') ?? '', (v) => { el.setAttribute('src', v); this.commit(); }, 'text', 'https://…')),
         ...(isImg ? [this.row('Alt text', this.inp(el.getAttribute('alt') ?? '', (v) => { el.setAttribute('alt', v); this.commit(); })), up, file] : [])));
+    }
+    if (el.tagName === 'VIDEO' || el.tagName === 'AUDIO') {
+      const isVideo = el.tagName === 'VIDEO';
+      const file = document.createElement('input'); file.type = 'file'; file.accept = isVideo ? 'video/*' : 'audio/*'; file.hidden = true;
+      const up = document.createElement('button'); up.type = 'button'; up.className = 'wb-btn';
+      up.textContent = `⬆ Upload ${isVideo ? 'video' : 'audio'} (max ${MAX_EMBED_MEDIA / 1048576} MB)`;
+      const note = document.createElement('p'); note.className = 'wb-tip';
+      up.addEventListener('click', () => file.click());
+      file.addEventListener('change', async () => {
+        const f = file.files?.[0]; if (!f) return;
+        note.textContent = 'Embedding…';
+        try { el.setAttribute('src', await embedMedia(f)); this.commit(); this.renderInspector(); }
+        catch (err) { note.textContent = err instanceof Error && err.message === 'too_large' ? `That file is over ${MAX_EMBED_MEDIA / 1048576} MB — host it somewhere and paste the link instead.` : 'Could not read that file.'; }
+      });
+      const flag = (attr: string, label: string) => {
+        const c = document.createElement('input'); c.type = 'checkbox'; c.checked = el.hasAttribute(attr);
+        c.addEventListener('change', () => {
+          if (c.checked) el.setAttribute(attr, ''); else el.removeAttribute(attr);
+          if (attr === 'autoplay' && c.checked) el.setAttribute('muted', '');
+          this.commit();
+        });
+        return this.row(label, c);
+      };
+      const src = el.getAttribute('src') ?? '';
+      ins.appendChild(this.group(isVideo ? 'Video' : 'Audio',
+        this.row('Link', this.inp(src.startsWith('data:') ? '(embedded file)' : src, (v) => { if (v && !v.startsWith('(')) { el.setAttribute('src', v); this.commit(); } }, 'text', 'https://…/file.' + (isVideo ? 'mp4' : 'mp3'))),
+        up, file, note,
+        ...(isVideo ? [this.row('Poster', this.inp(el.getAttribute('poster') ?? '', (v) => { v ? el.setAttribute('poster', v) : el.removeAttribute('poster'); this.commit(); }, 'text', 'https://…/cover.jpg'))] : []),
+        flag('controls', 'Controls'), flag('loop', 'Loop'), flag('muted', 'Muted'), flag('autoplay', 'Autoplay')));
     }
     ins.appendChild(this.group('Text',
       this.px(el, 'font-size', 'Size'),

@@ -33,7 +33,9 @@ export const BLOCKS: Block[] = [
   { id: 'divider', label: 'Divider', icon: '—', group: 'Basics', section: false, html: `<hr style="border:0;border-top:1px solid #ddd;margin:24px 0">` },
   { id: 'spacer', label: 'Spacer', icon: '↕', group: 'Basics', section: false, html: `<div style="height:48px"></div>` },
   { id: 'image', label: 'Image', icon: '🏞', group: 'Media', section: false, html: `<img src="${IMG}" alt="Image" style="max-width:100%;border-radius:12px">` },
-  { id: 'video', label: 'Video embed', icon: '▶️', group: 'Media', section: false, html: `<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" title="Video" allowfullscreen style="width:100%;aspect-ratio:16/9;border:0;border-radius:12px"></iframe>` },
+  { id: 'videofile', label: 'Video', icon: '🎬', group: 'Media', section: false, html: `<video controls playsinline preload="metadata" style="width:100%;max-width:100%;border-radius:12px;background:#000;aspect-ratio:16/9"></video>` },
+  { id: 'audio', label: 'Audio', icon: '🎵', group: 'Media', section: false, html: `<audio controls preload="metadata" style="width:100%"></audio>` },
+  { id: 'video', label: 'YouTube / embed', icon: '▶️', group: 'Media', section: false, html: `<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" title="Video" allowfullscreen style="width:100%;aspect-ratio:16/9;border:0;border-radius:12px"></iframe>` },
   { id: 'cols2', label: '2 columns', icon: '◧', group: 'Layout', section: false, html:
 `<div style="display:flex;flex-wrap:wrap;gap:24px;padding:16px 0"><div style="flex:1 1 280px"><h3>Left</h3><p>Content goes here.</p></div><div style="flex:1 1 280px"><h3>Right</h3><p>Content goes here.</p></div></div>` },
   { id: 'cols3', label: '3 columns', icon: '▥', group: 'Layout', section: false, html:

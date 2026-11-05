@@ -1,0 +1,21 @@
+import { test, expect } from '@playwright/test';
+test('web builder: video + audio blocks, upload embeds', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/?desktop=1'); await page.waitForTimeout(1500);
+  await page.getByRole('button', { name: /new/i }).first().click().catch(() => {});
+  await page.getByRole('option', { name: /web page/i }).click();
+  await page.locator('.btn-confirm').click();
+  await page.waitForSelector('.wb-canvas');
+  await page.locator('.wb-block', { hasText: 'Video' }).first().click();
+  await page.locator('.wb-block', { hasText: 'Audio' }).click();
+  const frame = page.frameLocator('.wb-canvas');
+  await expect(frame.locator('video')).toHaveCount(1);
+  await frame.locator('audio').click({ force: true });
+  await page.locator('.wb-ins-head', { hasText: 'audio' }).waitFor();
+  await page.locator('.wb-inspector input[type="file"]').setInputFiles({ name: 'a.mp3', mimeType: 'audio/mpeg', buffer: Buffer.from('ID3fake') });
+  await page.waitForTimeout(500);
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const code = await page.locator('.cm-content').innerText();
+  expect(code).toContain('<video');
+  expect(code).toContain('data:audio/mpeg');
+});

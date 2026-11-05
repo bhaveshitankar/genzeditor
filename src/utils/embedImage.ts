@@ -9,3 +9,10 @@ export async function embedImage(file: File): Promise<string> {
   cv.getContext('2d')!.drawImage(bmp, 0, 0, cv.width, cv.height);
   return cv.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.85);
 }
+
+export const MAX_EMBED_MEDIA = 10 * 1024 * 1024;
+/** Inline an audio/video file as a data URI so the page stays one portable file (≤10 MB). */
+export function embedMedia(file: File): Promise<string> {
+  if (file.size > MAX_EMBED_MEDIA) return Promise.reject(new Error('too_large'));
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => rej(r.error); r.readAsDataURL(file); });
+}
