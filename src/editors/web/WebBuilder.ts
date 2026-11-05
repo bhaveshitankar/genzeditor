@@ -15,6 +15,7 @@ const EDITOR_CSS = `[data-gz-hover]{outline:1px dashed #ff4d8d!important;outline
 [contenteditable="true"]{outline:2px solid #4d6bff!important;cursor:text}
 html,body{height:auto}
 *,*::before,*::after{animation:none!important;transition:none!important}
+iframe,video,audio,embed,object{pointer-events:none!important}
 [data-gz-reveal]{opacity:1!important;transform:none!important;filter:none!important;visibility:visible!important}`;
 const SKIP = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'TITLE', 'BASE']);
 const INLINE = new Set(['SPAN', 'A', 'STRONG', 'EM', 'B', 'I', 'U', 'SMALL', 'LABEL', 'CODE', 'BR', 'SUB', 'SUP']);
@@ -44,6 +45,7 @@ export class WebBuilder {
   private stage!: HTMLElement;
   private device!: HTMLElement;
   private float!: HTMLElement;
+  private selBox!: HTMLElement;
   private dropLine!: HTMLElement;
   private inspector!: HTMLElement;
   private doc!: Document;
@@ -79,13 +81,13 @@ export class WebBuilder {
       </div>
       <div class="wb-main">
         <aside class="wb-palette" aria-label="Blocks"></aside>
-        <div class="wb-stage"><div class="wb-device"><iframe class="wb-canvas" title="Page designer" sandbox="allow-same-origin"></iframe><div class="wb-float" hidden></div><div class="wb-dropline" hidden></div></div></div>
+        <div class="wb-stage"><div class="wb-device"><iframe class="wb-canvas" title="Page designer" sandbox="allow-same-origin"></iframe><div class="wb-selbox" hidden><span class="wb-dims"></span>${['nw','n','ne','e','se','s','sw','w'].map((h) => `<i data-h="${h}"></i>`).join('')}</div><div class="wb-float" hidden></div><div class="wb-dropline" hidden></div></div></div>
         <aside class="wb-inspector" aria-label="Properties"></aside>
       </div>`;
     host.appendChild(this.root);
     const q = <T extends HTMLElement>(s: string) => this.root.querySelector(s) as T;
     this.frame = q('.wb-canvas'); this.stage = q('.wb-stage'); this.device = q('.wb-device');
-    this.float = q('.wb-float'); this.dropLine = q('.wb-dropline'); this.inspector = q('.wb-inspector');
+    this.float = q('.wb-float'); this.selBox = q('.wb-selbox'); this.dropLine = q('.wb-dropline'); this.inspector = q('.wb-inspector');
     this.buildPalette(q('.wb-palette'));
     this.buildCodePanel(q('.wb-palette'));
     const sig = { signal: this.ac.signal };
@@ -105,6 +107,7 @@ export class WebBuilder {
     this.ro = new ResizeObserver(() => { this.fit(); this.placeFloat(); });
     this.ro.observe(this.stage);
     this.buildFloat();
+    this.selBox.querySelectorAll<HTMLElement>('i').forEach((h) => h.addEventListener('pointerdown', (e) => this.startResize(h.dataset.h!, e), sig));
   }
 
   destroy(): void { this.ac.abort(); this.ro?.disconnect(); this.liveFrame?.destroy(); this.root.remove(); }
@@ -133,14 +136,15 @@ export class WebBuilder {
     });
     const on = <K extends keyof DocumentEventMap>(t: K, f: (e: DocumentEventMap[K]) => void, cap = false) =>
       d.addEventListener(t, f as EventListener, { capture: cap, signal: this.ac.signal });
-    on('mouseover', (e) => this.setHover(this.pick(e.target)));
+    on('mouseover', (e) => this.setHover(this.pick(e.target, e.clientX, e.clientY)));
+    on('mousemove', (e) => { const sp = this.special(e.clientX, e.clientY); if (sp) this.setHover(sp); });
     on('mouseleave', () => this.setHover(null));
     on('click', (e) => {
       if (this.editing && this.editing.contains(e.target as Node)) return;
       e.preventDefault(); this.stopEdit();
-      this.select(this.pick(e.target));
+      this.select(this.pick(e.target, e.clientX, e.clientY));
     }, true);
-    on('dblclick', (e) => { const el = this.pick(e.target); if (el) this.startEdit(el); });
+    on('dblclick', (e) => { const el = this.pick(e.target, e.clientX, e.clientY); if (el) this.startEdit(el); });
     on('keydown', (e) => this.onKey(e as KeyboardEvent));
     on('input', () => { if (this.editing) this.commitSoon(); });
     on('paste', (e) => {
@@ -158,7 +162,16 @@ export class WebBuilder {
     if (!this.undoStack.length) this.undoStack.push(this.serialize());
   }
 
-  private pick(t: EventTarget | null): HTMLElement | null {
+  /** Embeds/media swallow clicks, so they're click-through in the designer and hit-tested by rect. */
+  private special(x?: number, y?: number): HTMLElement | null {
+    if (x == null || y == null) return null;
+    const hits = [...this.doc.querySelectorAll<HTMLElement>('iframe,video,audio,embed,object')].filter((e) => {
+      const r = e.getBoundingClientRect(); return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom && r.width > 0;
+    });
+    return hits.length ? hits[hits.length - 1]! : null;
+  }
+  private pick(t: EventTarget | null, x?: number, y?: number): HTMLElement | null {
+    const sp = this.special(x, y); if (sp) return sp;
     let el = t as HTMLElement | null;
     if (!el || el.nodeType !== 1) el = (t as Node | null)?.parentElement ?? null;
     if (!el || el === this.doc.documentElement || SKIP.has(el.tagName)) return this.doc.body;
@@ -256,17 +269,87 @@ export class WebBuilder {
       mk('↑', 'Move up', () => this.nudge(-1)), mk('↓', 'Move down', () => this.nudge(1)),
       mk('⬆', 'Select parent', () => { const p = this.sel?.parentElement; if (p) this.select(p); }),
       mk('⧉', 'Duplicate', () => this.duplicate()), mk('🗑', 'Delete', () => this.remove()),
+      mk('⤒', 'Bring to front', () => this.arrange('front')), mk('⤓', 'Send to back', () => this.arrange('back')),
     );
+    const mv = document.createElement('button'); mv.type = 'button'; mv.textContent = '✥'; mv.title = 'Drag to place anywhere (free move)'; mv.classList.add('wb-handle');
+    mv.addEventListener('pointerdown', (e) => this.startMove(e));
+    this.float.insertBefore(mv, this.float.children[1] ?? null);
   }
   private placeFloat(): void {
     const el = this.sel;
-    if (!el || el === this.doc?.body || !el.isConnected || SKIP.has(el.tagName)) { this.float.hidden = true; return; }
+    if (!el || el === this.doc?.body || !el.isConnected || SKIP.has(el.tagName)) { this.float.hidden = true; this.selBox.hidden = true; return; }
     const r = el.getBoundingClientRect();
     const top = r.top - 30 < 0 ? r.top + 4 : r.top - 30;
     this.float.style.top = `${top}px`;
-    this.float.style.left = `${Math.max(4, Math.min(r.left, this.device.clientWidth - 200))}px`;
+    this.float.style.left = `${Math.max(4, Math.min(r.left, this.device.clientWidth - 290))}px`;
     this.float.hidden = false;
+    const sb = this.selBox.style;
+    sb.left = `${r.left}px`; sb.top = `${r.top}px`; sb.width = `${r.width}px`; sb.height = `${r.height}px`;
+    this.selBox.hidden = false;
+    (this.selBox.firstElementChild as HTMLElement).textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
   }
+
+  // ---------- free resize / free move / stacking ----------
+  private drag2(e: PointerEvent, onMove: (dx: number, dy: number, ev: PointerEvent) => void): void {
+    e.preventDefault(); e.stopPropagation();
+    const t = e.currentTarget as HTMLElement, x0 = e.clientX, y0 = e.clientY;
+    t.setPointerCapture(e.pointerId);
+    const mv = (ev: PointerEvent) => { onMove(ev.clientX - x0, ev.clientY - y0, ev); this.placeFloat(); };
+    const up = () => { t.removeEventListener('pointermove', mv); t.removeEventListener('pointerup', up); t.removeEventListener('pointercancel', up); this.commit(); this.renderInspector(); this.placeFloat(); };
+    t.addEventListener('pointermove', mv); t.addEventListener('pointerup', up); t.addEventListener('pointercancel', up);
+  }
+  private ensureOffsetable(el: HTMLElement): void {
+    if (this.css(el, 'position') === 'static') el.style.position = 'relative';
+  }
+  private startResize(h: string, e: PointerEvent): void {
+    const el = this.sel; if (!el || el === this.doc.body) return;
+    this.ensureOffsetable(el);
+    const cs = this.doc.defaultView!.getComputedStyle(el);
+    const r0 = el.getBoundingClientRect(), l0 = parseFloat(cs.left) || 0, t0 = parseFloat(cs.top) || 0;
+    const ratio = r0.width / (r0.height || 1);
+    const media = el.tagName === 'IMG' || el.tagName === 'VIDEO';
+    el.style.boxSizing = 'border-box';
+    this.drag2(e, (dx, dy, ev) => {
+      let w = r0.width, hh = r0.height;
+      if (h.includes('e')) w = r0.width + dx;
+      if (h.includes('w')) w = r0.width - dx;
+      if (h.includes('s')) hh = r0.height + dy;
+      if (h.includes('n')) hh = r0.height - dy;
+      w = Math.max(8, w); hh = Math.max(8, hh);
+      if ((media || ev.shiftKey) && h.length === 2) hh = w / ratio;
+      else if (media || ev.shiftKey) { if (h === 'n' || h === 's') w = hh * ratio; else hh = w / ratio; }
+      if (h.includes('e') || h.includes('w')) el.style.width = `${Math.round(w)}px`;
+      if (h.includes('s') || h.includes('n') || ((media || ev.shiftKey) && h.length === 2)) el.style.height = `${Math.round(hh)}px`;
+      if (media && (h === 'e' || h === 'w')) el.style.height = `${Math.round(hh)}px`;
+      if (h.includes('w')) el.style.left = `${Math.round(l0 + (r0.width - w))}px`;
+      if (h.includes('n')) el.style.top = `${Math.round(t0 + (r0.height - hh))}px`;
+    });
+  }
+  private startMove(e: PointerEvent): void {
+    const el = this.sel; if (!el || el === this.doc.body) return;
+    this.ensureOffsetable(el);
+    const cs = this.doc.defaultView!.getComputedStyle(el);
+    const l0 = parseFloat(cs.left) || 0, t0 = parseFloat(cs.top) || 0;
+    this.drag2(e, (dx, dy) => { el.style.left = `${Math.round(l0 + dx)}px`; el.style.top = `${Math.round(t0 + dy)}px`; });
+  }
+  private zValues(): number[] {
+    const w = this.doc.defaultView!;
+    return [...this.doc.body.querySelectorAll<HTMLElement>('*')].map((e) => parseInt(w.getComputedStyle(e).zIndex, 10)).filter((n) => Number.isFinite(n));
+  }
+  private setZ(el: HTMLElement, z: number): void {
+    const par = el.parentElement ? this.css(el.parentElement, 'display') : '';
+    if (this.css(el, 'position') === 'static' && !/flex|grid/.test(par)) el.style.position = 'relative';
+    el.style.zIndex = String(z);
+    this.commit(); this.placeFloat();
+  }
+  private arrange(how: 'front' | 'back' | 'up' | 'down'): void {
+    const el = this.sel; if (!el || el === this.doc.body) return;
+    const cur = parseInt(this.css(el, 'z-index'), 10) || 0, all = this.zValues();
+    const z = how === 'front' ? Math.max(0, ...all) + 1 : how === 'back' ? Math.max(0, Math.min(0, ...all) - 1) : how === 'up' ? cur + 1 : cur - 1;
+    this.setZ(el, z);
+    this.renderInspector();
+  }
+
   private nudge(dir: -1 | 1): void {
     const el = this.sel; if (!el || el === this.doc.body) return;
     const sib = dir < 0 ? el.previousElementSibling : el.nextElementSibling;
@@ -388,6 +471,16 @@ export class WebBuilder {
     const cur = el.style.getPropertyValue(prop) || '';
     return this.row(label, this.inp(cur, (v) => this.setStyle(el, prop, /^\d+(\.\d+)?$/.test(v.trim()) ? `${v.trim()}px` : v.trim()), 'text', this.css(el, prop)));
   }
+  private opacityRow(el: HTMLElement): HTMLElement {
+    const wrap = document.createElement('span'); wrap.className = 'wb-color';
+    const cur = Math.round((parseFloat(this.css(el, 'opacity')) || 0) * 100);
+    const r = document.createElement('input'); r.type = 'range'; r.min = '0'; r.max = '100'; r.value = String(isNaN(cur) ? 100 : cur);
+    const n = document.createElement('input'); n.type = 'number'; n.min = '0'; n.max = '100'; n.value = r.value; n.style.width = '52px';
+    const live = (v: string) => { el.style.opacity = String(+v / 100); n.value = v; r.value = v; };
+    r.addEventListener('input', () => live(r.value)); r.addEventListener('change', () => this.setStyle(el, 'opacity', String(+r.value / 100)));
+    n.addEventListener('change', () => { live(String(Math.max(0, Math.min(100, +n.value || 0)))); this.setStyle(el, 'opacity', String(+n.value / 100)); });
+    wrap.append(r, n); return this.row('Opacity %', wrap);
+  }
   private color(el: HTMLElement, prop: string, label: string): HTMLElement {
     const wrap = document.createElement('span'); wrap.className = 'wb-color';
     const c = document.createElement('input'); c.type = 'color'; c.value = toHex(this.css(el, prop)) || '#ffffff';
@@ -480,7 +573,18 @@ export class WebBuilder {
       this.row('Gradient', this.inp(el.style.getPropertyValue('background-image'), (v) => this.setStyle(el, 'background-image', v), 'text', 'linear-gradient(…)')),
       this.px(el, 'padding', 'Padding'), this.px(el, 'margin', 'Margin'),
       this.px(el, 'border-radius', 'Radius'), this.px(el, 'width', 'Width'), this.px(el, 'max-width', 'Max width'),
-      this.row('Shadow', this.inp(el.style.getPropertyValue('box-shadow'), (v) => this.setStyle(el, 'box-shadow', v), 'text', '0 4px 20px rgba(0,0,0,.15)'))));
+      this.row('Shadow', this.inp(el.style.getPropertyValue('box-shadow'), (v) => this.setStyle(el, 'box-shadow', v), 'text', '0 4px 20px rgba(0,0,0,.15)')),
+      this.opacityRow(el),
+      this.select$(el, 'mix-blend-mode', 'Blend', ['multiply', 'screen', 'overlay', 'soft-light', 'hard-light', 'color-dodge', 'difference', 'luminosity'])));
+    ins.appendChild(this.group('Arrange & position',
+      this.select$(el, 'position', 'Position', ['static', 'relative', 'absolute', 'fixed', 'sticky']),
+      this.px(el, 'left', 'Left'), this.px(el, 'top', 'Top'), this.px(el, 'right', 'Right'), this.px(el, 'bottom', 'Bottom'),
+      this.row('Layer (z)', this.inp(el.style.zIndex, (v) => { if (v.trim() === '') { this.setStyle(el, 'z-index', ''); } else if (!isNaN(+v)) this.setZ(el, Math.round(+v)); }, 'text', this.css(el, 'z-index'))),
+      (() => { const bar = document.createElement('div'); bar.className = 'wb-codebar wb-arrange';
+        for (const [l, f] of [['⤒ Front', 'front'], ['↑ Forward', 'up'], ['↓ Back', 'down'], ['⤓ Bottom', 'back']] as const) {
+          const b = document.createElement('button'); b.type = 'button'; b.className = 'wb-btn'; b.textContent = l; b.addEventListener('click', () => this.arrange(f)); bar.appendChild(b);
+        } return bar; })(),
+      this.px(el, 'height', 'Height'), this.px(el, 'min-height', 'Min height')));
     ins.appendChild(this.group('Layout',
       this.select$(el, 'display', 'Display', ['block', 'flex', 'grid', 'inline-block', 'none']),
       this.select$(el, 'flex-direction', 'Direction', ['row', 'column']),
