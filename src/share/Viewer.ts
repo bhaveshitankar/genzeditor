@@ -61,6 +61,13 @@ export function showViewer(root: HTMLElement, s: OpenedShare, opts: { onEdit: ()
   let site: SiteFrame | undefined;
   const textOf = async () => s.text ?? await blob.text();
   const isHtml = /\.html?$/i.test(s.title) || s.contentType === 'text/html';
+  // Frame-based views (pages, PDFs, diagrams) scroll inside their frame, so on phones the
+  // footer floats over them (dismissible); everything else scrolls with the footer at the end.
+  wrap.classList.add(isHtml || s.kind === 'pdf' || s.kind === 'mermaid' ? 'viewer-overlay' : 'viewer-flow');
+  const x = document.createElement('button');
+  x.type = 'button'; x.className = 'viewer-x'; x.setAttribute('aria-label', 'Hide'); x.textContent = '✕';
+  x.addEventListener('click', () => wrap.querySelector('.viewer-foot')?.remove());
+  wrap.querySelector('.viewer-foot')!.appendChild(x);
 
   void (async () => {
     try {

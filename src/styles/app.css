@@ -3000,7 +3000,7 @@ button, input, select, a { transition-property: background-color, border-color, 
 .viewer-foot a { color: var(--brand-600); font-weight: 600; }
 .viewer-copy { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; font: inherit; }
 .viewer-foot .viewer-cta { padding: 6px 14px; border-radius: 99px; background: var(--brand-500); color: var(--on-brand); text-decoration: none; font-weight: 700; }
-@media (max-width: 600px) { .viewer-by, .viewer-badge { display: none; } .viewer-title { max-width: 100%; } .viewer-actions { width: 100%; } .viewer-cta { margin-left: auto; } }
+
 .viewer-slides { width: 100%; max-width: 1000px; padding: 16px; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px; }
 .viewer-slide { width: 100%; height: auto; box-shadow: 0 2px 14px rgba(0,0,0,.18); border-radius: 6px; background: #fff; }
 .viewer-doc table { border-collapse: collapse; } .viewer-doc td, .viewer-doc th { border: 1px solid #ccc; padding: 4px 8px; }
@@ -3009,3 +3009,27 @@ button, input, select, a { transition-property: background-color, border-color, 
 .share-loading-box { text-align: center; }
 .share-spinner { width: 34px; height: 34px; margin: 0 auto 12px; border-radius: 50%; border: 3px solid var(--border, #ddd); border-top-color: var(--brand-500, #ff4d8d); animation: share-spin .8s linear infinite; }
 @keyframes share-spin { to { transform: rotate(360deg); } }
+
+.viewer-x { display: none; }
+@media (max-width: 600px) {
+  .viewer-foot { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 12px calc(10px + env(safe-area-inset-bottom)); background: transparent; border-top: 0; justify-items: stretch; position: relative; }
+  .viewer-credit { grid-column: 1 / -1; justify-content: center; font-size: 11px; }
+  .viewer-by, .viewer-badge { display: none; }
+  .viewer-title { max-width: 60vw; }
+  .viewer-actions { display: contents; }
+  .viewer-copy, .viewer-foot .viewer-cta { text-align: center; padding: 9px 8px; font-size: 12px; white-space: nowrap; box-shadow: 0 2px 12px rgba(0,0,0,.25); backdrop-filter: blur(8px); }
+  .viewer-copy { background: color-mix(in srgb, var(--surface) 82%, transparent); }
+  .viewer-credit .viewer-title::after { content: ' · genzeditor.com'; font-weight: 400; color: var(--text-muted); }
+  .viewer-credit { text-shadow: 0 1px 3px color-mix(in srgb, var(--bg) 90%, transparent); }
+  .viewer-x { display: block; position: absolute; top: -6px; right: 8px; width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 0; background: color-mix(in srgb, var(--surface) 85%, transparent); color: var(--text); font-size: 12px; cursor: pointer; }
+  /* Frame views: float over the page bottom. Other views: footer scrolls at the end of the content. */
+  .viewer-overlay .viewer-foot { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; pointer-events: none; }
+  .viewer-overlay .viewer-foot > * , .viewer-overlay .viewer-foot a, .viewer-overlay .viewer-foot button { pointer-events: auto; }
+  .viewer-flow { display: block; overflow: auto; }
+  .viewer-flow .viewer-body { display: block; overflow: visible; min-height: calc(100% - 96px); }
+  .viewer-flow .viewer-foot { position: static; }
+}
+@media (max-width: 600px) {
+  .viewer-flow .viewer-x { display: none; }
+  .viewer-credit { text-shadow: none; justify-self: center; grid-column: 1 / -1; padding: 3px 12px; border-radius: 99px; background: color-mix(in srgb, var(--surface) 78%, transparent); backdrop-filter: blur(8px); color: var(--text); box-shadow: 0 1px 8px rgba(0,0,0,.2); }
+}
