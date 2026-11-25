@@ -48,6 +48,9 @@
 /bg-removal-frame.html
   Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; script-src 'self' blob: 'wasm-unsafe-eval' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; connect-src 'self' blob: https://staticimgly.com; object-src 'none'; base-uri 'none'
 
+/heic-frame.html
+  Content-Security-Policy: default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval' 'unsafe-eval'; worker-src 'self' blob:; connect-src 'self' blob:; object-src 'none'; base-uri 'none'
+
 # The isolated frames (sandbox="allow-scripts", NO allow-same-origin) run in an
 # opaque origin, so they fetch these bundled module scripts as a cross-origin
 # request. Allow same-site assets to be read by them. These are public,

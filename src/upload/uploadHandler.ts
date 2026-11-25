@@ -11,7 +11,7 @@ export async function handleUpload(
   if (file.size > MAX) return { ok: false, error: 'File exceeds 500MB limit.' };
   if (isHeic(file)) {
     try { file = await heicToJpeg(file); }
-    catch { return { ok: false, error: 'Could not convert this HEIC image. Try exporting it as JPG.' }; }
+    catch (e) { console.error('HEIC convert failed', e); return { ok: false, error: 'Could not convert this HEIC image. Try exporting it as JPG.' }; }
   }
   const kind = detectKind(file.name, file.type);
   const record = await store.save(file.name, file, kind);
@@ -33,11 +33,47 @@ async function heicToJpeg(file: File): Promise<File> {
     const b = await new Promise<Blob | null>((r) => c.toBlob(r, 'image/jpeg', 0.92));
     if (b) return new File([b], name, { type: 'image/jpeg' });
   } catch { /* fall through to wasm decoder */ }
-  // CSP: esm.sh is already allowlisted for lazy editor deps.
-  // @ts-ignore remote module
-  const mod: any = await import(/* @vite-ignore */ 'https://esm.sh/heic2any@0.0.4');
-  const heic2any = mod.default ?? mod;
-  const out = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 });
-  const blob = Array.isArray(out) ? out[0] : out;
-  return new File([blob], name, { type: 'image/jpeg' });
+  return new File([await convertInFrame(file)], name, { type: 'image/jpeg' });
+}
+
+// heic2any needs 'unsafe-eval', so it runs in an isolated frame (see public/_headers).
+let framePromise: Promise<HTMLIFrameElement> | null = null;
+let seq = 0;
+const pending = new Map<number, { resolve: (b: Blob) => void; reject: (e: Error) => void }>();
+
+function ensureFrame(): Promise<HTMLIFrameElement> {
+  if (framePromise) return framePromise;
+  framePromise = new Promise((resolve, reject) => {
+    const frame = document.createElement('iframe');
+    frame.setAttribute('sandbox', 'allow-scripts');
+    frame.setAttribute('aria-hidden', 'true');
+    frame.style.cssText = 'position:absolute;width:0;height:0;border:0;visibility:hidden';
+    window.addEventListener('message', (e: MessageEvent) => {
+      if (e.source !== frame.contentWindow) return;
+      const d = e.data as { type?: string; id?: number; blob?: Blob; message?: string } | null;
+      if (!d) return;
+      if (d.type === 'heic-ready') { resolve(frame); return; }
+      const p = typeof d.id === 'number' ? pending.get(d.id) : undefined;
+      if (!p) return;
+      pending.delete(d.id!);
+      if (d.type === 'heic-result' && d.blob instanceof Blob) p.resolve(d.blob);
+      else p.reject(new Error(d.message || 'heic_failed'));
+    });
+    frame.addEventListener('error', () => { framePromise = null; reject(new Error('frame_load_failed')); });
+    frame.src = '/heic-frame.html';
+    document.body.appendChild(frame);
+    setTimeout(() => reject(new Error('frame_timeout')), 20_000);
+  });
+  framePromise.catch(() => { framePromise = null; });
+  return framePromise;
+}
+
+async function convertInFrame(file: Blob): Promise<Blob> {
+  const frame = await ensureFrame();
+  const id = ++seq;
+  return new Promise<Blob>((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    frame.contentWindow?.postMessage({ type: 'heic-convert', id, blob: file }, '*');
+    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error('heic_timeout')); } }, 60_000);
+  });
 }

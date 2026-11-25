@@ -61,6 +61,8 @@ export default defineConfig({
         mermaidFrame: resolve(__dirname, 'mermaid-frame.html'),
         // Isolated frame that runs the background-removal model (needs 'unsafe-eval').
         bgRemovalFrame: resolve(__dirname, 'bg-removal-frame.html'),
+        // Isolated frame for HEIC->JPEG conversion (heic2any needs 'unsafe-eval').
+        heicFrame: resolve(__dirname, 'heic-frame.html'),
       },
     },
   },
