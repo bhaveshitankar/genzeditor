@@ -624,6 +624,41 @@ export class AppShell {
     el.addEventListener('click', remove);
   }
 
+  /** Modal with several action buttons; resolves the chosen value or null on cancel. */
+  private choiceModal(opts: { title: string; message: string; options: { value: string; label: string; primary?: boolean }[] }): Promise<string | null> {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true">
+          <h3></h3>
+          <p></p>
+          <div class="modal-actions" style="flex-wrap:wrap"></div>
+        </div>`;
+      (overlay.querySelector('h3') as HTMLElement).textContent = opts.title;
+      (overlay.querySelector('p') as HTMLElement).textContent = opts.message;
+      const actions = overlay.querySelector('.modal-actions') as HTMLElement;
+      const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(null); };
+      const close = (v: string | null) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(v); };
+      const cancel = document.createElement('button');
+      cancel.type = 'button'; cancel.className = 'btn-cancel'; cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', () => close(null));
+      actions.append(cancel);
+      let primaryBtn: HTMLButtonElement | undefined;
+      for (const o of opts.options) {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = o.primary ? 'btn-confirm' : 'btn-cancel'; b.textContent = o.label;
+        b.addEventListener('click', () => close(o.value));
+        actions.append(b);
+        if (o.primary) primaryBtn = b;
+      }
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+      document.addEventListener('keydown', onKey);
+      this.root.appendChild(overlay);
+      primaryBtn?.focus();
+    });
+  }
+
   /** Promise-based confirm modal — replaces the native confirm() dialog. */
   private confirmModal(opts: { title: string; message: string; confirmLabel?: string; danger?: boolean }): Promise<boolean> {
     return new Promise((resolve) => {
@@ -1512,15 +1547,32 @@ export class AppShell {
 
   private async handleDownload(record: FileRecord) {
     let current: { blob: Blob; contentType: string } | null;
+    let forcedName: string | undefined;
     try {
-      current = await this.getCurrentBlob();
+      // CSV can only hold one sheet — warn and offer XLSX before downloading.
+      if (this.currentDocKind === 'SpreadsheetEditor' && (this.currentDoc as SpreadsheetEditor).csvHasMultipleSheets) {
+        const ed = this.currentDoc as SpreadsheetEditor;
+        const choice = await this.choiceModal({
+          title: 'CSV supports only one sheet',
+          message: `This file has multiple sheets, but a CSV can store just one. Saving as CSV will include only the current sheet (“${ed.activeSheetName}”) and drop the rest. We suggest downloading as XLSX to keep every sheet.`,
+          options: [
+            { value: 'xlsx', label: 'Download as XLSX (all sheets)', primary: true },
+            { value: 'csv', label: 'CSV – current sheet only' },
+          ],
+        });
+        if (!choice) return;
+        if (choice === 'xlsx') {
+          current = await ed.export({ format: 'xlsx' });
+          forcedName = record.name.replace(/\.[^.]+$/, '') + '.xlsx';
+        } else current = await this.getCurrentBlob();
+      } else current = await this.getCurrentBlob();
     } catch (err) {
       reportFailure('export', err, record.kind);
       this.toast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       return;
     }
     if (!current) return;
-    let name = record.name;
+    let name = forcedName ?? record.name;
     // Images can export PNG (transparency / bg-removal) or JPEG (jpg source);
     // align the download extension with whatever the editor actually produced.
     if (this.currentFileKind === 'image') {

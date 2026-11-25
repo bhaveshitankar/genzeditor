@@ -1854,9 +1854,13 @@ export class SpreadsheetEditor implements DocEditor {
     if (text.endsWith('()')) this.cellInput.setSelectionRange(text.length - 1, text.length - 1);
   }
 
-  async export(): Promise<{ blob: Blob; contentType: string }> {
+  /** True for a .csv/.tsv file that now holds more than one sheet (CSV can't). */
+  get csvHasMultipleSheets(): boolean { return this.isCsv && this.order.length > 1; }
+  get activeSheetName(): string { return this.active; }
+
+  async export(opts: { format?: 'xlsx' } = {}): Promise<{ blob: Blob; contentType: string }> {
     // Export COMPUTED values (not raw formulas) for portability — see class doc.
-    if (this.isCsv) {
+    if (this.isCsv && opts.format !== 'xlsx') {
       const ws = XLSX.utils.aoa_to_sheet(this.trimmed(this.computed(this.aoa())));
       const csv = XLSX.utils.sheet_to_csv(ws);
       return { blob: new Blob([csv], { type: 'text/csv' }), contentType: 'text/csv' };
