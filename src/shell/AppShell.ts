@@ -508,7 +508,9 @@ export class AppShell {
   }
 
   async ingestFile(file: File) {
-    const result = await handleUpload(file, this.store);
+    const hide = this.showLoader(`Importing ${file.name}`, /\.(heic|heif)$/i.test(file.name) ? 'Converting photo…' : 'Saving to your device…');
+    let result: Awaited<ReturnType<typeof handleUpload>>;
+    try { result = await handleUpload(file, this.store); } finally { hide(); }
     if (result.ok) {
       await this.refreshLibrary();
       await this.openFile(result.record.id);
@@ -1546,6 +1548,11 @@ export class AppShell {
   }
 
   private async handleDownload(record: FileRecord) {
+    const hideDl = this.showLoader('Preparing download', 'Exporting your file…', 400);
+    try { await this.handleDownloadInner(record); } finally { hideDl(); }
+  }
+
+  private async handleDownloadInner(record: FileRecord) {
     let current: { blob: Blob; contentType: string } | null;
     let forcedName: string | undefined;
     try {
@@ -2155,12 +2162,41 @@ export class AppShell {
     return true;
   }
 
+  /**
+   * Cool full-pane preloader for slow work (big files). Only appears if the work
+   * takes longer than `delay` ms so quick opens don't flash. Returns a hide fn.
+   */
+  showLoader(label: string, sub = 'Big files can take a few seconds…', delay = 150): () => void {
+    let el: HTMLElement | null = null;
+    const t = window.setTimeout(() => {
+      const r = this.editorHost.getBoundingClientRect();
+      el = document.createElement('div');
+      el.className = 'gz-loader';
+      el.setAttribute('role', 'status');
+      el.style.cssText = `top:${r.top}px;left:${r.left}px;width:${r.width}px;height:${r.height}px`;
+      el.innerHTML = `
+        <div class="gz-loader-card">
+          <div class="gz-orbit"><i></i><i></i><i></i><b></b></div>
+          <div class="gz-loader-label"></div>
+          <div class="gz-loader-sub"></div>
+          <div class="gz-loader-bar"><span></span></div>
+        </div>`;
+      (el.querySelector('.gz-loader-label') as HTMLElement).textContent = label;
+      (el.querySelector('.gz-loader-sub') as HTMLElement).textContent = sub;
+      document.body.appendChild(el);
+    }, delay);
+    return () => { clearTimeout(t); el?.remove(); el = null; };
+  }
+
   async openFile(id: string): Promise<void> {
+    const hide = this.showLoader('Opening file');
     try {
       await this.openFileInner(id);
     } catch (err) {
       reportFailure('open-file', err, this.currentFileKind);
       this.toast(`Couldn't open this file: ${err instanceof Error ? err.message : String(err)}`, 'error', 6000);
+    } finally {
+      hide();
     }
   }
 

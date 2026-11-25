@@ -1285,9 +1285,9 @@ export class ImageEditor {
       this.clampCrop();
       this.positionCropBox();
     };
-    const up = (): void => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); };
+    const up = (): void => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); document.removeEventListener('pointercancel', up); };
     document.addEventListener('pointermove', move);
-    document.addEventListener('pointerup', up);
+    document.addEventListener('pointerup', up); document.addEventListener('pointercancel', up);
   }
 
   private cropHandleDown(e: PointerEvent, corner: 'nw' | 'ne' | 'sw' | 'se'): void {
@@ -1308,9 +1308,9 @@ export class ImageEditor {
       this.clampCrop();
       this.positionCropBox();
     };
-    const up = (): void => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); };
+    const up = (): void => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); document.removeEventListener('pointercancel', up); };
     document.addEventListener('pointermove', move);
-    document.addEventListener('pointerup', up);
+    document.addEventListener('pointerup', up); document.addEventListener('pointercancel', up);
   }
 
   private clampCrop(): void {
@@ -1362,9 +1362,9 @@ export class ImageEditor {
       this.resizeLayer(cur, orig, p.x - start.x, p.y - start.y);
       this.render();
     };
-    const up = (): void => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); this.onChange?.(); };
+    const up = (): void => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); document.removeEventListener('pointercancel', up); this.onChange?.(); };
     document.addEventListener('pointermove', move);
-    document.addEventListener('pointerup', up);
+    document.addEventListener('pointerup', up); document.addEventListener('pointercancel', up);
   }
 
   // ---- Side panels ----
