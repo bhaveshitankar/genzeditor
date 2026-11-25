@@ -276,6 +276,7 @@ export class WebBuilder {
       this.drag = { el: this.sel }; e.dataTransfer?.setData('text/plain', 'move');
     });
     handle.addEventListener('dragend', () => this.endDrag());
+    handle.addEventListener('pointerdown', (e) => { if (this.sel && this.sel !== this.doc.body) this.touchDrag(e, { el: this.sel }, false); });
     this.float.append(
       handle,
       mk('↑', 'Move up', () => this.nudge(-1)), mk('↓', 'Move down', () => this.nudge(1)),
@@ -306,9 +307,75 @@ export class WebBuilder {
     e.preventDefault(); e.stopPropagation();
     const t = e.currentTarget as HTMLElement, x0 = e.clientX, y0 = e.clientY;
     t.setPointerCapture(e.pointerId);
-    const mv = (ev: PointerEvent) => { onMove(ev.clientX - x0, ev.clientY - y0, ev); this.placeFloat(); };
-    const up = () => { t.removeEventListener('pointermove', mv); t.removeEventListener('pointerup', up); t.removeEventListener('pointercancel', up); this.commit(); this.renderInspector(); this.placeFloat(); };
+    // Batch to one style write + one layout read per frame (smooth on touch).
+    let last: PointerEvent | null = null, raf = 0;
+    const apply = (): void => { raf = 0; if (!last) return; onMove(last.clientX - x0, last.clientY - y0, last); last = null; this.placeFloat(); };
+    const mv = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      last = ev; if (!raf) raf = requestAnimationFrame(apply);
+    };
+    const up = () => {
+      t.removeEventListener('pointermove', mv); t.removeEventListener('pointerup', up); t.removeEventListener('pointercancel', up);
+      if (raf) { cancelAnimationFrame(raf); apply(); }
+      this.commit(); this.renderInspector(); this.placeFloat();
+    };
     t.addEventListener('pointermove', mv); t.addEventListener('pointerup', up); t.addEventListener('pointercancel', up);
+  }
+
+  /**
+   * Touch/pen drag-and-drop (HTML5 DnD doesn't fire on touch). Drives the same
+   * hover/drop logic as native DnD. `hold` = long-press to start (palette, so
+   * the list can still scroll); otherwise starts on the first move (handle).
+   */
+  private touchDrag(e: PointerEvent, payload: Drag, hold: boolean): void {
+    if (e.pointerType === 'mouse') return; // native DnD handles mouse
+    const t = e.currentTarget as HTMLElement, id = e.pointerId, sx = e.clientX, sy = e.clientY;
+    let started = false, timer = 0, raf = 0, ghost: HTMLElement | null = null, px = sx, py = sy;
+    const begin = (): void => {
+      started = true; this.drag = payload;
+      try { t.setPointerCapture(id); } catch { /* already captured */ }
+      ghost = document.createElement('div');
+      ghost.className = 'wb-ghost'; ghost.textContent = t.textContent?.trim().slice(0, 18) || 'Move';
+      document.body.appendChild(ghost);
+      navigator.vibrate?.(8);
+    };
+    const frame = (): void => {
+      raf = 0; if (!started) return;
+      if (ghost) ghost.style.transform = `translate(${px + 12}px, ${py + 12}px)`;
+      const r = this.frame.getBoundingClientRect();
+      const x = px - r.left, y = py - r.top;
+      // auto-scroll the page when dragging near its top/bottom edge
+      const edge = 48;
+      if (y < edge) this.doc.defaultView?.scrollBy(0, -12); else if (y > r.height - edge) this.doc.defaultView?.scrollBy(0, 12);
+      if (x >= 0 && y >= 0 && x <= r.width && y <= r.height) this.hoverDrop(x, y); else { this.drop = null; this.dropLine.hidden = true; }
+    };
+    const blockScroll = (ev: TouchEvent): void => { if (started && ev.cancelable) ev.preventDefault(); };
+    const mv = (ev: PointerEvent): void => {
+      if (ev.pointerId !== id) return;
+      px = ev.clientX; py = ev.clientY;
+      if (!started) {
+        if (Math.hypot(px - sx, py - sy) > 8) { if (hold) cleanup(); else begin(); }
+        return;
+      }
+      if (!raf) raf = requestAnimationFrame(frame);
+    };
+    const cleanup = (): void => {
+      clearTimeout(timer); if (raf) cancelAnimationFrame(raf);
+      t.removeEventListener('pointermove', mv); t.removeEventListener('pointerup', up); t.removeEventListener('pointercancel', cancel);
+      t.removeEventListener('touchmove', blockScroll);
+      ghost?.remove(); ghost = null;
+    };
+    const up = (ev: PointerEvent): void => {
+      if (ev.pointerId !== id) return;
+      const was = started;
+      if (was) { px = ev.clientX; py = ev.clientY; frame(); const r = this.frame.getBoundingClientRect(); this.dropAt(px - r.left, py - r.top); }
+      cleanup(); this.endDrag();
+      if (was) t.addEventListener('click', (c) => { c.stopImmediatePropagation(); c.preventDefault(); }, { once: true, capture: true });
+    };
+    const cancel = (): void => { cleanup(); this.endDrag(); };
+    t.addEventListener('pointermove', mv); t.addEventListener('pointerup', up); t.addEventListener('pointercancel', cancel);
+    t.addEventListener('touchmove', blockScroll, { passive: false });
+    if (hold) timer = window.setTimeout(begin, 260);
   }
   private ensureOffsetable(el: HTMLElement): void {
     if (this.css(el, 'position') === 'static') el.style.position = 'relative';
@@ -392,6 +459,7 @@ export class WebBuilder {
         (btn.lastChild as HTMLElement).textContent = b.label;
         btn.addEventListener('dragstart', (e) => { this.drag = { block: b }; e.dataTransfer?.setData('text/plain', b.id); });
         btn.addEventListener('dragend', () => this.endDrag());
+        btn.addEventListener('pointerdown', (e) => this.touchDrag(e, { block: b }, true));
         btn.addEventListener('click', () => this.addBlock(b));
         grid.appendChild(btn);
       }
@@ -444,7 +512,10 @@ export class WebBuilder {
   private onDragOver(e: DragEvent): void {
     if (!this.drag) return;
     e.preventDefault();
-    const t = this.target(e.clientX, e.clientY);
+    this.hoverDrop(e.clientX, e.clientY);
+  }
+  private hoverDrop(x: number, y: number): void {
+    const t = this.target(x, y);
     this.drop = t;
     if (!t) { this.dropLine.hidden = true; return; }
     const r = t.ref.getBoundingClientRect();
@@ -458,7 +529,11 @@ export class WebBuilder {
   private onDrop(e: DragEvent): void {
     if (!this.drag) return;
     e.preventDefault();
-    const t = this.drop ?? this.target(e.clientX, e.clientY), drag = this.drag;
+    this.dropAt(e.clientX, e.clientY);
+  }
+  private dropAt(x: number, y: number): void {
+    if (!this.drag) return;
+    const t = this.drop ?? this.target(x, y), drag = this.drag;
     this.endDrag();
     if (!t) return;
     const el = drag.block ? this.create(drag.block) : drag.el!;

@@ -196,6 +196,9 @@ export class ImageEditor {
   private selTarget: string | null = null; // image layer id the selection applies to; null = whole composite
   private lassoPts: Point[] = [];
   private wandTol = 32;
+  // How a new wand/lasso result combines with the current selection (Shift = add on desktop).
+  private selOp: 'replace' | 'add' | 'subtract' = 'replace';
+  private opOf(shift: boolean): 'replace' | 'add' | 'subtract' { return shift ? 'add' : this.selOp; }
   private wandMode: 'color' | 'edge' = 'color';
   private edgeSens = 60;
   private feather = 0;
@@ -679,7 +682,12 @@ export class ImageEditor {
     }
     if (!this.drag) return;
     const p = this.toImage(e);
-    if (this.drag.mode === 'lasso') { this.lassoPts.push(p); this.render(); return; }
+    if (this.drag.mode === 'lasso') {
+      const lp = this.lassoPts[this.lassoPts.length - 1];
+      if (!lp || Math.hypot(p.x - lp.x, p.y - lp.y) >= Math.max(1, this.canvas.width / 400)) this.lassoPts.push(p);
+      if (!this.drawRaf) this.drawRaf = requestAnimationFrame(() => { this.drawRaf = 0; this.render(); });
+      return;
+    }
     if (this.drag.mode === 'marquee') { this.drawMarquee(this.drag.start, p); return; }
     const dx = p.x - this.drag.start.x, dy = p.y - this.drag.start.y;
     if (this.drag.mode === 'move-group' && this.groupOrig) {
@@ -805,14 +813,19 @@ export class ImageEditor {
     this.composite(flat);
     const rad = (angleDeg * Math.PI) / 180;
     const w = flat.width, h = flat.height;
-    const nw = Math.abs(w * Math.cos(rad)) + Math.abs(h * Math.sin(rad));
-    const nh = Math.abs(w * Math.sin(rad)) + Math.abs(h * Math.cos(rad));
+    // Keep the original frame size and scale the rotated image just enough to
+    // cover it (no shrinking, no transparent corners) - like a phone "straighten".
+    const cs = Math.abs(Math.cos(rad)), sn = Math.abs(Math.sin(rad));
+    const k = cs + sn * Math.max(w / h, h / w);
     const out = document.createElement('canvas');
-    out.width = Math.round(nw); out.height = Math.round(nh);
+    out.width = w; out.height = h;
     const c = out.getContext('2d')!;
-    c.translate(nw / 2, nh / 2);
+    c.imageSmoothingQuality = 'high';
+    c.translate(w / 2, h / 2);
     c.rotate(rad);
+    c.scale(k, k);
     c.drawImage(flat, -w / 2, -h / 2);
+    this.setMask(null); // frame size is unchanged, so drop the stale selection explicitly
     this.state.adjustments = neutralAdjustments();
     this.state.layers = [];
     this.replaceBase(out);
@@ -1109,8 +1122,6 @@ export class ImageEditor {
     tool('Rect', 'rect');
     tool('Ellipse', 'ellipse');
     tool('Arrow', 'arrow');
-    tool('Wand', 'wand');
-    tool('Lasso', 'lasso');
 
     this.toolbar.appendChild(el('div', 'img-sep'));
 
@@ -1180,10 +1191,10 @@ export class ImageEditor {
     this.tool = t;
     if (t === 'crop') this.startCrop();
     else this.endCrop();
-    if (t === 'brush' || t === 'eraser') this.activePanel = 'draw';
+    if (t === 'crop' || t === 'wand' || t === 'lasso') this.activePanel = 'transform'; // crop + smart selection live together
+    else if (t === 'brush' || t === 'eraser') this.activePanel = 'draw';
     else if (t === 'text') this.activePanel = 'text';
     else if (t === 'rect' || t === 'ellipse' || t === 'arrow') this.activePanel = 'shapes';
-    else if (t === 'wand' || t === 'lasso') this.activePanel = 'select';
     this.rebuildPanel();
     this.syncToolbar();
   }
@@ -1834,6 +1845,18 @@ export class ImageEditor {
     applyRow.appendChild(apply);
     host.appendChild(applyRow);
 
+    // Select region (Wand / Lasso) - lives with Crop.
+    host.appendChild(title('Select region'));
+    const selTools = el('div', 'img-chips');
+    for (const [label, t] of [['Crop box', 'crop'], ['Magic wand', 'wand'], ['Lasso', 'lasso']] as const) {
+      const chip = button(label, 'img-chip');
+      chip.setAttribute('aria-pressed', String(this.tool === t));
+      chip.onclick = (): void => { if (this.tool === t) { this.setTool('select'); this.activePanel = 'transform'; this.rebuildPanel(); } else this.setTool(t); };
+      selTools.appendChild(chip);
+    }
+    host.appendChild(selTools);
+    if (this.tool === 'wand' || this.tool === 'lasso' || this.selMask) this.buildSelectPanel(host);
+
     // Resize.
     host.appendChild(title('Resize'));
     const rr = el('div', 'img-row');
@@ -2219,7 +2242,7 @@ export class ImageEditor {
   }
 
   private pickTarget(add: boolean): void {
-    if (add && this.selMask) return; // keep the target of the selection being extended
+    if ((add || this.selOp !== 'replace') && this.selMask) return; // keep the target of the selection being extended
     const s = this.selected();
     this.selTarget = s && s.kind === 'image' ? s.id : null;
   }
@@ -2269,7 +2292,7 @@ export class ImageEditor {
       }
     }
     this.render();
-    if (this.activePanel === 'select') this.rebuildPanel();
+    if (this.activePanel === 'select' || this.activePanel === 'transform') this.rebuildPanel();
   }
 
   // Precompute two marching-ants frames (alternating black/white dashes) along
@@ -2335,9 +2358,17 @@ export class ImageEditor {
 
   private mergeMask(next: HTMLCanvasElement, add: boolean): HTMLCanvasElement {
     const cur = this.selMask;
-    if (!add || !cur || cur.width !== next.width || cur.height !== next.height) return next;
-    next.getContext('2d')!.drawImage(cur, 0, 0);
-    return next;
+    const op = this.opOf(add);
+    if (op === 'replace' || !cur || cur.width !== next.width || cur.height !== next.height) return next;
+    const nc = next.getContext('2d')!;
+    if (op === 'add') { nc.drawImage(cur, 0, 0); return next; }
+    // subtract: keep what was selected minus the new shape
+    const out = this.newMask();
+    const oc = out.getContext('2d')!;
+    oc.drawImage(cur, 0, 0);
+    oc.globalCompositeOperation = 'destination-out';
+    oc.drawImage(next, 0, 0);
+    return out;
   }
 
   private maskFromBits(bits: Uint8Array, w: number, h: number): HTMLCanvasElement {
@@ -2383,7 +2414,14 @@ export class ImageEditor {
       const thr = (101 - this.edgeSens) * 6;
       pass = (k) => mag[k]! < thr && Math.abs(src[k * 4 + 3]! - a0) < 128;
     } else {
-      const r0 = src[seed * 4]!, g0 = src[seed * 4 + 1]!, b0 = src[seed * 4 + 2]!;
+      // Seed colour = mean of the 3x3 neighbourhood so photo noise doesn't skew the pick.
+      let r0 = 0, g0 = 0, b0 = 0, n0 = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x0 + dx, yy = y0 + dy;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const j = (yy * w + xx) * 4; r0 += src[j]!; g0 += src[j + 1]!; b0 += src[j + 2]!; n0++;
+      }
+      r0 /= n0; g0 /= n0; b0 /= n0;
       const tol = this.wandTol * 2.55;
       pass = (k) => {
         const j = k * 4;
@@ -2414,6 +2452,12 @@ export class ImageEditor {
       }
       this.setMask(this.mergeMask(this.maskFromBits(grown, w, h), add));
       return;
+    }
+    // Close 1px pinholes (photo noise) so the region doesn't look speckled.
+    for (let k = w + 1; k < w * h - w - 1; k++) {
+      if (bits[k]) continue;
+      const x = k % w; if (x === 0 || x === w - 1) continue;
+      if (bits[k - 1] + bits[k + 1] + bits[k - w] + bits[k + w] >= 3) bits[k] = 1;
     }
     this.setMask(this.mergeMask(this.maskFromBits(bits, w, h), add));
   }
@@ -2532,7 +2576,15 @@ export class ImageEditor {
 
   private buildSelectPanel(host: HTMLElement): void {
     host.appendChild(title('Smart selection'));
-    host.appendChild(note('Wand: click a region. Lasso: drag around an area. Shift adds to the selection. With an image layer selected, the selection works on that layer.'));
+    host.appendChild(note('Wand: tap a region. Lasso: drag around an area. With an image layer selected, the selection works on that layer.'));
+    const opRow = el('div', 'img-chips');
+    for (const [label, v] of [['New', 'replace'], ['Add', 'add'], ['Subtract', 'subtract']] as const) {
+      const chip = button(label, 'img-chip');
+      chip.setAttribute('aria-pressed', String(this.selOp === v));
+      chip.onclick = (): void => { this.selOp = v; this.rebuildPanel(); };
+      opRow.appendChild(chip);
+    }
+    host.appendChild(opRow);
     const modeRow = el('div', 'img-chips');
     const modes: { label: string; v: 'color' | 'edge' }[] = [
       { label: 'Similar colour', v: 'color' },
@@ -2747,7 +2799,7 @@ export class ImageEditor {
     c.fillStyle = '#fff';
     c.fillRect(0, 0, m.width, m.height);
     this.setMask(m);
-    this.activePanel = 'select';
+    this.activePanel = 'transform';
     this.rebuildPanel();
     this.syncToolbar();
   }

@@ -93,3 +93,8 @@
 @media (max-width: 719px) {
   .wb-design > :not(.view-toggle):not(.wb-keep) { display: none !important; }
 }
+
+/* touch drag ghost + gesture hygiene */
+.wb-ghost { position: fixed; left: 0; top: 0; z-index: 99999; pointer-events: none; padding: 6px 12px; border-radius: 10px; background: var(--brand-500, #ff4d8d); color: #fff; font: 600 13px system-ui, sans-serif; box-shadow: 0 8px 24px rgba(0,0,0,.28); opacity: .92; will-change: transform; }
+.wb-handle, .wb-selbox i { touch-action: none; }
+.wb-block { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
