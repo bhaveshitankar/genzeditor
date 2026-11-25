@@ -1585,6 +1585,155 @@ export class ImageEditor {
     const r2 = el('div', 'img-row'); r2.appendChild(dl);
     host.appendChild(r2);
     host.appendChild(note('Your document auto-saves in its original format; this makes a separate copy.'));
+    this.buildUploadSection(host);
+  }
+
+  // ---- "Fit for upload": exact pixel dimensions + max file size (many sites require both) ----
+  private uploadOpts = { w: 1080, h: 1080, fit: 'cover' as 'cover' | 'contain' | 'stretch', format: 'image/jpeg' as 'image/jpeg' | 'image/webp' | 'image/png', maxKb: 200 };
+
+  private async renderForUpload(o: { w: number; h: number; fit: 'cover' | 'contain' | 'stretch'; format: string; maxKb: number }): Promise<{ blob: Blob; quality: number | null; tooBig: boolean } | null> {
+    const flat = document.createElement('canvas');
+    const was = this.comparing; this.comparing = false;
+    this.composite(flat);
+    this.comparing = was;
+    const out = document.createElement('canvas');
+    out.width = o.w; out.height = o.h;
+    const c = out.getContext('2d')!;
+    c.imageSmoothingQuality = 'high';
+    if (o.format !== 'image/png' || o.fit === 'contain') { c.fillStyle = '#fff'; c.fillRect(0, 0, o.w, o.h); }
+    if (o.format === 'image/png' && o.fit === 'contain') c.clearRect(0, 0, o.w, o.h); // keep transparency for PNG
+    const sw = flat.width, sh = flat.height;
+    if (o.fit === 'stretch') c.drawImage(flat, 0, 0, o.w, o.h);
+    else if (o.fit === 'cover') {
+      const k = Math.max(o.w / sw, o.h / sh);
+      const cw = o.w / k, ch = o.h / k;
+      c.drawImage(flat, (sw - cw) / 2, (sh - ch) / 2, cw, ch, 0, 0, o.w, o.h);
+    } else {
+      const k = Math.min(o.w / sw, o.h / sh);
+      const dw = sw * k, dh = sh * k;
+      c.drawImage(flat, (o.w - dw) / 2, (o.h - dh) / 2, dw, dh);
+    }
+    const enc = (q?: number): Promise<Blob | null> => new Promise((res) => out.toBlob(res, o.format, q));
+    const limit = o.maxKb > 0 ? o.maxKb * 1024 : 0;
+    if (o.format === 'image/png') {
+      const b = await enc();
+      return b ? { blob: b, quality: null, tooBig: !!limit && b.size > limit } : null;
+    }
+    let best = await enc(0.95);
+    if (!best) return null;
+    if (!limit || best.size <= limit) return { blob: best, quality: 0.95, tooBig: false };
+    let lo = 0.05, hi = 0.95, q = lo;
+    const low = await enc(lo);
+    if (!low) return null;
+    if (low.size > limit) return { blob: low, quality: lo, tooBig: true };
+    best = low; q = lo;
+    for (let i = 0; i < 8; i++) {
+      const mid = (lo + hi) / 2;
+      const b = await enc(mid);
+      if (b && b.size <= limit) { best = b; q = mid; lo = mid; } else hi = mid;
+    }
+    return { blob: best, quality: q, tooBig: false };
+  }
+
+  private buildUploadSection(host: HTMLElement): void {
+    const o = this.uploadOpts;
+    host.appendChild(title('Fit for upload'));
+    host.appendChild(note('Websites often require exact dimensions and a maximum file size. Set both here and download a ready-to-upload copy.'));
+    const num = (v: number, min = 1): HTMLInputElement => {
+      const i = document.createElement('input'); i.type = 'number'; i.min = String(min); i.value = String(v); i.className = 'img-input'; i.style.width = '86px'; return i;
+    };
+    const wI = num(o.w), hI = num(o.h);
+    const sizeRow = el('div', 'img-row');
+    const x = document.createElement('span'); x.textContent = '×'; x.style.margin = '0 6px';
+    const px = document.createElement('span'); px.textContent = ' px'; px.style.marginLeft = '6px';
+    sizeRow.append(wI, x, hI, px);
+    host.appendChild(sizeRow);
+
+    const chips = el('div', 'img-chips');
+    const presets: [string, number, number][] = [
+      ['Profile 400²', 400, 400], ['Square 1080²', 1080, 1080], ['HD 1920×1080', 1920, 1080], ['Passport 413×531', 413, 531],
+      ['Link card 1200×630', 1200, 630], ['Banner 1500×500', 1500, 500], ['Avatar 200²', 200, 200], ['Original', this.state.base.width, this.state.base.height],
+    ];
+    for (const [label, w, h] of presets) {
+      const chip = button(label, 'img-chip');
+      chip.onclick = (): void => { wI.value = String(w); hI.value = String(h); refresh(); };
+      chips.appendChild(chip);
+    }
+    host.appendChild(chips);
+
+    const sel = (opts: [string, string][], cur: string): HTMLSelectElement => {
+      const s = document.createElement('select'); s.className = 'img-input wide';
+      for (const [v, n] of opts) { const op = document.createElement('option'); op.value = v; op.textContent = n; if (v === cur) op.selected = true; s.appendChild(op); }
+      return s;
+    };
+    const field = (label: string, child: HTMLElement): void => {
+      const f = el('div', 'img-field'); const l = document.createElement('label'); l.textContent = label; f.append(l, child); host.appendChild(f);
+    };
+    const fitS = sel([['cover', 'Crop to fill (no empty edges)'], ['contain', 'Fit whole image (pad edges)'], ['stretch', 'Stretch (may distort)']], o.fit);
+    field('Fit mode', fitS);
+    const fmtS = sel([['image/jpeg', 'JPEG (best for size limits)'], ['image/webp', 'WebP'], ['image/png', 'PNG (lossless, big)']], o.format);
+    field('Format', fmtS);
+
+    const kbRow = el('div', 'img-row');
+    const kbI = num(o.maxKb, 0);
+    const unitS = sel([['KB', 'KB'], ['MB', 'MB']], 'KB'); unitS.style.width = '70px';
+    kbRow.append(kbI, unitS);
+    field('Max file size (0 = no limit)', kbRow);
+    const kbChips = el('div', 'img-chips');
+    for (const [label, kb] of [['50 KB', 50], ['100 KB', 100], ['200 KB', 200], ['500 KB', 500], ['1 MB', 1024], ['2 MB', 2048]] as const) {
+      const chip = button(label, 'img-chip');
+      chip.onclick = (): void => { unitS.value = 'KB'; kbI.value = String(kb); refresh(); };
+      kbChips.appendChild(chip);
+    }
+    host.appendChild(kbChips);
+
+    const info = el('div', 'img-note');
+    host.appendChild(info);
+    let token = 0;
+    const read = (): void => {
+      o.w = Math.max(1, Math.min(10000, Math.round(Number(wI.value) || 1)));
+      o.h = Math.max(1, Math.min(10000, Math.round(Number(hI.value) || 1)));
+      o.fit = fitS.value as typeof o.fit; o.format = fmtS.value as typeof o.format;
+      const n = Math.max(0, Number(kbI.value) || 0);
+      o.maxKb = unitS.value === 'MB' ? n * 1024 : n;
+    };
+    const refresh = (): void => {
+      read();
+      const my = ++token;
+      info.textContent = 'Checking…';
+      clearTimeout(this.estimateTimer);
+      this.estimateTimer = window.setTimeout(async () => {
+        const r = await this.renderForUpload(o);
+        if (my !== token || !info.isConnected) return;
+        if (!r) { info.textContent = 'Could not render.'; return; }
+        const base = `${o.w} × ${o.h} px · ${formatBytes(r.blob.size)}`;
+        if (r.tooBig) {
+          info.textContent = o.format === 'image/png'
+            ? `${base} — over the ${formatBytes(o.maxKb * 1024)} limit. PNG can’t be compressed; switch to JPEG or WebP.`
+            : `${base} — still over the ${formatBytes(o.maxKb * 1024)} limit even at lowest quality. Try smaller dimensions.`;
+          info.style.color = '#d33';
+        } else {
+          info.textContent = `✓ ${base}${r.quality != null && o.maxKb ? ` · quality ${Math.round(r.quality * 100)}%` : ''}`;
+          info.style.color = '';
+        }
+      }, 250);
+    };
+    for (const e of [wI, hI, kbI]) e.oninput = refresh;
+    fitS.onchange = fmtS.onchange = unitS.onchange = refresh;
+    refresh();
+
+    const dl = button('Download for upload', 'img-btn primary');
+    dl.onclick = async (): Promise<void> => {
+      read();
+      const r = await this.renderForUpload(o);
+      if (!r) return;
+      const ext = o.format === 'image/jpeg' ? 'jpg' : o.format === 'image/webp' ? 'webp' : 'png';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(r.blob); a.download = `image-${o.w}x${o.h}.${ext}`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    };
+    const r2 = el('div', 'img-row'); r2.appendChild(dl);
+    host.appendChild(r2);
   }
 
   // Flatten + resize + encode with explicit options.
